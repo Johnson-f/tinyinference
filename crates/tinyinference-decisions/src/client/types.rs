@@ -6,6 +6,7 @@ use crate::{Error, EvaluationResponse};
 
 const DEFAULT_SYSTEM_ONE_PATH: &str = "v1/systemone";
 const TINYHUMANS_SYSTEM_ONE_PATH: &str = "agent-integrations/openrouter/systemone";
+const OPENJEV_BASE_URL: &str = "https://api.openjev.sh";
 
 /// System One API provider.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -15,6 +16,8 @@ pub enum Provider {
     TypeSafe,
     /// `OpenRouter`'s compatible System One API.
     OpenRouter,
+    /// OpenJEV's public System One API.
+    OpenJev,
 }
 
 /// Async `TypeSafe` System One client.
@@ -78,6 +81,21 @@ impl ClientConfig {
             system_one_path: DEFAULT_SYSTEM_ONE_PATH,
             endpoint_url: None,
             provider: Provider::OpenRouter,
+            timeout: Duration::from_secs(30),
+            retry: RetryPolicy::default(),
+            sdk_name: None,
+        }
+    }
+
+    /// Create configuration for OpenJEV's System One API.
+    #[must_use]
+    pub fn openjev(api_key: impl Into<String>) -> Self {
+        Self {
+            api_key: ApiKey(api_key.into()),
+            base_url: OPENJEV_BASE_URL.to_owned(),
+            system_one_path: DEFAULT_SYSTEM_ONE_PATH,
+            endpoint_url: None,
+            provider: Provider::OpenJev,
             timeout: Duration::from_secs(30),
             retry: RetryPolicy::default(),
             sdk_name: None,

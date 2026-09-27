@@ -71,6 +71,12 @@ fn every_primitive_pins_its_wire_shape() {
 }
 
 #[test]
+fn openjev_constructor_uses_openjev_default_model() {
+    let request = EvaluationRequest::openjev(json!({"state": "test"}), questions());
+    assert_eq!(request.model, "openjev");
+}
+
+#[test]
 fn public_request_types_round_trip_with_and_without_noul_criteria() {
     let request = EvaluationRequest::jev(json!({"message": "review this"}), questions());
     let value = serde_json::to_value(&request).unwrap();

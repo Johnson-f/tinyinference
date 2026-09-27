@@ -7,10 +7,10 @@ remain private and render only as `[REDACTED]`.
 
 Production endpoints require HTTPS. Plain HTTP is accepted only for literal
 loopback IP addresses used by local tests and development services. Successful
-and failed evaluations report attempts and end-to-end latency. Timeouts and
-connection-establishment failures use the bounded retry policy; other transport
-errors are terminal. Response bodies are capped at 16 MiB, and automatic
-redirects are disabled.
+and failed evaluations report attempts and end-to-end latency. Timeouts,
+connection-establishment failures, and response body-transfer errors use the
+bounded retry policy; other transport errors are terminal. Response bodies are
+capped at 16 MiB, and automatic redirects are disabled.
 
 `ClientConfig::openrouter` targets OpenRouter's compatible System One API at
 `https://openrouter.ai/api/v1/systemone`.

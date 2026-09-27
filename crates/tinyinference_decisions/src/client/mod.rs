@@ -30,7 +30,30 @@ impl Client {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|source| Error::Transport { source })?;
-        Ok(Self { config, http })
+        let transport = std::sync::Arc::new(ReqwestTransport { http: http.clone() });
+        Ok(Self {
+            config,
+            http,
+            transport,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_transport(
+        config: ClientConfig,
+        transport: std::sync::Arc<dyn HttpTransport>,
+    ) -> Result<Self> {
+        config.validate()?;
+        let http = reqwest::Client::builder()
+            .timeout(config.timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|source| Error::Transport { source })?;
+        Ok(Self {
+            config,
+            http,
+            transport,
+        })
     }
 
     /// Construct a client using `TYPESAFE_API_KEY` and production defaults.
@@ -53,10 +76,10 @@ impl Client {
     ///
     /// Returns [`Error::EvaluationFailure`] wrapping request validation,
     /// transport, HTTP, decoding, or response contract errors while preserving
-    /// attempt count and elapsed-time metadata. Timeouts and connection
-    /// establishment failures are retried within the explicit attempt cap;
-    /// other transport errors are terminal. HTTP request validation and
-    /// authentication failures remain terminal.
+    /// attempt count and elapsed-time metadata. Timeouts, connection
+    /// establishment failures, and response body-transfer failures are retried
+    /// within the explicit attempt cap; other transport errors are terminal.
+    /// HTTP request validation and authentication failures remain terminal.
     pub async fn evaluate(&self, request: &EvaluationRequest) -> Result<EvaluationResult> {
         let started = tokio::time::Instant::now();
         request
@@ -94,38 +117,18 @@ impl Client {
         &self,
         request: &EvaluationRequest,
     ) -> std::result::Result<(EvaluationResponse, Option<String>), Failure> {
-        let response = self
+        let outgoing = self
             .evaluation_request(request)
-            .send()
-            .await
+            .build()
             .map_err(classify_transport)?;
-        let request_id = response
-            .headers()
-            .get("x-request-id")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let status = response.status();
+        let response = self.transport.send(outgoing, MAX_RESPONSE_BYTES).await?;
+        let status = response.status;
         if !status.is_success() {
-            let retry_after = parse_retry_after(response.headers().get(RETRY_AFTER));
-            return Err(classify_status(status, retry_after));
+            return Err(classify_status(status, response.retry_after));
         }
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
-        {
-            return Err(Failure::Terminal(Error::ResponseTooLarge {
-                limit: MAX_RESPONSE_BYTES,
-            }));
-        }
-        let mut response = response;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(classify_transport)? {
-            append_response_chunk(&mut bytes, &chunk, MAX_RESPONSE_BYTES)
-                .map_err(Failure::Terminal)?;
-        }
-        let decoded = serde_json::from_slice(&bytes)
+        let decoded = serde_json::from_slice(&response.body)
             .map_err(|source| Failure::Terminal(Error::Decode { source }))?;
-        Ok((decoded, request_id))
+        Ok((decoded, response.request_id))
     }
 
     fn evaluation_request(&self, request: &EvaluationRequest) -> reqwest::RequestBuilder {
@@ -161,11 +164,81 @@ impl Client {
     }
 }
 
-fn append_response_chunk(body: &mut Vec<u8>, chunk: &[u8], limit: usize) -> Result<()> {
+pub(super) fn append_response_chunk(body: &mut Vec<u8>, chunk: &[u8], limit: usize) -> Result<()> {
     if body.len().saturating_add(chunk.len()) > limit {
         return Err(Error::ResponseTooLarge { limit });
     }
     body.extend_from_slice(chunk);
+    Ok(())
+}
+
+pub(super) struct TransportResponse {
+    pub(super) status: StatusCode,
+    pub(super) request_id: Option<String>,
+    pub(super) retry_after: Option<Duration>,
+    pub(super) body: Vec<u8>,
+}
+
+#[async_trait::async_trait]
+pub(super) trait HttpTransport: Send + Sync {
+    async fn send(
+        &self,
+        request: reqwest::Request,
+        response_limit: usize,
+    ) -> std::result::Result<TransportResponse, Failure>;
+}
+
+struct ReqwestTransport {
+    http: reqwest::Client,
+}
+
+#[async_trait::async_trait]
+impl HttpTransport for ReqwestTransport {
+    async fn send(
+        &self,
+        request: reqwest::Request,
+        response_limit: usize,
+    ) -> std::result::Result<TransportResponse, Failure> {
+        let response = self
+            .http
+            .execute(request)
+            .await
+            .map_err(classify_transport)?;
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let retry_after = parse_retry_after(response.headers().get(RETRY_AFTER));
+        let status = response.status();
+        if !status.is_success() {
+            return Ok(TransportResponse {
+                status,
+                request_id,
+                retry_after,
+                body: Vec::new(),
+            });
+        }
+        validate_content_length(response.content_length(), response_limit)
+            .map_err(Failure::Terminal)?;
+        let mut response = response;
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(classify_transport)? {
+            append_response_chunk(&mut body, &chunk, response_limit).map_err(Failure::Terminal)?;
+        }
+        Ok(TransportResponse {
+            status,
+            request_id,
+            retry_after,
+            body,
+        })
+    }
+}
+
+fn validate_content_length(content_length: Option<u64>, limit: usize) -> Result<()> {
+    if content_length.is_some_and(|length| length > u64::try_from(limit).unwrap_or(u64::MAX)) {
+        return Err(Error::ResponseTooLarge { limit });
+    }
     Ok(())
 }
 
@@ -258,7 +331,7 @@ fn validate_url(value: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
-enum Failure {
+pub(super) enum Failure {
     Terminal(Error),
     Retryable {
         error: Error,
@@ -272,7 +345,7 @@ fn classify_transport(source: reqwest::Error) -> Failure {
             error: Error::Timeout,
             retry_after: None,
         }
-    } else if source.is_connect() {
+    } else if source.is_connect() || source.is_body() {
         Failure::Retryable {
             error: Error::Transport { source },
             retry_after: None,

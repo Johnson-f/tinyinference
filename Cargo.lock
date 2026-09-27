@@ -1468,6 +1468,7 @@ dependencies = [
 name = "tinyinference_decisions"
 version = "0.3.0"
 dependencies = [
+ "async-trait",
  "httpdate",
  "reqwest",
  "serde",

@@ -1,6 +1,6 @@
 # TinyInference Decisions
 
-`tinyinference_decisions` provides a typed Rust client for TypeSafe AI's System One API and Jev decision model. A request supplies shared state and independent Choice, Score, and Noul questions. Jev returns typed answers alongside latency, attempts, usage, and request metadata.
+`tinyinference-decisions` provides typed Rust clients for TypeSafe AI's System One API and Jev model, and Levanto Sage. Jev requests supply shared state and independent Choice, Score, and Noul questions. Sage supports Yes/No, Choice, Scale, Sort, and Tags decisions, including images, reasoning, grounding, and batches.
 
 The client keeps execution and policy outside the model. A Choice selects only from caller supplied values, a Score rates one described dimension, and a Noul reports the probability of a yes/no condition. Callers own confidence thresholds, escalation, state transitions, and side effects.
 
@@ -33,7 +33,20 @@ For OpenRouter, construct `ClientConfig::openrouter("<key>")`. Tiny Humans proxy
 The live example spends a real API call:
 
 ```sh
-TYPESAFE_API_KEY='<key>' cargo run -p tinyinference_decisions --example basic
+TYPESAFE_API_KEY='<key>' cargo run -p tinyinference-decisions --example basic
 ```
 
 The crate is part of the TinyInference workspace and is licensed GPL-3.0-only.
+
+## Levanto Sage
+
+Sage is available through `tinyinference_decisions::sage::SageClient`. Its
+`DecisionQuestion` and `DecisionResponse` types preserve each decision kind's
+result, including `None` when Sage is unsure. `decide_batch` groups questions
+by shared content, while `estimate_decision` and `estimate_batch` predict billed
+input tokens without running the model. Image content, reasoning modes,
+grounding, and choice latency modes follow Sage's native API.
+
+The Sage client accepts an explicit API key. See the root README for a complete
+example. Rust imports use `tinyinference_decisions` because Rust identifiers
+cannot contain hyphens; the Cargo package is `tinyinference-decisions`.

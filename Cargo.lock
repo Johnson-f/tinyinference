@@ -1336,6 +1336,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyinference-decisions"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "httpdate",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "tinyinference-embeddings"
 version = "0.3.0"
 dependencies = [
@@ -1462,19 +1476,6 @@ dependencies = [
  "tinyinference-local",
  "tokio",
  "uuid",
-]
-
-[[package]]
-name = "tinyinference_decisions"
-version = "0.3.0"
-dependencies = [
- "async-trait",
- "httpdate",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
 ]
 
 [[package]]

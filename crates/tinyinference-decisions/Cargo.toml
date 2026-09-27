@@ -1,14 +1,14 @@
 [package]
-name = "tinyinference_decisions"
+name = "tinyinference-decisions"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Typed Jev decision model API for TinyInference."
-documentation = "https://docs.rs/tinyinference_decisions"
-readme = "../../docs/tinyinference_decisions.md"
-keywords = ["ai", "classification", "decision-models", "jev"]
+description = "Typed Jev and Levanto Sage decision model APIs for TinyInference."
+documentation = "https://docs.rs/tinyinference-decisions"
+readme = "../../docs/tinyinference-decisions.md"
+keywords = ["ai", "classification", "decision-models", "sage"]
 categories = ["api-bindings", "asynchronous"]
 
 [dependencies]
@@ -21,6 +21,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net"] }
 
 [features]

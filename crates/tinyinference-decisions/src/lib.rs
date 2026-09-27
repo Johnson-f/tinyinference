@@ -1,4 +1,4 @@
-//! Typed Rust access to `TypeSafe` AI's System One API and Jev model.
+//! Typed Rust access to Jev/System One and Levanto Sage decision models.
 //!
 //! A request supplies text or structured state plus independent [`Question`]s.
 //! Jev returns typed choices, ordinal scores, and yes/no probabilities for code
@@ -36,13 +36,15 @@
 //! # }
 //! ```
 //!
-//! The crate deliberately does not execute a selected action, infer permission
-//! from confidence, or hide a retry behind an unbounded loop.
+//! [`sage`] contains Levanto Sage's Yes/No, Choice, Scale, Sort, and Tags API.
+//! This crate does not execute selected actions or infer permission from a
+//! decision probability.
 
 mod client;
 mod error;
 mod request;
 mod response;
+pub mod sage;
 
 pub use client::{
     Client, ClientConfig, EvaluationFailure, EvaluationResult, Provider, RetryPolicy,

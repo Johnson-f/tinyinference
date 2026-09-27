@@ -72,6 +72,41 @@ fn validates_all_three_answer_types() {
 }
 
 #[test]
+fn accepts_a_choice_that_rounding_left_a_hundredth_below_another() {
+    // The provider picks the maximum before rounding each probability to two
+    // decimals: two options at 0.335 can come back as 0.33 and 0.34 with the
+    // first still chosen. This shape came back from the live service.
+    let request = EvaluationRequest::jev(
+        "state",
+        BTreeMap::from([(
+            "route".to_owned(),
+            Question::Choice(Choice {
+                instructions: json!("route"),
+                criteria: ["a", "b", "c"]
+                    .into_iter()
+                    .map(|option| (option.to_owned(), None))
+                    .collect(),
+            }),
+        )]),
+    );
+    let answer = |a: f64, b: f64, c: f64| -> EvaluationResponse {
+        serde_json::from_value(json!({
+            "model": "jev-latest",
+            "answers": {"route": {
+                "type": "choice",
+                "choice": "a",
+                "probabilities": {"a": a, "b": b, "c": c},
+                "confidence": 0.1
+            }},
+            "usage": {}
+        }))
+        .unwrap()
+    };
+    answer(0.33, 0.34, 0.33).validate_for(&request).unwrap();
+    assert!(answer(0.30, 0.40, 0.30).validate_for(&request).is_err());
+}
+
+#[test]
 fn usage_fields_remain_optional() {
     let usage: Usage = serde_json::from_value(json!({})).unwrap();
     assert_eq!(usage, Usage::default());

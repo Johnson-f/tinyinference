@@ -17,6 +17,10 @@ The crate provides:
 - request caching, stream accumulation, normalized provider failures, and
   provider-neutral retry classification.
 
+The workspace also includes `tinyinference_decisions`, a separate typed API for
+Jev Choice, Score, and Noul decisions. See
+[`docs/tinyinference_decisions.md`](docs/tinyinference_decisions.md).
+
 ## Use
 
 ```rust
@@ -42,17 +46,19 @@ that only needs inference can depend on TinyInference directly.
 
 ```text
 Cargo.toml
-crates/tinyinference/
-└── src/
-    ├── cache/       request fingerprints and response-cache contracts
-    ├── embeddings/ embedding clients, vector store, and retriever
-    ├── message/    provider-neutral message and content blocks
-    ├── model/      ChatModel, request/response, profiles, and streaming
-    ├── providers/  mock and OpenAI-compatible transports
-    ├── error.rs    crate-wide Error and Result
-    ├── failure.rs  normalized provider-failure classification
-    ├── tool.rs     model-visible tool schemas and call/delta shapes
-    └── usage/      normalized token accounting
+crates/
+├── tinyinference/
+│   └── src/
+│       ├── cache/       request fingerprints and response-cache contracts
+│       ├── embeddings/  embedding clients, vector store, and retriever
+│       ├── message/     provider-neutral message and content blocks
+│       ├── model/       ChatModel, request/response, profiles, and streaming
+│       ├── providers/   mock and OpenAI-compatible transports
+│       ├── error.rs     crate-wide Error and Result
+│       ├── failure.rs   normalized provider-failure classification
+│       ├── tool.rs      model-visible tool schemas and call/delta shapes
+│       └── usage/       normalized token accounting
+└── tinyinference_decisions/ typed Jev decision client
 ```
 
 ## Development

@@ -64,7 +64,7 @@ pub struct Noul {
     /// Condition whose probability of being true is requested.
     pub instructions: Value,
     /// Optional descriptions clarifying both outcomes.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub criteria: Option<NoulCriteria>,
 }
 

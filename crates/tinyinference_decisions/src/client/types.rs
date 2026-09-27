@@ -145,15 +145,24 @@ impl fmt::Debug for ClientConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientConfig")
             .field("api_key", &"[REDACTED]")
-            .field("base_url", &self.base_url)
+            .field("base_url", &redacted_url_origin(&self.base_url))
             .field("system_one_path", &self.system_one_path)
-            .field("endpoint_url", &self.endpoint_url)
+            .field(
+                "endpoint_url",
+                &self.endpoint_url.as_deref().map(redacted_url_origin),
+            )
             .field("provider", &self.provider)
             .field("timeout", &self.timeout)
             .field("retry", &self.retry)
             .field("sdk_name", &self.sdk_name)
             .finish()
     }
+}
+
+fn redacted_url_origin(value: &str) -> String {
+    reqwest::Url::parse(value)
+        .map(|url| format!("{}/[REDACTED]", url.origin().ascii_serialization()))
+        .unwrap_or_else(|_| "[REDACTED]".to_owned())
 }
 
 #[derive(Clone)]

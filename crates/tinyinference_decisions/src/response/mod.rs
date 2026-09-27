@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use crate::{Error, EvaluationRequest, Question, Result};
 
 const PROBABILITY_TOLERANCE: f64 = 0.000_001;
+const MAX_DISTRIBUTION_TOLERANCE: f64 = 0.02;
 const SCORE_TOLERANCE: f64 = 0.02;
 
 impl EvaluationResponse {
@@ -190,13 +191,13 @@ fn validate_distribution(
 /// `OpenRouter` System One endpoint (2026-09): two decimals per option, and a
 /// 21-option Choice answered with probabilities summing to 0.99. The
 /// tolerance is therefore half a unit in the second decimal per option,
-/// floored at `PROBABILITY_TOLERANCE` so a two-option answer is held as
-/// tightly as before. It is a bound on rounding, not on the model: a
-/// distribution that is off by more than that is still rejected.
+/// bounded between `PROBABILITY_TOLERANCE` and `MAX_DISTRIBUTION_TOLERANCE`.
+/// The cap allows the observed 21-option rounding while still rejecting
+/// materially invalid distributions.
 fn distribution_tolerance(options: usize) -> f64 {
     // A Choice holds at most 255 options, so the cast is exact.
     let options = f64::from(u32::try_from(options).unwrap_or(u32::MAX));
-    PROBABILITY_TOLERANCE.max(options * 0.005)
+    (options * 0.005).clamp(PROBABILITY_TOLERANCE, MAX_DISTRIBUTION_TOLERANCE)
 }
 
 fn validate_probability(value: f64, name: &str) -> Result<()> {

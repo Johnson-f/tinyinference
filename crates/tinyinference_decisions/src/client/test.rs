@@ -293,14 +293,47 @@ async fn malformed_success_body_is_a_decode_failure() {
 
 #[tokio::test]
 async fn debug_output_redacts_the_api_key() {
-    let config = config("http://127.0.0.1:1".to_owned());
+    let mut config = config("http://127.0.0.1:1/private-base-token".to_owned());
+    config.endpoint_url = Some("https://example.com/private-token".into());
     let rendered = format!("{config:?}");
     assert!(rendered.contains("[REDACTED]"));
     assert!(!rendered.contains("secret-test-key"));
+    assert!(!rendered.contains("private-base-token"));
+    assert!(!rendered.contains("private-token"));
     let client = Client::new(config).unwrap();
     let rendered = format!("{client:?}");
     assert!(rendered.contains("[REDACTED]"));
     assert!(!rendered.contains("secret-test-key"));
+}
+
+#[test]
+fn response_chunks_cannot_exceed_the_configured_body_limit() {
+    let mut body = Vec::new();
+    append_response_chunk(&mut body, b"123", 4).unwrap();
+    let error = append_response_chunk(&mut body, b"45", 4).unwrap_err();
+    assert!(matches!(error, Error::ResponseTooLarge { limit: 4 }));
+    assert_eq!(body, b"123");
+}
+
+#[tokio::test]
+async fn rejects_response_content_length_over_the_body_limit() {
+    let reply = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        MAX_RESPONSE_BYTES + 1
+    );
+    let (base_url, _) = server(vec![reply]).await;
+    let failure = evaluation_failure(
+        Client::new(config(base_url))
+            .unwrap()
+            .evaluate(&request())
+            .await,
+    );
+    assert!(matches!(
+        failure.error.as_ref(),
+        Error::ResponseTooLarge {
+            limit: MAX_RESPONSE_BYTES
+        }
+    ));
 }
 
 #[test]

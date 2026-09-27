@@ -156,6 +156,16 @@ fn openrouter_accepts_resolved_jev_models_only() {
 }
 
 #[test]
+fn openrouter_accepts_a_resolved_release_of_a_specific_jev_model() {
+    let mut specific_model = request();
+    specific_model.model = "typesafe/jev-1.13".into();
+    let mut resolved = response();
+    resolved.model = "typesafe/jev-1.13-20260917".into();
+
+    resolved.validate_for_openrouter(&specific_model).unwrap();
+}
+
+#[test]
 fn rejects_out_of_range_empty_and_mismatched_probability_payloads() {
     let mut confidence = response();
     let Answer::Choice(choice) = confidence.answers.get_mut("route").unwrap() else {
@@ -233,7 +243,7 @@ fn accepts_the_exact_score_rounding_boundary() {
 
 #[test]
 fn accepts_multilevel_score_when_rounded_probabilities_shift_weighted_value() {
-    let criteria = (0..10).map(|level| json!(level)).collect::<Vec<_>>();
+    let criteria = (0..21).map(|level| json!(level)).collect::<Vec<_>>();
     let mut request = request();
     let Question::Score(question) = request.questions.get_mut("quality").unwrap() else {
         panic!("fixture question should be a score")
@@ -243,14 +253,14 @@ fn accepts_multilevel_score_when_rounded_probabilities_shift_weighted_value() {
     let Answer::Score(score) = response.answers.get_mut("quality").unwrap() else {
         panic!("fixture answer should be a score")
     };
-    score.legend = (0..10)
+    score.legend = (0..21)
         .map(|level| (level.to_string(), json!(level)))
         .collect();
-    score.probabilities = (0..9)
-        .map(|level| (level.to_string(), 0.01))
-        .chain(std::iter::once(("9".to_owned(), 0.87)))
+    score.probabilities = (0..20)
+        .map(|level| (level.to_string(), 0.04))
+        .chain(std::iter::once(("20".to_owned(), 0.19)))
         .collect();
-    score.score = 8.33;
+    score.score = 11.43;
 
     response.validate_for(&request).unwrap();
 }
@@ -267,7 +277,33 @@ fn many_option_distributions_tolerate_per_option_rounding() {
     assert!((probabilities.values().sum::<f64>() - 0.99).abs() < 1e-9);
     assert!(validate_distribution(&probabilities, "choice").is_ok());
 
-    // Two options are still held tightly.
-    let two = std::collections::BTreeMap::from([("a".to_owned(), 0.6), ("b".to_owned(), 0.39)]);
+    // Two options allow up to a 0.01 rounding difference, but reject larger errors.
+    let two = std::collections::BTreeMap::from([("a".to_owned(), 0.6), ("b".to_owned(), 0.37)]);
     assert!(validate_distribution(&two, "choice").is_err());
+
+    let all_zero = (0..255)
+        .map(|index| (format!("option-{index}"), 0.0))
+        .collect();
+    assert!(validate_distribution(&all_zero, "choice").is_err());
+}
+
+#[test]
+fn response_answer_types_round_trip_with_optional_usage() {
+    let original = response();
+    let value = serde_json::to_value(&original).unwrap();
+    assert_eq!(value["answers"]["route"]["type"], "choice");
+    assert_eq!(value["answers"]["quality"]["type"], "score");
+    assert_eq!(value["answers"]["safe"]["type"], "noul");
+    assert_eq!(
+        serde_json::from_value::<EvaluationResponse>(value).unwrap(),
+        original
+    );
+
+    let mut without_usage = original;
+    without_usage.usage = Usage::default();
+    let value = serde_json::to_value(&without_usage).unwrap();
+    assert_eq!(
+        serde_json::from_value::<EvaluationResponse>(value).unwrap(),
+        without_usage
+    );
 }

@@ -54,6 +54,12 @@ pub enum Error {
         #[source]
         source: serde_json::Error,
     },
+    /// The provider response exceeded the configured body-size limit.
+    #[error("provider response body exceeded the {limit}-byte limit")]
+    ResponseTooLarge {
+        /// Maximum accepted response body size.
+        limit: usize,
+    },
     /// The decoded response is inconsistent with the request.
     #[error("invalid response: {reason}")]
     InvalidResponse {

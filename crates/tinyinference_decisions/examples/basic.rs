@@ -22,6 +22,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )]),
     );
     let result = Client::from_env()?.evaluate(&request).await?;
-    println!("{:?}", result.response.answers["route"]);
+    let answer = result.response.answers.get("route").ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "response omitted route answer",
+        )
+    })?;
+    println!("{answer:?}");
     Ok(())
 }

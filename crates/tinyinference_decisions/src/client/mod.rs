@@ -14,6 +14,7 @@ use reqwest::{StatusCode, header::RETRY_AFTER};
 use crate::{Error, EvaluationRequest, EvaluationResponse, Result};
 
 const MAX_RETRIES: u32 = 100;
+const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 impl Client {
     /// Construct a client from an explicit configuration.
@@ -52,11 +53,10 @@ impl Client {
     ///
     /// Returns [`Error::EvaluationFailure`] wrapping request validation,
     /// transport, HTTP, decoding, or response contract errors while preserving
-    /// attempt count and elapsed-time metadata. All transport failures are
-    /// retried within the explicit attempt cap because the transport does not
-    /// reliably distinguish a transient DNS/TLS/connectivity fault from a
-    /// permanent one. HTTP request validation and authentication failures
-    /// remain terminal.
+    /// attempt count and elapsed-time metadata. Timeouts and connection
+    /// establishment failures are retried within the explicit attempt cap;
+    /// other transport errors are terminal. HTTP request validation and
+    /// authentication failures remain terminal.
     pub async fn evaluate(&self, request: &EvaluationRequest) -> Result<EvaluationResult> {
         let started = tokio::time::Instant::now();
         request
@@ -109,7 +109,20 @@ impl Client {
             let retry_after = parse_retry_after(response.headers().get(RETRY_AFTER));
             return Err(classify_status(status, retry_after));
         }
-        let bytes = response.bytes().await.map_err(classify_transport)?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+        {
+            return Err(Failure::Terminal(Error::ResponseTooLarge {
+                limit: MAX_RESPONSE_BYTES,
+            }));
+        }
+        let mut response = response;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(classify_transport)? {
+            append_response_chunk(&mut bytes, &chunk, MAX_RESPONSE_BYTES)
+                .map_err(Failure::Terminal)?;
+        }
         let decoded = serde_json::from_slice(&bytes)
             .map_err(|source| Failure::Terminal(Error::Decode { source }))?;
         Ok((decoded, request_id))
@@ -146,6 +159,14 @@ impl Client {
             Provider::OpenRouter => response.validate_for_openrouter(request),
         }
     }
+}
+
+fn append_response_chunk(body: &mut Vec<u8>, chunk: &[u8], limit: usize) -> Result<()> {
+    if body.len().saturating_add(chunk.len()) > limit {
+        return Err(Error::ResponseTooLarge { limit });
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
 }
 
 fn evaluation_failure(error: Error, attempts: u32, latency: Duration) -> Error {

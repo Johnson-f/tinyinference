@@ -73,6 +73,36 @@ fn every_primitive_pins_its_wire_shape() {
 }
 
 #[test]
+fn public_request_types_round_trip_with_and_without_noul_criteria() {
+    let request = EvaluationRequest::jev(json!({"message": "review this"}), questions());
+    let value = serde_json::to_value(&request).unwrap();
+    assert_eq!(value["questions"]["route"]["type"], "choice");
+    assert_eq!(value["questions"]["quality"]["type"], "score");
+    assert_eq!(value["questions"]["unsafe"]["type"], "noul");
+    assert_eq!(
+        serde_json::from_value::<EvaluationRequest>(value).unwrap(),
+        request
+    );
+
+    let request = EvaluationRequest::jev(
+        "state",
+        BTreeMap::from([(
+            "safe".to_owned(),
+            Question::Noul(Noul {
+                instructions: json!("Is the operation safe?"),
+                criteria: None,
+            }),
+        )]),
+    );
+    let value = serde_json::to_value(&request).unwrap();
+    assert!(value["questions"]["safe"].get("criteria").is_none());
+    assert_eq!(
+        serde_json::from_value::<EvaluationRequest>(value).unwrap(),
+        request
+    );
+}
+
+#[test]
 fn accepts_string_object_and_array_state() {
     for state in [json!("text"), json!({"field": true}), json!([1, 2])] {
         EvaluationRequest::jev(state, questions())

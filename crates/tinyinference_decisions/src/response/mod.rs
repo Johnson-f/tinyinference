@@ -14,6 +14,9 @@ use crate::{Error, EvaluationRequest, Question, Result};
 const PROBABILITY_TOLERANCE: f64 = 0.000_001;
 const MAX_DISTRIBUTION_TOLERANCE: f64 = 0.02;
 const SCORE_TOLERANCE: f64 = 0.02;
+/// Two probabilities each rounded to two decimals can differ from their true
+/// order by up to one hundredth.
+const CHOICE_ROUNDING_TOLERANCE: f64 = 0.01;
 
 impl EvaluationResponse {
     /// Check this response against the request that produced it.
@@ -96,11 +99,12 @@ fn validate_pair(question: &Question, answer: &Answer) -> Result<()> {
                 ));
             }
             let selected = answer.probabilities[&answer.choice];
-            if answer
-                .probabilities
-                .values()
-                .any(|probability| *probability > selected + PROBABILITY_TOLERANCE)
-            {
+            // The provider picks the maximum before rounding each probability
+            // to two decimals, so two near-equal options can swap order by up
+            // to twice one value's rounding error.
+            if answer.probabilities.values().any(|probability| {
+                *probability > selected + CHOICE_ROUNDING_TOLERANCE + PROBABILITY_TOLERANCE
+            }) {
                 return Err(Error::invalid_response(
                     "choice must name a highest-probability option",
                 ));

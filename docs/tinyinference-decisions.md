@@ -50,3 +50,11 @@ grounding, and choice latency modes follow Sage's native API.
 The Sage client accepts an explicit API key. See the root README for a complete
 example. Rust imports use `tinyinference_decisions` because Rust identifiers
 cannot contain hyphens; the Cargo package is `tinyinference-decisions`.
+
+An opt-in live example exercises readiness, model listing, token estimation,
+reasoning, image input, and a two-question batch with synthetic content. It
+uses decision allowance and reads the key from `SAGE_API_KEY`:
+
+```sh
+cargo run -p tinyinference-decisions --example live_sage
+```

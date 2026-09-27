@@ -152,6 +152,12 @@ async fn client_uses_auth_and_endpoints_and_classifies_errors() {
                 axum::Json(json!({"detail":"invalid question"})),
             );
         }
+        if body["question"]["id"] == "invalid_shape" {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                axum::Json(json!({"detail":"invalid shape"})),
+            );
+        }
         if body["question"]["id"] == "exhausted" {
             return (
                 StatusCode::PAYMENT_REQUIRED,
@@ -220,6 +226,17 @@ async fn client_uses_auth_and_endpoints_and_classifies_errors() {
     );
     assert!(matches!(
         client.decide(&bad).await.unwrap_err(),
+        Error::Unprocessable
+    ));
+    let invalid_shape = DecisionRequest::new(
+        "claim",
+        DecisionQuestion::YesNo {
+            id: "invalid_shape".into(),
+            instructions: "?".into(),
+        },
+    );
+    assert!(matches!(
+        client.decide(&invalid_shape).await.unwrap_err(),
         Error::Unprocessable
     ));
     for (id, expected_status) in [("exhausted", 402), ("loading", 503)] {

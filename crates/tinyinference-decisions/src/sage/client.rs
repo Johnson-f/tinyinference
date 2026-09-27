@@ -248,7 +248,7 @@ async fn read_response<T: DeserializeOwned>(mut response: reqwest::Response) -> 
 fn http_error(response: reqwest::Response) -> Error {
     let status = response.status().as_u16();
     match status {
-        400 => Error::Unprocessable,
+        400 | 422 => Error::Unprocessable,
         401 | 403 => Error::Authentication,
         429 => Error::RateLimited,
         503 => Error::Overloaded,

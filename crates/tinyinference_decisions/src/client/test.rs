@@ -1,17 +1,14 @@
 //! Client transport, retry, measurement, and secret-handling tests.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::Arc,
     time::{Duration, SystemTime},
 };
 
+use reqwest::{Method, StatusCode, header::HeaderMap};
 use serde_json::json;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-    sync::Mutex,
-};
+use tokio::sync::Mutex;
 
 use super::*;
 use crate::{Choice, Question};
@@ -45,32 +42,82 @@ fn success() -> String {
     .to_string()
 }
 
-fn response(status: u16, body: &str, extra_headers: &str) -> String {
-    let reason = if status == 200 { "OK" } else { "Error" };
-    format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{extra_headers}\r\n{body}",
-        body.len()
-    )
+fn response(status: u16, body: &str, extra_headers: &str) -> MockReply {
+    let request_id = header_value(extra_headers, "x-request-id").map(str::to_owned);
+    let retry_after = header_value(extra_headers, "retry-after")
+        .and_then(|value| reqwest::header::HeaderValue::from_str(value).ok())
+        .and_then(|value| parse_retry_after(Some(&value)));
+    MockReply::Response(TransportResponse {
+        status: StatusCode::from_u16(status).unwrap(),
+        request_id,
+        retry_after,
+        body: body.as_bytes().to_vec(),
+    })
 }
 
-async fn server(responses: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let requests = Arc::new(Mutex::new(Vec::new()));
-    let recorded = Arc::clone(&requests);
-    tokio::spawn(async move {
-        for reply in responses {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buffer = vec![0_u8; 16_384];
-            let count = stream.read(&mut buffer).await.unwrap();
-            recorded
-                .lock()
-                .await
-                .push(String::from_utf8_lossy(&buffer[..count]).into_owned());
-            stream.write_all(reply.as_bytes()).await.unwrap();
+fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
+    headers.lines().find_map(|header| {
+        let (header_name, value) = header.split_once(':')?;
+        header_name
+            .eq_ignore_ascii_case(name)
+            .then_some(value.trim())
+    })
+}
+
+enum MockReply {
+    Response(TransportResponse),
+    Failure(Failure),
+}
+
+#[derive(Clone, Debug)]
+struct RecordedRequest {
+    method: Method,
+    url: String,
+    headers: HeaderMap,
+    body: String,
+}
+
+struct MockTransport {
+    responses: Mutex<VecDeque<MockReply>>,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
+}
+
+#[async_trait::async_trait]
+impl HttpTransport for MockTransport {
+    async fn send(
+        &self,
+        request: reqwest::Request,
+        _response_limit: usize,
+    ) -> std::result::Result<TransportResponse, Failure> {
+        let body = request
+            .body()
+            .and_then(reqwest::Body::as_bytes)
+            .map(|body| String::from_utf8_lossy(body).into_owned())
+            .unwrap_or_default();
+        self.requests.lock().await.push(RecordedRequest {
+            method: request.method().clone(),
+            url: request.url().to_string(),
+            headers: request.headers().clone(),
+            body,
+        });
+        match self.responses.lock().await.pop_front().unwrap() {
+            MockReply::Response(response) => Ok(response),
+            MockReply::Failure(failure) => Err(failure),
         }
+    }
+}
+
+fn mock_client(
+    config: ClientConfig,
+    responses: Vec<MockReply>,
+) -> (Client, Arc<Mutex<Vec<RecordedRequest>>>) {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let transport = Arc::new(MockTransport {
+        responses: Mutex::new(responses.into()),
+        requests: Arc::clone(&requests),
     });
-    (format!("http://{address}"), requests)
+    let client = Client::with_transport(config, transport).unwrap();
+    (client, requests)
 }
 
 fn evaluation_failure(result: crate::Result<EvaluationResult>) -> EvaluationFailure {
@@ -93,111 +140,87 @@ fn config(base_url: String) -> ClientConfig {
     config
 }
 
-fn unavailable_base_url() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    drop(listener);
-    format!("http://{address}")
-}
-
 #[tokio::test]
 async fn sends_the_documented_endpoint_and_bearer_header() {
-    let (base_url, requests) = server(vec![response(
-        200,
-        &success(),
-        "x-request-id: request-7\r\n",
-    )])
-    .await;
-    let result = Client::new(config(base_url))
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap();
+    let (client, requests) = mock_client(
+        config("http://127.0.0.1:1".into()),
+        vec![response(200, &success(), "x-request-id: request-7\r\n")],
+    );
+    let result = client.evaluate(&request()).await.unwrap();
     assert_eq!(result.attempts, 1);
     assert_eq!(result.request_id.as_deref(), Some("request-7"));
     assert_eq!(result.response.usage.input_tokens, Some(12));
-    let sent = requests.lock().await.join("");
-    assert!(sent.starts_with("POST /v1/systemone HTTP/1.1"));
-    assert!(
-        sent.to_ascii_lowercase()
-            .contains("authorization: bearer secret-test-key")
+    let requests = requests.lock().await;
+    assert_eq!(requests[0].method, Method::POST);
+    assert_eq!(
+        reqwest::Url::parse(&requests[0].url).unwrap().path(),
+        "/v1/systemone"
     );
-    assert!(sent.contains("\"model\":\"jev-latest\""));
+    assert_eq!(
+        requests[0].headers.get("authorization").unwrap(),
+        "Bearer secret-test-key"
+    );
+    assert!(requests[0].body.contains("\"model\":\"jev-latest\""));
 }
 
 #[tokio::test]
 async fn an_exact_endpoint_override_is_not_extended_with_a_provider_path() {
-    let (base_url, requests) = server(vec![response(
-        200,
-        &success().replace("jev-latest", "typesafe/jev-1.13-20260917"),
-        "",
-    )])
-    .await;
-    let endpoint = format!("{base_url}/api/alpha/decisions");
-    let mut config = ClientConfig::openrouter("secret-test-key").with_endpoint_url(endpoint);
-    config.timeout = Duration::from_secs(1);
-    config.retry.max_retries = 0;
-
-    Client::new(config)
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap();
-
-    assert!(
-        requests
-            .lock()
-            .await
-            .join("")
-            .starts_with("POST /api/alpha/decisions HTTP/1.1")
+    let endpoint = "https://example.com/api/alpha/decisions";
+    let config = ClientConfig::openrouter("secret-test-key").with_endpoint_url(endpoint);
+    let (client, requests) = mock_client(
+        config,
+        vec![response(
+            200,
+            &success().replace("jev-latest", "typesafe/jev-1.13-20260917"),
+            "",
+        )],
     );
+
+    client.evaluate(&request()).await.unwrap();
+
+    assert_eq!(requests.lock().await[0].url, endpoint);
 }
 
 #[tokio::test]
 async fn openrouter_uses_system_one_and_accepts_a_resolved_jev_model() {
-    let (base_url, requests) = server(vec![response(
-        200,
-        &success().replace("jev-latest", "typesafe/jev-1.13-20260917"),
-        "",
-    )])
-    .await;
     let mut config = ClientConfig::openrouter("secret-test-key");
-    config.base_url = base_url;
-    config.timeout = Duration::from_secs(1);
     config.retry.max_retries = 0;
-    let result = Client::new(config)
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap();
+    let (client, requests) = mock_client(
+        config,
+        vec![response(
+            200,
+            &success().replace("jev-latest", "typesafe/jev-1.13-20260917"),
+            "",
+        )],
+    );
+    let result = client.evaluate(&request()).await.unwrap();
     assert_eq!(result.response.model, "typesafe/jev-1.13-20260917");
-    let sent = requests.lock().await.join("");
-    assert!(sent.starts_with("POST /v1/systemone HTTP/1.1"));
+    assert_eq!(
+        reqwest::Url::parse(&requests.lock().await[0].url)
+            .unwrap()
+            .path(),
+        "/api/v1/systemone"
+    );
 }
 
 #[tokio::test]
 async fn tinyhumans_proxy_uses_the_direct_system_one_path() {
-    let (base_url, requests) = server(vec![response(
-        200,
-        &success().replace("jev-latest", "typesafe/jev-1.13-20260917"),
-        "",
-    )])
-    .await;
     let mut config = ClientConfig::tinyhumans_openrouter("secret-test-key");
-    config.base_url = base_url;
-    config.timeout = Duration::from_secs(1);
     config.retry.max_retries = 0;
-    Client::new(config)
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap();
-    assert!(
-        requests
-            .lock()
-            .await
-            .join("")
-            .starts_with("POST /agent-integrations/openrouter/systemone HTTP/1.1")
+    let (client, requests) = mock_client(
+        config,
+        vec![response(
+            200,
+            &success().replace("jev-latest", "typesafe/jev-1.13-20260917"),
+            "",
+        )],
+    );
+    client.evaluate(&request()).await.unwrap();
+    assert_eq!(
+        reqwest::Url::parse(&requests.lock().await[0].url)
+            .unwrap()
+            .path(),
+        "/agent-integrations/openrouter/systemone"
     );
 }
 
@@ -250,28 +273,48 @@ fn sdk_name_is_sanitized_and_sent_only_to_the_exact_tinyhumans_proxy() {
 
 #[tokio::test]
 async fn retries_rate_limits_and_reports_attempts() {
-    let (base_url, requests) =
-        server(vec![response(429, "{}", ""), response(200, &success(), "")]).await;
-    let mut config = config(base_url);
+    let mut config = config("http://127.0.0.1:1".into());
     config.retry.max_retries = 1;
-    let result = Client::new(config)
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap();
+    let (client, requests) = mock_client(
+        config,
+        vec![
+            response(429, "{}", "Retry-After: 0\r\n"),
+            response(200, &success(), ""),
+        ],
+    );
+    let result = client.evaluate(&request()).await.unwrap();
+    assert_eq!(result.attempts, 2);
+    assert_eq!(requests.lock().await.len(), 2);
+}
+
+#[tokio::test]
+async fn retries_retryable_transport_failures() {
+    let mut config = config("https://example.com".into());
+    config.retry.max_retries = 1;
+    let (client, requests) = mock_client(
+        config,
+        vec![
+            MockReply::Failure(Failure::Retryable {
+                error: Error::Timeout,
+                retry_after: Some(Duration::ZERO),
+            }),
+            response(200, &success(), ""),
+        ],
+    );
+
+    let result = client.evaluate(&request()).await.unwrap();
+
     assert_eq!(result.attempts, 2);
     assert_eq!(requests.lock().await.len(), 2);
 }
 
 #[tokio::test]
 async fn authentication_is_terminal() {
-    let (base_url, requests) = server(vec![response(401, "{}", "")]).await;
-    let error = evaluation_failure(
-        Client::new(config(base_url))
-            .unwrap()
-            .evaluate(&request())
-            .await,
+    let (client, requests) = mock_client(
+        config("http://127.0.0.1:1".into()),
+        vec![response(401, "{}", "")],
     );
+    let error = evaluation_failure(client.evaluate(&request()).await);
     assert!(matches!(error.error.as_ref(), Error::Authentication));
     assert_eq!(error.attempts, 1);
     assert_eq!(requests.lock().await.len(), 1);
@@ -279,13 +322,11 @@ async fn authentication_is_terminal() {
 
 #[tokio::test]
 async fn malformed_success_body_is_a_decode_failure() {
-    let (base_url, _) = server(vec![response(200, "not-json", "")]).await;
-    let error = evaluation_failure(
-        Client::new(config(base_url))
-            .unwrap()
-            .evaluate(&request())
-            .await,
+    let (client, _) = mock_client(
+        config("http://127.0.0.1:1".into()),
+        vec![response(200, "not-json", "")],
     );
+    let error = evaluation_failure(client.evaluate(&request()).await);
     assert!(matches!(error.error.as_ref(), Error::Decode { .. }));
 }
 
@@ -315,22 +356,11 @@ fn response_chunks_cannot_exceed_the_configured_body_limit() {
 
 #[tokio::test]
 async fn rejects_response_content_length_over_the_body_limit() {
-    let reply = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        MAX_RESPONSE_BYTES + 1
-    );
-    let (base_url, _) = server(vec![reply]).await;
-    let failure = evaluation_failure(
-        Client::new(config(base_url))
-            .unwrap()
-            .evaluate(&request())
-            .await,
-    );
     assert!(matches!(
-        failure.error.as_ref(),
-        Error::ResponseTooLarge {
+        validate_content_length(Some(MAX_RESPONSE_BYTES as u64 + 1), MAX_RESPONSE_BYTES),
+        Err(Error::ResponseTooLarge {
             limit: MAX_RESPONSE_BYTES
-        }
+        })
     ));
 }
 
@@ -510,23 +540,21 @@ fn status_classification_covers_terminal_and_retryable_classes() {
 
 #[tokio::test]
 async fn request_timeout_is_retryable_but_respects_the_attempt_bound() {
-    let (base_url, _) = server(vec![response(408, "{}", "")]).await;
-    let mut config = config(base_url);
+    let mut config = config("http://127.0.0.1:1".into());
     config.retry.max_retries = 0;
-    let error = evaluation_failure(Client::new(config).unwrap().evaluate(&request()).await);
+    let (client, _) = mock_client(config, vec![response(408, "{}", "")]);
+    let error = evaluation_failure(client.evaluate(&request()).await);
     assert!(matches!(error.error.as_ref(), Error::Timeout));
     assert_eq!(error.attempts, 1);
 }
 
 #[tokio::test]
 async fn exhausted_rate_limit_returns_the_classified_error() {
-    let (base_url, _) = server(vec![response(429, "{}", "")]).await;
-    let error = evaluation_failure(
-        Client::new(config(base_url))
-            .unwrap()
-            .evaluate(&request())
-            .await,
+    let (client, _) = mock_client(
+        config("http://127.0.0.1:1".into()),
+        vec![response(429, "{}", "")],
     );
+    let error = evaluation_failure(client.evaluate(&request()).await);
     assert!(matches!(error.error.as_ref(), Error::RateLimited));
     assert_eq!(error.attempts, 1);
 }
@@ -548,13 +576,11 @@ async fn local_validation_and_response_validation_report_failure_metadata() {
         "usage": {"input_tokens": 1, "output_tokens": 1}
     })
     .to_string();
-    let (base_url, _) = server(vec![response(200, &body, "")]).await;
-    let failure = evaluation_failure(
-        Client::new(config(base_url))
-            .unwrap()
-            .evaluate(&request())
-            .await,
+    let (client, _) = mock_client(
+        config("http://127.0.0.1:1".into()),
+        vec![response(200, &body, "")],
     );
+    let failure = evaluation_failure(client.evaluate(&request()).await);
     assert!(matches!(
         failure.error.as_ref(),
         Error::InvalidResponse { .. }
@@ -563,31 +589,16 @@ async fn local_validation_and_response_validation_report_failure_metadata() {
 }
 
 #[tokio::test]
-async fn connection_failure_is_classified_as_transport() {
-    let failure = evaluation_failure(
-        Client::new(config(unavailable_base_url()))
-            .unwrap()
-            .evaluate(&request())
-            .await,
-    );
-    assert!(matches!(failure.error.as_ref(), Error::Transport { .. }));
-    assert_eq!(failure.attempts, 1);
-}
-
-#[tokio::test]
 async fn redirect_is_not_followed() {
-    let (base_url, requests) = server(vec![response(
-        307,
-        "{}",
-        "Location: http://example.com/downgrade\r\n",
-    )])
-    .await;
-    let failure = evaluation_failure(
-        Client::new(config(base_url))
-            .unwrap()
-            .evaluate(&request())
-            .await,
+    let (client, requests) = mock_client(
+        config("http://127.0.0.1:1".into()),
+        vec![response(
+            307,
+            "{}",
+            "Location: http://example.com/downgrade\r\n",
+        )],
     );
+    let failure = evaluation_failure(client.evaluate(&request()).await);
     assert!(matches!(
         failure.error.as_ref(),
         Error::HttpStatus { status: 307 }

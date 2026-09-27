@@ -275,6 +275,14 @@ fn many_option_distributions_tolerate_per_option_rounding() {
     assert!((probabilities.values().sum::<f64>() - 0.99).abs() < 1e-9);
     assert!(validate_distribution(&probabilities, "choice").is_ok());
 
+    // Seven independently rounded two-decimal values can miss one by 0.03.
+    let seven: std::collections::BTreeMap<_, _> = (0..6)
+        .map(|index| (format!("o{index}"), 0.14))
+        .chain(std::iter::once(("o6".to_owned(), 0.13)))
+        .collect();
+    assert!((seven.values().sum::<f64>() - 0.97).abs() < 1e-9);
+    assert!(validate_distribution(&seven, "choice").is_ok());
+
     // Two options allow up to a 0.01 rounding difference, but reject larger errors.
     let two = std::collections::BTreeMap::from([("a".to_owned(), 0.6), ("b".to_owned(), 0.37)]);
     assert!(validate_distribution(&two, "choice").is_err());

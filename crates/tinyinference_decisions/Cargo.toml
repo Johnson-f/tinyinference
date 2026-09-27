@@ -12,6 +12,7 @@ keywords = ["ai", "classification", "decision-models", "jev"]
 categories = ["api-bindings", "asynchronous"]
 
 [dependencies]
+async-trait = { workspace = true }
 httpdate = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use crate::{Error, EvaluationRequest, Question, Result};
 
 const PROBABILITY_TOLERANCE: f64 = 0.000_001;
-const MAX_DISTRIBUTION_TOLERANCE: f64 = 0.02;
+const MAX_DISTRIBUTION_TOLERANCE: f64 = 0.05;
 const SCORE_TOLERANCE: f64 = 0.02;
 
 impl EvaluationResponse {
@@ -192,8 +192,8 @@ fn validate_distribution(
 /// 21-option Choice answered with probabilities summing to 0.99. The
 /// tolerance is therefore half a unit in the second decimal per option,
 /// bounded between `PROBABILITY_TOLERANCE` and `MAX_DISTRIBUTION_TOLERANCE`.
-/// The cap allows the observed 21-option rounding while still rejecting
-/// materially invalid distributions.
+/// The 0.05 cap covers rounding across seven two-decimal probabilities while
+/// still rejecting materially invalid distributions.
 fn distribution_tolerance(options: usize) -> f64 {
     // A Choice holds at most 255 options, so the cast is exact.
     let options = f64::from(u32::try_from(options).unwrap_or(u32::MAX));

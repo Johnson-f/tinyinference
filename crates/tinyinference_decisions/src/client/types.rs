@@ -1,6 +1,6 @@
 //! Client configuration and measured result types.
 
-use std::{fmt, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 
 use crate::{Error, EvaluationResponse};
 
@@ -22,6 +22,7 @@ pub enum Provider {
 pub struct Client {
     pub(super) config: ClientConfig,
     pub(super) http: reqwest::Client,
+    pub(super) transport: Arc<dyn super::HttpTransport>,
 }
 
 impl fmt::Debug for Client {

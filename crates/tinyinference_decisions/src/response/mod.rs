@@ -135,7 +135,15 @@ fn validate_pair(question: &Question, answer: &Answer) -> Result<()> {
                 .iter()
                 .map(|(level, probability)| level.parse::<f64>().unwrap_or_default() * probability)
                 .sum();
-            if (answer.score - expected_score).abs() > SCORE_TOLERANCE + f64::EPSILON {
+            let weighted_rounding_tolerance = answer
+                .probabilities
+                .keys()
+                .map(|level| level.parse::<f64>().unwrap_or_default())
+                .sum::<f64>()
+                * 0.005;
+            if (answer.score - expected_score).abs()
+                > SCORE_TOLERANCE + weighted_rounding_tolerance + f64::EPSILON
+            {
                 return Err(Error::invalid_response(
                     "score must equal the probability-weighted level",
                 ));

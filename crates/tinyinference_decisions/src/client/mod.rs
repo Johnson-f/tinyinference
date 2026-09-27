@@ -7,7 +7,7 @@ mod types;
 
 pub use types::{Client, ClientConfig, EvaluationFailure, EvaluationResult, Provider, RetryPolicy};
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use reqwest::{StatusCode, header::RETRY_AFTER};
 
@@ -50,32 +50,25 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns request validation, transport, HTTP, decoding, or response
-    /// contract errors. All transport failures are retried within the explicit
-    /// attempt cap because the transport does not reliably distinguish a
-    /// transient DNS/TLS/connectivity fault from a permanent one. HTTP request
-    /// validation and authentication failures remain terminal.
-    pub async fn evaluate(
-        &self,
-        request: &EvaluationRequest,
-    ) -> std::result::Result<EvaluationResult, EvaluationFailure> {
-        let started = Instant::now();
-        request.validate().map_err(|error| EvaluationFailure {
-            error,
-            attempts: 0,
-            latency: started.elapsed(),
-        })?;
+    /// Returns [`Error::EvaluationFailure`] wrapping request validation,
+    /// transport, HTTP, decoding, or response contract errors while preserving
+    /// attempt count and elapsed-time metadata. All transport failures are
+    /// retried within the explicit attempt cap because the transport does not
+    /// reliably distinguish a transient DNS/TLS/connectivity fault from a
+    /// permanent one. HTTP request validation and authentication failures
+    /// remain terminal.
+    pub async fn evaluate(&self, request: &EvaluationRequest) -> Result<EvaluationResult> {
+        let started = tokio::time::Instant::now();
+        request
+            .validate()
+            .map_err(|error| evaluation_failure(error, 0, started.elapsed()))?;
         let mut attempts = 0_u32;
         loop {
             attempts = attempts.saturating_add(1);
             match self.send_once(request).await {
                 Ok((response, request_id)) => {
                     self.validate_response(&response, request)
-                        .map_err(|error| EvaluationFailure {
-                            error,
-                            attempts,
-                            latency: started.elapsed(),
-                        })?;
+                        .map_err(|error| evaluation_failure(error, attempts, started.elapsed()))?;
                     return Ok(EvaluationResult {
                         response,
                         request_id,
@@ -84,19 +77,11 @@ impl Client {
                     });
                 }
                 Err(Failure::Terminal(error)) => {
-                    return Err(EvaluationFailure {
-                        error,
-                        attempts,
-                        latency: started.elapsed(),
-                    });
+                    return Err(evaluation_failure(error, attempts, started.elapsed()));
                 }
                 Err(Failure::Retryable { error, retry_after }) => {
                     if attempts > self.config.retry.max_retries {
-                        return Err(EvaluationFailure {
-                            error,
-                            attempts,
-                            latency: started.elapsed(),
-                        });
+                        return Err(evaluation_failure(error, attempts, started.elapsed()));
                     }
                     let delay = retry_after.unwrap_or_else(|| self.config.retry.delay(attempts));
                     tokio::time::sleep(delay.min(self.config.retry.max_backoff)).await;
@@ -161,6 +146,15 @@ impl Client {
             Provider::OpenRouter => response.validate_for_openrouter(request),
         }
     }
+}
+
+fn evaluation_failure(error: Error, attempts: u32, latency: Duration) -> Error {
+    EvaluationFailure {
+        error: Box::new(error),
+        attempts,
+        latency,
+    }
+    .into()
 }
 
 fn is_tinyhumans_proxy_endpoint(raw: &str) -> bool {

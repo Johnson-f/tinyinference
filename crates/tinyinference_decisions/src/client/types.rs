@@ -214,7 +214,7 @@ pub struct EvaluationResult {
 pub struct EvaluationFailure {
     /// Classified terminal failure.
     #[source]
-    pub error: Error,
+    pub error: Box<Error>,
     /// HTTP attempts made before failure; zero for local request validation.
     pub attempts: u32,
     /// End-to-end elapsed time including retry delays.

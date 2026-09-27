@@ -232,6 +232,30 @@ fn accepts_the_exact_score_rounding_boundary() {
 }
 
 #[test]
+fn accepts_multilevel_score_when_rounded_probabilities_shift_weighted_value() {
+    let criteria = (0..10).map(|level| json!(level)).collect::<Vec<_>>();
+    let mut request = request();
+    let Question::Score(question) = request.questions.get_mut("quality").unwrap() else {
+        panic!("fixture question should be a score")
+    };
+    question.criteria = criteria;
+    let mut response = response();
+    let Answer::Score(score) = response.answers.get_mut("quality").unwrap() else {
+        panic!("fixture answer should be a score")
+    };
+    score.legend = (0..10)
+        .map(|level| (level.to_string(), json!(level)))
+        .collect();
+    score.probabilities = (0..9)
+        .map(|level| (level.to_string(), 0.01))
+        .chain(std::iter::once(("9".to_owned(), 0.87)))
+        .collect();
+    score.score = 8.33;
+
+    response.validate_for(&request).unwrap();
+}
+
+#[test]
 fn many_option_distributions_tolerate_per_option_rounding() {
     // 21 options rounded to two decimals summing to 0.99: what the OpenRouter
     // endpoint answers. Rejected before the size-aware tolerance.

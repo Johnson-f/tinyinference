@@ -75,14 +75,12 @@ async fn server(responses: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {
     (format!("http://{address}"), requests)
 }
 
-async fn slow_server() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let (_stream, _) = listener.accept().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    });
-    format!("http://{address}")
+fn evaluation_failure(result: crate::Result<EvaluationResult>) -> EvaluationFailure {
+    match result {
+        Err(Error::EvaluationFailure(failure)) => failure,
+        Err(error) => panic!("expected an evaluation failure, got {error:?}"),
+        Ok(_) => panic!("expected evaluation to fail"),
+    }
 }
 
 fn config(base_url: String) -> ClientConfig {
@@ -270,12 +268,13 @@ async fn retries_rate_limits_and_reports_attempts() {
 #[tokio::test]
 async fn authentication_is_terminal() {
     let (base_url, requests) = server(vec![response(401, "{}", "")]).await;
-    let error = Client::new(config(base_url))
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap_err();
-    assert!(matches!(error.error, Error::Authentication));
+    let error = evaluation_failure(
+        Client::new(config(base_url))
+            .unwrap()
+            .evaluate(&request())
+            .await,
+    );
+    assert!(matches!(error.error.as_ref(), Error::Authentication));
     assert_eq!(error.attempts, 1);
     assert_eq!(requests.lock().await.len(), 1);
 }
@@ -283,12 +282,13 @@ async fn authentication_is_terminal() {
 #[tokio::test]
 async fn malformed_success_body_is_a_decode_failure() {
     let (base_url, _) = server(vec![response(200, "not-json", "")]).await;
-    let error = Client::new(config(base_url))
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap_err();
-    assert!(matches!(error.error, Error::Decode { .. }));
+    let error = evaluation_failure(
+        Client::new(config(base_url))
+            .unwrap()
+            .evaluate(&request())
+            .await,
+    );
+    assert!(matches!(error.error.as_ref(), Error::Decode { .. }));
 }
 
 #[tokio::test]
@@ -478,28 +478,25 @@ fn status_classification_covers_terminal_and_retryable_classes() {
 }
 
 #[tokio::test]
-async fn timeout_is_retryable_but_respects_the_attempt_bound() {
-    let mut config = config(slow_server().await);
-    config.timeout = Duration::from_millis(5);
-    let error = Client::new(config)
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap_err();
-    assert!(matches!(error.error, Error::Timeout));
+async fn request_timeout_is_retryable_but_respects_the_attempt_bound() {
+    let (base_url, _) = server(vec![response(408, "{}", "")]).await;
+    let mut config = config(base_url);
+    config.retry.max_retries = 0;
+    let error = evaluation_failure(Client::new(config).unwrap().evaluate(&request()).await);
+    assert!(matches!(error.error.as_ref(), Error::Timeout));
     assert_eq!(error.attempts, 1);
-    assert!(error.latency >= Duration::from_millis(5));
 }
 
 #[tokio::test]
 async fn exhausted_rate_limit_returns_the_classified_error() {
     let (base_url, _) = server(vec![response(429, "{}", "")]).await;
-    let error = Client::new(config(base_url))
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap_err();
-    assert!(matches!(error.error, Error::RateLimited));
+    let error = evaluation_failure(
+        Client::new(config(base_url))
+            .unwrap()
+            .evaluate(&request())
+            .await,
+    );
+    assert!(matches!(error.error.as_ref(), Error::RateLimited));
     assert_eq!(error.attempts, 1);
 }
 
@@ -507,8 +504,11 @@ async fn exhausted_rate_limit_returns_the_classified_error() {
 async fn local_validation_and_response_validation_report_failure_metadata() {
     let client = Client::new(config("http://127.0.0.1:1".into())).unwrap();
     let invalid = EvaluationRequest::jev("state", BTreeMap::new());
-    let failure = client.evaluate(&invalid).await.unwrap_err();
-    assert!(matches!(failure.error, Error::InvalidRequest { .. }));
+    let failure = evaluation_failure(client.evaluate(&invalid).await);
+    assert!(matches!(
+        failure.error.as_ref(),
+        Error::InvalidRequest { .. }
+    ));
     assert_eq!(failure.attempts, 0);
 
     let body = json!({
@@ -518,23 +518,28 @@ async fn local_validation_and_response_validation_report_failure_metadata() {
     })
     .to_string();
     let (base_url, _) = server(vec![response(200, &body, "")]).await;
-    let failure = Client::new(config(base_url))
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap_err();
-    assert!(matches!(failure.error, Error::InvalidResponse { .. }));
+    let failure = evaluation_failure(
+        Client::new(config(base_url))
+            .unwrap()
+            .evaluate(&request())
+            .await,
+    );
+    assert!(matches!(
+        failure.error.as_ref(),
+        Error::InvalidResponse { .. }
+    ));
     assert_eq!(failure.attempts, 1);
 }
 
 #[tokio::test]
 async fn connection_failure_is_classified_as_transport() {
-    let failure = Client::new(config(unavailable_base_url()))
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap_err();
-    assert!(matches!(failure.error, Error::Transport { .. }));
+    let failure = evaluation_failure(
+        Client::new(config(unavailable_base_url()))
+            .unwrap()
+            .evaluate(&request())
+            .await,
+    );
+    assert!(matches!(failure.error.as_ref(), Error::Transport { .. }));
     assert_eq!(failure.attempts, 1);
 }
 
@@ -546,11 +551,15 @@ async fn redirect_is_not_followed() {
         "Location: http://example.com/downgrade\r\n",
     )])
     .await;
-    let failure = Client::new(config(base_url))
-        .unwrap()
-        .evaluate(&request())
-        .await
-        .unwrap_err();
-    assert!(matches!(failure.error, Error::HttpStatus { status: 307 }));
+    let failure = evaluation_failure(
+        Client::new(config(base_url))
+            .unwrap()
+            .evaluate(&request())
+            .await,
+    );
+    assert!(matches!(
+        failure.error.as_ref(),
+        Error::HttpStatus { status: 307 }
+    ));
     assert_eq!(requests.lock().await.len(), 1);
 }

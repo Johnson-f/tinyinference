@@ -60,6 +60,9 @@ pub enum Error {
         /// Stable explanation of the contract violation.
         reason: String,
     },
+    /// Evaluation failed, with attempt count and elapsed-time metadata.
+    #[error(transparent)]
+    EvaluationFailure(#[from] crate::client::EvaluationFailure),
 }
 
 impl Error {

@@ -3,9 +3,18 @@
 #![allow(clippy::expect_used)]
 
 use std::collections::BTreeMap;
+use std::future::Future;
 
 use serde_json::json;
-use tinyinference_decisions::{Choice, EvaluationRequest, Question};
+use tinyinference_decisions::{Choice, Client, EvaluationRequest, EvaluationResult, Question};
+
+#[allow(dead_code)]
+fn evaluate_returns_crate_result<'a>(
+    client: &'a Client,
+    request: &'a EvaluationRequest,
+) -> impl Future<Output = tinyinference_decisions::Result<EvaluationResult>> + 'a {
+    client.evaluate(request)
+}
 
 #[test]
 fn public_types_build_a_valid_jev_request() {

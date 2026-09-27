@@ -1,7 +1,5 @@
 //! Request wire and validation tests.
 
-#![allow(clippy::unwrap_used)]
-
 use std::collections::BTreeMap;
 
 use serde_json::json;

@@ -1,7 +1,5 @@
 //! Client transport, retry, measurement, and secret-handling tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use std::{
     collections::BTreeMap,
     sync::Arc,

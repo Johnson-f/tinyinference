@@ -1,7 +1,5 @@
 //! Response wire and request-relative validation tests.
 
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use std::collections::BTreeMap;
 
 use serde_json::json;

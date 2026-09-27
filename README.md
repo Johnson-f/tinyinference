@@ -26,6 +26,8 @@ The workspace provides:
   parsing, and deterministic provider-error classification;
 - OpenAI-compatible hosted transcription, Piper synthesis, local-LLM
   transcript cleanup, and bounded PCM streaming helpers.
+- `tinyinference_decisions`, a typed Jev/System One API for Choice, Score,
+  and Noul decisions; see [`docs/tinyinference_decisions.md`](docs/tinyinference_decisions.md).
 
 ## Use
 
@@ -88,6 +90,8 @@ crates/tinyinference-image/
                     normalization, OpenRouter media transport, capabilities
 crates/tinyinference-video/
 └── src/            VideoGenerator, submit/poll/download job loop, resume by id
+crates/tinyinference_decisions/
+└── src/            typed Jev decision requests, responses, and HTTP client
 ```
 
 ### Media generation

@@ -7,3 +7,4 @@
 - [`adr/`](adr/) holds immutable architecture decisions.
 
 Most API documentation lives next to the implementation as compiled rustdoc.
+- [`tinyinference_decisions.md`](tinyinference_decisions.md) documents the Jev decision API crate.

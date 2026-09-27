@@ -26,8 +26,8 @@ The workspace provides:
   parsing, and deterministic provider-error classification;
 - OpenAI-compatible hosted transcription, Piper synthesis, local-LLM
   transcript cleanup, and bounded PCM streaming helpers.
-- `tinyinference_decisions`, a typed Jev/System One API for Choice, Score,
-  and Noul decisions; see [`docs/tinyinference_decisions.md`](docs/tinyinference_decisions.md).
+- `tinyinference-decisions`, typed Jev/System One and Levanto Sage APIs;
+  see [`docs/tinyinference-decisions.md`](docs/tinyinference-decisions.md).
 
 ## Use
 
@@ -56,7 +56,40 @@ can depend on `tinyinference-llm` for language models,
 `tinyinference-image` for image generation and the shared media-reference
 standards and OpenRouter media transport,
 `tinyinference-video` for asynchronous video generation (submit, poll,
-download, resume), and `tinyinference-core` only for shared infrastructure.
+download, resume), `tinyinference-decisions` for typed Jev and Sage decisions,
+and `tinyinference-core` only for shared infrastructure.
+
+### Levanto Sage
+
+Sage uses typed decisions. A missing verdict means Sage is unsure and should
+be handled as a valid answer. Create an API key in Levanto and pass it from
+your application's secret storage; the client never reads ambient credentials.
+
+```rust,no_run
+use tinyinference_decisions::sage::{
+    DecisionQuestion, DecisionRequest, DecisionResponse, SageClient, YesNoAnswer,
+};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let key = std::env::var("SAGE_API_KEY")?;
+let sage = SageClient::new(key)?;
+let request = DecisionRequest::new(
+    "Marketing copy promises guaranteed returns.",
+    DecisionQuestion::YesNo {
+        id: "needs_review".into(),
+        instructions: "Does this copy need compliance review?".into(),
+    },
+);
+if let DecisionResponse::YesNo { result, .. } = sage.decide(&request).await? {
+    match result.answer {
+        Some(YesNoAnswer::Yes) => println!("review"),
+        Some(YesNoAnswer::No) => println!("send"),
+        None => println!("escalate"),
+    }
+}
+# Ok(())
+# }
+```
 
 ## Layout
 
@@ -90,8 +123,8 @@ crates/tinyinference-image/
                     normalization, OpenRouter media transport, capabilities
 crates/tinyinference-video/
 └── src/            VideoGenerator, submit/poll/download job loop, resume by id
-crates/tinyinference_decisions/
-└── src/            typed Jev decision requests, responses, and HTTP client
+crates/tinyinference-decisions/
+└── src/            typed Jev and Sage decisions and HTTP clients
 ```
 
 ### Media generation

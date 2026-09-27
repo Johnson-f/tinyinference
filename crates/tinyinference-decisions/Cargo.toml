@@ -1,0 +1,31 @@
+[package]
+name = "tinyinference-decisions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typed Jev and Levanto Sage decision model APIs for TinyInference."
+documentation = "https://docs.rs/tinyinference-decisions"
+readme = "../../docs/tinyinference-decisions.md"
+keywords = ["ai", "classification", "decision-models", "sage"]
+categories = ["api-bindings", "asynchronous"]
+
+[dependencies]
+async-trait = { workspace = true }
+httpdate = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net"] }
+
+[features]
+default = []
+
+[lints]
+workspace = true

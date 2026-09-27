@@ -26,9 +26,9 @@ println!("{:?}", result.response.answers["route"]);
 # }
 ```
 
-The API key is read from `TYPESAFE_API_KEY` or supplied through `ClientConfig`. Keys are redacted from `Debug` output and never included in errors. The client supports TypeSafe and OpenRouter endpoints, bounded retries, request and response validation, and explicit per-call failure metadata.
+The API key is read from `TYPESAFE_API_KEY` or supplied through `ClientConfig`. Keys are redacted from `Debug` output and never included in errors. The client supports TypeSafe, OpenRouter, and OpenJEV endpoints, bounded retries, request and response validation, and explicit per-call failure metadata.
 
-For OpenRouter, construct `ClientConfig::openrouter("<key>")`. Tiny Humans proxy users can use `ClientConfig::tinyhumans_openrouter("<key>")`. Custom endpoints can be configured with `.with_endpoint_url(...)`.
+For OpenRouter, construct `ClientConfig::openrouter("<key>")`. Tiny Humans proxy users can use `ClientConfig::tinyhumans_openrouter("<key>")`. For OpenJEV, use `ClientConfig::openjev("<key>")` with `EvaluationRequest::openjev(...)`, which selects OpenJEV's `openjev` model id. Custom endpoints can be configured with `.with_endpoint_url(...)`.
 
 The live example spends a real API call:
 

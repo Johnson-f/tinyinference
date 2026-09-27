@@ -26,6 +26,16 @@ impl EvaluationRequest {
             questions,
         }
     }
+
+    /// Build a request using OpenJEV's default model identifier, `openjev`.
+    #[must_use]
+    pub fn openjev(state: impl Into<Value>, questions: BTreeMap<String, Question>) -> Self {
+        Self {
+            state: state.into(),
+            model: "openjev".to_owned(),
+            questions,
+        }
+    }
 }
 
 /// A typed question evaluated independently against shared state.

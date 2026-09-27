@@ -158,7 +158,7 @@ impl Client {
         request: &EvaluationRequest,
     ) -> Result<()> {
         match self.config.provider {
-            Provider::TypeSafe => response.validate_for(request),
+            Provider::TypeSafe | Provider::OpenJev => response.validate_for(request),
             Provider::OpenRouter => response.validate_for_openrouter(request),
         }
     }

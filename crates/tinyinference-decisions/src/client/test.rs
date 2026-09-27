@@ -204,6 +204,35 @@ async fn openrouter_uses_system_one_and_accepts_a_resolved_jev_model() {
 }
 
 #[tokio::test]
+async fn openjev_uses_system_one_endpoint_and_default_model() {
+    let mut config = ClientConfig::openjev("secret-test-key");
+    config.retry.max_retries = 0;
+    let mut openjev_request = request();
+    openjev_request.model = "openjev".into();
+    let (client, requests) = mock_client(
+        config,
+        vec![response(
+            200,
+            &success().replace("jev-latest", "openjev"),
+            "",
+        )],
+    );
+
+    let result = client.evaluate(&openjev_request).await.unwrap();
+
+    assert_eq!(result.response.model, "openjev");
+    let requests = requests.lock().await;
+    let url = reqwest::Url::parse(&requests[0].url).unwrap();
+    assert_eq!(url.host_str(), Some("api.openjev.sh"));
+    assert_eq!(url.path(), "/v1/systemone");
+    assert_eq!(
+        requests[0].headers.get("authorization").unwrap(),
+        "Bearer secret-test-key"
+    );
+    assert!(requests[0].body.contains("\"model\":\"openjev\""));
+}
+
+#[tokio::test]
 async fn tinyhumans_proxy_uses_the_direct_system_one_path() {
     let mut config = ClientConfig::tinyhumans_openrouter("secret-test-key");
     config.retry.max_retries = 0;

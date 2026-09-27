@@ -1,0 +1,752 @@
+//! Server-sent-events stream parsing and incremental accumulation
+//! (`SseState`, `OpenAiStreamAcc`, `sse_next`).
+//!
+//! Split out of `openai/mod.rs`; see that module's doc comment for the
+//! full provider overview.
+
+use super::*;
+
+/// In-progress reconstruction of a single tool call across streamed fragments.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ToolCallBuild {
+    /// Provider-assigned call id (filled from the first fragment carrying it).
+    id: String,
+    /// Function name (filled from the first fragment carrying it).
+    name: String,
+    /// Concatenated stringified-JSON argument fragments.
+    args: String,
+}
+
+/// The block-channel's notion of "which content stream is currently open",
+/// used to detect a switch (and thus a `BlockEnd`/`BlockStart` pair) between
+/// text, reasoning, and each individual tool call.
+///
+/// A tool call is identified by its slot in [`OpenAiStreamAcc::tool_calls`]
+/// (not the block index): two tool calls always occupy distinct slots, so
+/// comparing slots is enough to tell fragments for different calls apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenKind {
+    Text,
+    Reasoning,
+    ToolCall(usize),
+}
+
+/// What the caller of [`OpenAiStreamAcc::ensure_block`] wants opened, carrying
+/// whatever data a fresh [`BlockKind`] needs to be constructed. Text and
+/// reasoning blocks need nothing beyond their kind; a tool-call block needs
+/// the id/name known at the moment it first opens.
+enum BlockRequest {
+    Text,
+    Reasoning,
+    ToolCall {
+        slot: usize,
+        id: String,
+        name: String,
+    },
+}
+
+impl BlockRequest {
+    fn kind(&self) -> OpenKind {
+        match self {
+            BlockRequest::Text => OpenKind::Text,
+            BlockRequest::Reasoning => OpenKind::Reasoning,
+            BlockRequest::ToolCall { slot, .. } => OpenKind::ToolCall(*slot),
+        }
+    }
+}
+
+/// The block channel's accumulated content for one opened block, mirrored
+/// independently of [`OpenAiStreamAcc::text`]/`reasoning`/`tool_calls` (which
+/// remain the sole source of truth for [`OpenAiStreamAcc::into_response`]).
+/// This exists only to assemble the [`ModelStreamItem::BlockEnd`] payload.
+#[derive(Clone, Debug)]
+enum BlockBuf {
+    Text(String),
+    Reasoning(String),
+    ToolCall {
+        id: String,
+        name: String,
+        args: String,
+    },
+}
+
+impl BlockBuf {
+    /// Converts a closed block into the [`ContentBlock`] carried on
+    /// [`ModelStreamItem::BlockEnd`]. Mirrors the Anthropic adapter's
+    /// `OpenBlock::into_content_block`: a tool-call block has no dedicated
+    /// [`ContentBlock`] variant, so it is represented as [`ContentBlock::Json`]
+    /// carrying `{id, name, arguments}`.
+    fn into_content_block(self) -> ContentBlock {
+        match self {
+            BlockBuf::Text(text) => ContentBlock::Text(text),
+            BlockBuf::Reasoning(text) => ContentBlock::Thinking {
+                text,
+                signature: None,
+            },
+            BlockBuf::ToolCall { id, name, args } => {
+                let arguments = if args.trim().is_empty() {
+                    Value::Object(Default::default())
+                } else {
+                    serde_json::from_str(&args).unwrap_or(Value::String(args))
+                };
+                ContentBlock::Json(serde_json::json!({
+                    "id": id,
+                    "name": name,
+                    "arguments": arguments,
+                }))
+            }
+        }
+    }
+}
+
+/// Provider-side accumulator that rebuilds the authoritative [`ModelResponse`]
+/// from streamed chunks. Distinct from the generic
+/// [`StreamAccumulator`][crate::model::StreamAccumulator]: it tracks
+/// tool-call names and ids (which the neutral deltas omit) so the terminal
+/// [`ModelStreamItem::Completed`] carries a faithful response.
+#[derive(Clone, Debug, Default)]
+pub(super) struct OpenAiStreamAcc {
+    id: Option<String>,
+    text: String,
+    /// Accumulated **side-channel** reasoning/thinking fragments
+    /// (`reasoning_content` / `reasoning`), preserved on the final message as a
+    /// leading [`ContentBlock::Thinking`] block (unsigned — the
+    /// OpenAI-compatible path has no provider signature). Inline `<think>` tag
+    /// reasoning is not accumulated here; it is recomputed from `text` in
+    /// [`into_response`](Self::into_response) so the terminal response matches
+    /// the non-streaming path exactly.
+    reasoning: String,
+    tool_calls: Vec<ToolCallBuild>,
+    usage: Option<Usage>,
+    finish_reason: Option<String>,
+    /// Inline `<think>` extraction config (`None` disables it). Applied to the
+    /// terminal response via [`extract_reasoning`].
+    reasoning_tags: Option<ReasoningTagExtraction>,
+    /// Live per-delta inline-tag splitter, so streamed content deltas route
+    /// chain-of-thought onto the reasoning channel instead of leaking it.
+    extractor: Option<ReasoningTagStream>,
+    /// Wire `index` → current accumulator slot. Normally the identity mapping,
+    /// but when a backend reuses one index for several parallel calls (Ollama's
+    /// `/v1` bug, ollama/ollama#15457) the conflict handling in
+    /// [`resolve_slot`](Self::resolve_slot) repoints the index at the freshly
+    /// opened slot, so id-less argument continuations for that index keep
+    /// following the call most recently opened there.
+    index_slots: std::collections::HashMap<u32, usize>,
+    /// Block-channel content, one entry per opened block (text, reasoning, or
+    /// a tool call), in first-open order. `content_index` on the flat
+    /// [`ToolDelta`]/compatibility channel is this vector's index, so it
+    /// matches [`ModelStreamItem::BlockStart`]/`BlockDelta`/`BlockEnd`.
+    blocks: Vec<BlockBuf>,
+    /// The currently open block (its index into `blocks` and its kind), or
+    /// `None` between blocks and before the first one opens. OpenAI chat
+    /// completions gives no explicit "block closed" signal the way Anthropic's
+    /// `content_block_stop` does, so a block is considered closed exactly when
+    /// a fragment for a *different* block arrives, or when `finish_reason`/the
+    /// stream ends — never reopened once closed (a later fragment for the same
+    /// conceptual channel opens a fresh block instead, matching how densely
+    /// each block gets its own [`ModelStreamItem::BlockStart`]).
+    current_block: Option<(usize, OpenKind)>,
+}
+
+impl OpenAiStreamAcc {
+    /// Builds an accumulator with the given inline reasoning-tag extraction
+    /// config (`None` disables inline extraction).
+    pub(super) fn new(reasoning_tags: Option<ReasoningTagExtraction>) -> Self {
+        let extractor = reasoning_tags.as_ref().map(ReasoningTagStream::new);
+        Self {
+            reasoning_tags,
+            extractor,
+            ..Self::default()
+        }
+    }
+
+    /// Folds one parsed chunk into the accumulator and pushes the corresponding
+    /// neutral [`ModelStreamItem`]s onto `pending`.
+    fn ingest(&mut self, chunk: ChatCompletionChunk, pending: &mut VecDeque<ModelStreamItem>) {
+        if let Some(id) = chunk.id
+            && self.id.is_none()
+        {
+            self.id = Some(id);
+        }
+        if let Some(usage_wire) = chunk.usage {
+            let usage = convert_usage(usage_wire);
+            self.usage = Some(usage);
+            pending.push_back(ModelStreamItem::UsageDelta(usage));
+        }
+        for mut choice in chunk.choices.into_iter().filter(|choice| choice.index == 0) {
+            let finished = choice.finish_reason.is_some();
+            if let Some(reason) = choice.finish_reason {
+                self.finish_reason = Some(reason);
+            }
+            let reasoning = delta_reasoning_text(&mut choice.delta);
+            if !reasoning.is_empty() {
+                self.reasoning.push_str(&reasoning);
+                self.push_block_delta(BlockRequest::Reasoning, &reasoning, pending);
+                pending.push_back(ModelStreamItem::MessageDelta(MessageDelta {
+                    text: String::new(),
+                    reasoning,
+                    tool_call: None,
+                }));
+            }
+            if let Some(content) = choice.delta.content.filter(|c| !c.is_empty()) {
+                // Retain the raw content so the terminal response can recompute
+                // an authoritative inline-tag split (see `into_response`).
+                self.text.push_str(&content);
+                match self.extractor.as_mut() {
+                    // Inline extraction on: scan this delta, holding back any
+                    // trailing partial tag, and route the split onto the two
+                    // channels as separate deltas.
+                    Some(extractor) => {
+                        let mut visible = String::new();
+                        let mut reasoning = String::new();
+                        extractor.push(&content, &mut visible, &mut reasoning);
+                        if !reasoning.is_empty() {
+                            self.push_block_delta(BlockRequest::Reasoning, &reasoning, pending);
+                            pending.push_back(ModelStreamItem::MessageDelta(MessageDelta {
+                                text: String::new(),
+                                reasoning,
+                                tool_call: None,
+                            }));
+                        }
+                        if !visible.is_empty() {
+                            self.push_block_delta(BlockRequest::Text, &visible, pending);
+                            pending.push_back(ModelStreamItem::MessageDelta(MessageDelta {
+                                text: visible,
+                                reasoning: String::new(),
+                                tool_call: None,
+                            }));
+                        }
+                    }
+                    None => {
+                        self.push_block_delta(BlockRequest::Text, &content, pending);
+                        pending.push_back(ModelStreamItem::MessageDelta(MessageDelta {
+                            text: content,
+                            reasoning: String::new(),
+                            tool_call: None,
+                        }));
+                    }
+                }
+            }
+            for fragment in choice.delta.tool_calls {
+                let idx = self.resolve_slot(&fragment);
+                let id_present = fragment.id.as_deref().is_some_and(|id| !id.is_empty());
+                let name_present = fragment
+                    .function
+                    .as_ref()
+                    .and_then(|function| function.name.as_deref())
+                    .is_some_and(|name| !name.is_empty());
+                if let Some(id) = fragment.id.filter(|id| !id.is_empty()) {
+                    self.tool_calls[idx].id = id;
+                }
+                if let Some(function) = fragment.function {
+                    if let Some(name) = function.name.filter(|n| !n.is_empty()) {
+                        self.tool_calls[idx].name = name;
+                    }
+                    // Open the tool-call's block as soon as either its id or
+                    // its name is known, even if no argument fragment has
+                    // arrived yet, mirroring the Anthropic adapter's
+                    // `content_block_start` for `tool_use`.
+                    if id_present || name_present {
+                        if self.tool_calls[idx].id.is_empty() {
+                            self.tool_calls[idx].id = tool_call_id(idx, "");
+                        }
+                        let call_id = tool_call_id(idx, &self.tool_calls[idx].id);
+                        let name = self.tool_calls[idx].name.clone();
+                        self.ensure_block(
+                            BlockRequest::ToolCall {
+                                slot: idx,
+                                id: call_id,
+                                name,
+                            },
+                            pending,
+                        );
+                    }
+                    if let Some(args) = function.arguments.filter(|a| !a.is_empty()) {
+                        self.tool_calls[idx].args.push_str(&args);
+                        if self.tool_calls[idx].id.is_empty() {
+                            self.tool_calls[idx].id = tool_call_id(idx, "");
+                        }
+                        let call_id = tool_call_id(idx, &self.tool_calls[idx].id);
+                        let name = self.tool_calls[idx].name.clone();
+                        let block_index = self.ensure_block(
+                            BlockRequest::ToolCall {
+                                slot: idx,
+                                id: call_id.clone(),
+                                name: name.clone(),
+                            },
+                            pending,
+                        );
+                        if let Some(BlockBuf::ToolCall { args: buf, .. }) =
+                            self.blocks.get_mut(block_index)
+                        {
+                            buf.push_str(&args);
+                        }
+                        pending.push_back(ModelStreamItem::BlockDelta {
+                            index: block_index,
+                            delta: BlockDelta::ToolArgs(args.clone()),
+                        });
+                        pending.push_back(ModelStreamItem::ToolCallDelta(ToolDelta {
+                            call_id,
+                            content: args,
+                            // Surface the tool name (captured into `slot.name`
+                            // from the call-opening fragment) so consumers can
+                            // label the call as it streams; the accumulator
+                            // keeps the first.
+                            tool_name: Some(name).filter(|n| !n.is_empty()),
+                            content_index: Some(block_index),
+                        }));
+                    }
+                }
+            }
+            if finished {
+                self.close_current_block(pending);
+            }
+        }
+    }
+
+    /// Routes a text or reasoning fragment onto the block channel: opens (or
+    /// continues) the matching block via [`Self::ensure_block`], appends the
+    /// fragment into its buffer, and emits the corresponding
+    /// [`ModelStreamItem::BlockDelta`].
+    fn push_block_delta(
+        &mut self,
+        request: BlockRequest,
+        fragment: &str,
+        pending: &mut VecDeque<ModelStreamItem>,
+    ) {
+        let delta = match &request {
+            BlockRequest::Text => BlockDelta::Text(fragment.to_string()),
+            BlockRequest::Reasoning => BlockDelta::Thinking(fragment.to_string()),
+            BlockRequest::ToolCall { .. } => {
+                debug_assert!(false, "push_block_delta is only used for text/reasoning");
+                return;
+            }
+        };
+        let index = self.ensure_block(request, pending);
+        match self.blocks.get_mut(index) {
+            Some(BlockBuf::Text(buf)) => buf.push_str(fragment),
+            Some(BlockBuf::Reasoning(buf)) => buf.push_str(fragment),
+            _ => {}
+        }
+        pending.push_back(ModelStreamItem::BlockDelta { index, delta });
+    }
+
+    /// Returns the index of the block matching `request`, opening a new one
+    /// (emitting [`ModelStreamItem::BlockStart`] and closing whatever block
+    /// was previously open) if the requested kind is not already the current
+    /// block.
+    fn ensure_block(
+        &mut self,
+        request: BlockRequest,
+        pending: &mut VecDeque<ModelStreamItem>,
+    ) -> usize {
+        let kind = request.kind();
+        if let Some((index, open)) = self.current_block
+            && open == kind
+        {
+            return index;
+        }
+        self.close_current_block(pending);
+        let (buf, start_kind) = match request {
+            BlockRequest::Text => (BlockBuf::Text(String::new()), BlockKind::Text),
+            BlockRequest::Reasoning => (BlockBuf::Reasoning(String::new()), BlockKind::Thinking),
+            BlockRequest::ToolCall { id, name, .. } => (
+                BlockBuf::ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    args: String::new(),
+                },
+                BlockKind::ToolCall { id, name },
+            ),
+        };
+        let index = self.blocks.len();
+        self.blocks.push(buf);
+        pending.push_back(ModelStreamItem::BlockStart {
+            index,
+            kind: start_kind,
+        });
+        self.current_block = Some((index, kind));
+        index
+    }
+
+    /// Closes whichever block is currently open (if any), emitting its
+    /// [`ModelStreamItem::BlockEnd`]. A no-op when no block is open.
+    fn close_current_block(&mut self, pending: &mut VecDeque<ModelStreamItem>) {
+        if let Some((index, _)) = self.current_block.take()
+            && let Some(buf) = self.blocks.get(index)
+        {
+            pending.push_back(ModelStreamItem::BlockEnd {
+                index,
+                block: buf.clone().into_content_block(),
+            });
+        }
+    }
+
+    /// Resolves the accumulator slot a streamed tool-call fragment belongs to.
+    ///
+    /// OpenAI itself always sends a stable `index`; some OpenAI-compatible
+    /// backends omit it. When `index` is present it selects the slot directly
+    /// (growing the vector as needed). When it is absent, fragments are
+    /// correlated by `id`: a fragment carrying a new id opens a new slot, one
+    /// carrying a known id reuses that slot, and an id-less continuation fragment
+    /// (arguments only) appends to the most recent slot — so parallel calls no
+    /// longer all collapse onto slot 0.
+    ///
+    /// One exception guards Ollama's `/v1` parallel-tool-call bug
+    /// (ollama/ollama#15457), where every parallel call arrives with `index: 0`:
+    /// when an explicit index carries a non-empty id that *conflicts* with the id
+    /// already recorded at that slot, the fragment is a distinct new call, not a
+    /// continuation, so it opens a fresh slot (or reuses an existing slot already
+    /// opened for that id) instead of silently merging two calls onto one. The
+    /// index is then repointed at that slot, so subsequent id-less argument
+    /// continuations arriving under the same reused index follow the call most
+    /// recently opened there instead of the original occupant.
+    fn resolve_slot(&mut self, fragment: &ToolCallChunkWire) -> usize {
+        if let Some(index) = fragment.index {
+            let idx = index as usize;
+            while self.tool_calls.len() <= idx {
+                self.tool_calls.push(ToolCallBuild::default());
+            }
+            let current = *self.index_slots.entry(index).or_insert(idx);
+            if let Some(id) = fragment.id.as_deref().filter(|id| !id.is_empty()) {
+                let occupant = &self.tool_calls[current];
+                if !occupant.id.is_empty() && occupant.id != id {
+                    // Conflict: a second distinct call reusing index 0. Reuse a
+                    // slot already opened for this id if one exists (so its later
+                    // continuation fragments still land correctly), else open a
+                    // fresh slot rather than overwriting the occupant. Either
+                    // way, repoint the index cursor so id-less argument
+                    // continuations for this index follow the call most
+                    // recently opened here rather than the original occupant.
+                    let slot = match self.tool_calls.iter().position(|slot| slot.id == id) {
+                        Some(pos) => pos,
+                        None => {
+                            self.tool_calls.push(ToolCallBuild::default());
+                            self.tool_calls.len() - 1
+                        }
+                    };
+                    self.index_slots.insert(index, slot);
+                    return slot;
+                }
+            }
+            return current;
+        }
+        if let Some(id) = fragment.id.as_deref().filter(|id| !id.is_empty()) {
+            if let Some(pos) = self.tool_calls.iter().position(|slot| slot.id == id) {
+                return pos;
+            }
+            self.tool_calls.push(ToolCallBuild::default());
+            return self.tool_calls.len() - 1;
+        }
+        if self.tool_calls.is_empty() {
+            self.tool_calls.push(ToolCallBuild::default());
+        }
+        self.tool_calls.len() - 1
+    }
+
+    /// Consumes the accumulator into the final, merged [`ModelResponse`].
+    ///
+    /// Infallible: a tool call whose reassembled arguments cannot be parsed is
+    /// surfaced as an [`ToolCall::invalid`] call (raw arguments preserved) rather
+    /// than failing the whole stream, so the agent loop can feed the error back
+    /// to the model and the call still resolves instead of stalling the loop.
+    fn into_response(self) -> ModelResponse {
+        let mut content = Vec::new();
+        // Recompute the inline-tag split over the raw accumulated content so the
+        // terminal response is byte-identical to the non-streaming path, then
+        // combine it with side-channel reasoning. Both feed one leading
+        // `Thinking` block (side-channel leads) so it survives persistence and
+        // provider replay.
+        let (visible_text, reasoning) = match &self.reasoning_tags {
+            Some(config) => {
+                let (visible, inline) = extract_reasoning(config, &self.text);
+                let mut reasoning = self.reasoning.clone();
+                if !inline.is_empty() {
+                    if !reasoning.is_empty() {
+                        reasoning.push_str(config.separator());
+                    }
+                    reasoning.push_str(&inline);
+                }
+                (visible, reasoning)
+            }
+            None => (self.text.clone(), self.reasoning.clone()),
+        };
+        if !reasoning.is_empty() {
+            content.push(ContentBlock::Thinking {
+                text: reasoning,
+                signature: None,
+            });
+        }
+        if !visible_text.is_empty() {
+            content.push(ContentBlock::Text(visible_text));
+        }
+        // Enumerate over the full slot vector *before* filtering so the synthetic
+        // fallback id (`tool-{idx}`) matches the one streamed in `ToolCallDelta`
+        // items — filtering first would renumber the slots and desynchronize the
+        // delta ids from the final call ids.
+        let tool_calls = self
+            .tool_calls
+            .into_iter()
+            .enumerate()
+            .filter(|(_, b)| !b.name.is_empty() || !b.args.is_empty())
+            .map(|(idx, b)| tool_call_from_wire("openai stream", idx, &b.id, &b.name, &b.args))
+            .collect::<Vec<_>>();
+        let message = AssistantMessage {
+            id: self.id,
+            content,
+            tool_calls,
+            usage: self.usage,
+            // Stamped by the `sse_next` call site (which owns
+            // `SseState::provider`/`model`); this accumulator has no
+            // provider/model context of its own.
+            origin: None,
+        };
+        ModelResponse {
+            message,
+            usage: self.usage,
+            finish_reason: self.finish_reason,
+            raw: None,
+            resolved_model: None,
+            continue_turn: None,
+            served_from_cache: false,
+            correlation: None,
+            resolved_route: None,
+        }
+    }
+}
+
+/// Mutable driver state threaded through [`futures::stream::unfold`] while
+/// parsing the SSE byte stream into [`ModelStreamItem`]s.
+pub(super) struct SseState {
+    /// Raw response byte chunks (errors already mapped onto the crate error).
+    ///
+    /// The item type is [`bytes::Bytes`] — the buffer `reqwest` hands us — so
+    /// each network chunk is forwarded by reference count instead of being
+    /// copied into a fresh `Vec<u8>`. This type is crate-internal
+    /// (`pub(super)`), so `bytes` stays out of the public API.
+    pub(super) bytes: Pin<Box<dyn Stream<Item = Result<bytes::Bytes>> + Send>>,
+    /// Raw bytes received but not yet split into complete lines. Kept as bytes
+    /// (not a `String`) so a multi-byte UTF-8 character split across two network
+    /// chunks is reassembled before decoding, instead of being corrupted into
+    /// replacement characters by a premature lossy decode.
+    pub(super) buf: Vec<u8>,
+    /// Parsed items waiting to be yielded, in order.
+    pub(super) pending: VecDeque<ModelStreamItem>,
+    /// Provider-side response reconstruction.
+    pub(super) acc: OpenAiStreamAcc,
+    /// Provider family id used in normalized stream failures.
+    pub(super) provider: String,
+    /// Provider model id used in normalized stream failures.
+    pub(super) model: String,
+    /// Whether the leading [`ModelStreamItem::Started`] has been emitted.
+    pub(super) started: bool,
+    /// Whether the byte stream ended or `[DONE]` was seen.
+    pub(super) finished: bool,
+    /// Whether `[DONE]` or an index-zero finish reason was observed.
+    pub(super) completion_seen: bool,
+    /// Whether the terminal [`ModelStreamItem::Completed`]/[`ModelStreamItem::Failed`]
+    /// has been emitted.
+    pub(super) terminal_emitted: bool,
+}
+
+impl SseState {
+    /// Splits buffered bytes into complete newline-terminated lines and folds
+    /// each SSE `data:` payload into the accumulator. The trailing partial line
+    /// (if any) is kept in `buf` for the next chunk, so a `data:` line split
+    /// across chunk boundaries — including one that splits a multi-byte UTF-8
+    /// character — is only decoded once it is complete.
+    fn drain_lines(&mut self) {
+        // Scan with a moving start offset and drain the whole consumed prefix
+        // once at the end, rather than `drain(..=pos)` per line: the old form
+        // allocated a `Vec<u8>` per line and shifted the remaining buffer down
+        // on every line (O(n^2) over a chunk carrying many lines).
+        let mut start = 0;
+        while let Some(rel) = self.buf[start..].iter().position(|&b| b == b'\n') {
+            let end = start + rel;
+            // A complete line (bounded by the ASCII `\n`) is whole UTF-8, so a
+            // lossy decode here can no longer straddle a chunk boundary. The
+            // `into_owned` detaches the line from `buf` so `process_line` can
+            // borrow `self` mutably.
+            let line = String::from_utf8_lossy(&self.buf[start..end]).into_owned();
+            start = end + 1;
+            self.process_line(&line);
+            if self.terminal_emitted {
+                break;
+            }
+        }
+        if start > 0 {
+            self.buf.drain(..start);
+        }
+    }
+
+    /// Folds any bytes still buffered after the byte stream ends into a final
+    /// line. Providers that terminate the last SSE event without a trailing
+    /// newline would otherwise leave the final `data:` payload unprocessed.
+    fn drain_remaining(&mut self) {
+        if self.buf.is_empty() {
+            return;
+        }
+        let line = String::from_utf8_lossy(&self.buf).into_owned();
+        self.buf.clear();
+        self.process_line(&line);
+    }
+
+    /// Parses one SSE line and folds any resulting chunk into the accumulator.
+    fn process_line(&mut self, line: &str) {
+        if self.terminal_emitted {
+            return;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+        let Some(rest) = line.strip_prefix("data:") else {
+            return;
+        };
+        let payload = rest.trim();
+        if payload == "[DONE]" {
+            self.completion_seen = true;
+            self.finished = true;
+            // Defensive: normally already closed when the finish-reason chunk
+            // was ingested; a no-op if so.
+            let mut pending = std::mem::take(&mut self.pending);
+            self.acc.close_current_block(&mut pending);
+            self.pending = pending;
+            return;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(payload) else {
+            if payload.starts_with('{') || payload.starts_with('[') {
+                let item = self.provider_failure(ProviderError {
+                    message: "provider returned malformed SSE JSON".into(),
+                    retryable: false,
+                    raw: Some(Value::String(payload.into())),
+                    ..ProviderError::default()
+                });
+                self.pending.push_back(item);
+            }
+            return;
+        };
+        // Some providers stream a mid-stream `{"error": ...}` payload instead of
+        // a chunk. This also deserializes cleanly as an all-defaults
+        // `ChatCompletionChunk`, so it must be detected first and surfaced as a
+        // terminal failure rather than folded in as an empty chunk and swallowed.
+        if let Some(error) = value.get("error") {
+            let error = self.stream_error(error);
+            let item = self.provider_failure(error);
+            self.pending.push_back(item);
+            return;
+        }
+        if let Ok(chunk) = serde_json::from_value::<ChatCompletionChunk>(value) {
+            let mut pending = std::mem::take(&mut self.pending);
+            self.acc.ingest(chunk, &mut pending);
+            self.pending = pending;
+            if self.acc.finish_reason.is_some() {
+                self.completion_seen = true;
+            }
+        }
+    }
+
+    /// Builds a normalized [`ProviderError`] from a streamed `error` payload.
+    fn stream_error(&self, error: &Value) -> ProviderError {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|message| !message.trim().is_empty())
+            .unwrap_or("provider reported a stream error")
+            .to_string();
+        let code = error
+            .get("code")
+            .or_else(|| error.get("type"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let retryable = crate::failure::classify_provider_failure(None, code.as_deref(), &message)
+            .is_retryable();
+        ProviderError {
+            provider: self.provider.clone(),
+            model: Some(self.model.clone()),
+            code,
+            message,
+            retryable,
+            raw: Some(error.clone()),
+            ..ProviderError::default()
+        }
+    }
+
+    /// Builds the terminal failure item, discarding any block/message deltas
+    /// still queued: a failure must be the last item a consumer sees, not
+    /// followed by fragments parsed before it surfaced (mirrors the
+    /// Anthropic adapter's `provider_failure`). Populates
+    /// `partial_message`/`stop_reason` from whatever had accumulated so a
+    /// mid-stream failure does not discard already-streamed content.
+    fn provider_failure(&mut self, mut error: ProviderError) -> ModelStreamItem {
+        self.pending.clear();
+        self.finished = true;
+        self.terminal_emitted = true;
+        error.provider = self.provider.clone();
+        error.model = Some(self.model.clone());
+        error.stop_reason = self.acc.finish_reason.clone();
+        let partial = std::mem::take(&mut self.acc).into_response().message;
+        if !partial.content.is_empty() || !partial.tool_calls.is_empty() {
+            error.partial_message = Some(partial);
+        }
+        ModelStreamItem::ProviderFailed(error)
+    }
+}
+
+/// Advances the SSE [`SseState`] by one item for [`futures::stream::unfold`].
+pub(super) async fn sse_next(mut state: SseState) -> Option<(ModelStreamItem, SseState)> {
+    loop {
+        if let Some(item) = state.pending.pop_front() {
+            return Some((item, state));
+        }
+        if !state.started {
+            state.started = true;
+            return Some((ModelStreamItem::Started, state));
+        }
+        if state.finished {
+            if state.terminal_emitted {
+                return None;
+            }
+            state.terminal_emitted = true;
+            // Reconstruction is infallible: malformed tool arguments become an
+            // `ToolCall::invalid` call inside the response (not a stream
+            // failure), so the agent loop recovers instead of aborting the run.
+            let mut response = std::mem::take(&mut state.acc).into_response();
+            response.message.origin = Some(crate::message::MessageOrigin {
+                provider: state.provider.clone(),
+                api: CHAT_COMPLETIONS_API.to_string(),
+                model: state.model.clone(),
+            });
+            return Some((ModelStreamItem::Completed(response), state));
+        }
+        match state.bytes.next().await {
+            Some(Ok(chunk)) => {
+                state.buf.extend_from_slice(&chunk);
+                state.drain_lines();
+            }
+            Some(Err(error)) => {
+                let item = state.provider_failure(ProviderError {
+                    message: error.to_string(),
+                    retryable: true,
+                    ..ProviderError::default()
+                });
+                return Some((item, state));
+            }
+            None => {
+                // Drain any final `data:` line the provider sent without a
+                // trailing newline before terminating.
+                state.drain_remaining();
+                if state.terminal_emitted || state.completion_seen {
+                    state.finished = true;
+                } else {
+                    let item = state.provider_failure(ProviderError {
+                        message: "provider stream ended before a completion signal".into(),
+                        retryable: true,
+                        ..ProviderError::default()
+                    });
+                    return Some((item, state));
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,594 @@
+//! Request/response conversion between the provider-neutral harness
+//! types and the OpenAI wire format (`translate_message`,
+//! `parse_response`, usage conversion, reasoning-text extraction).
+//!
+//! Split out of `openai/mod.rs`; see that module's doc comment for the
+//! full provider overview.
+
+use super::*;
+
+/// Translates one harness [`Message`] into an OpenAI wire message.
+///
+/// User messages are rendered as OpenAI content-parts when they carry non-text
+/// blocks (for example images), so image inputs are actually sent rather than
+/// silently dropped. Blocks that have no faithful OpenAI representation return a
+/// [`Error::Validation`] instead of being discarded.
+pub(super) fn translate_message(message: &Message) -> Result<ChatMessageWire> {
+    let wire = match message {
+        Message::System(system) => ChatMessageWire {
+            role: "system".to_string(),
+            content: Some(MessageContentWire::Text(translate_text_content(
+                &system.content,
+            )?)),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        },
+        Message::User(user) => ChatMessageWire {
+            role: "user".to_string(),
+            content: Some(translate_user_content(&user.content)?),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        },
+        Message::Assistant(assistant) => {
+            let text = message.text();
+            // OpenAI accepts a null content for tool-call-only assistant turns.
+            let content = if text.is_empty() && !assistant.tool_calls.is_empty() {
+                None
+            } else {
+                Some(MessageContentWire::Text(text))
+            };
+            let tool_calls = assistant
+                .tool_calls
+                .iter()
+                .map(|call| {
+                    Ok(ToolCallWire {
+                        id: call.id.clone(),
+                        kind: "function".to_string(),
+                        function: FunctionCallWire {
+                            name: call.name.clone(),
+                            // OpenAI expects arguments as a JSON string.
+                            arguments: serde_json::to_string(&call.arguments)?,
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            ChatMessageWire {
+                role: "assistant".to_string(),
+                content,
+                tool_calls,
+                tool_call_id: None,
+            }
+        }
+        Message::Tool(tool) => ChatMessageWire {
+            role: "tool".to_string(),
+            content: Some(MessageContentWire::Text(translate_text_content(
+                &tool.content,
+            )?)),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool.tool_call_id.clone()),
+        },
+        // Callers filter `Message::Custom` out of the messages slice before
+        // calling this function; it is a host-side out-of-band record that is
+        // never sent to a provider.
+        Message::Custom(_) => {
+            return Err(Error::Validation(
+                "Message::Custom must be filtered before wire translation".to_string(),
+            ));
+        }
+    };
+    Ok(wire)
+}
+
+fn translate_text_content(blocks: &[ContentBlock]) -> Result<String> {
+    let mut text = String::new();
+    for block in blocks {
+        match block {
+            ContentBlock::Text(value) => text.push_str(value),
+            ContentBlock::Json(value) => text.push_str(&value.to_string()),
+            ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {}
+            ContentBlock::Image(_)
+            | ContentBlock::ProviderExtension(_)
+            | ContentBlock::Audio(_)
+            | ContentBlock::Video(_)
+            | ContentBlock::Document(_) => {
+                return Err(unrepresentable_block_error());
+            }
+        }
+    }
+    Ok(text)
+}
+
+/// Renders user-message content blocks into OpenAI message content.
+///
+/// Text-only content collapses to a plain string (preserving the historical wire
+/// shape). When an image block is present, content is emitted as OpenAI
+/// content-parts so the image is actually sent. JSON blocks are serialized into
+/// text parts. A [`ContentBlock::ProviderExtension`] has no faithful OpenAI
+/// representation, so it fails closed with a validation error rather than being
+/// silently dropped.
+pub(super) fn translate_user_content(blocks: &[ContentBlock]) -> Result<MessageContentWire> {
+    let has_media = blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Image(_) | ContentBlock::Audio(_)));
+
+    if !has_media {
+        // No image/audio: render as a single string, but still fail closed on
+        // blocks that cannot be represented.
+        let mut text = String::new();
+        for block in blocks {
+            match block {
+                ContentBlock::Text(t) => text.push_str(t),
+                ContentBlock::Json(value) => text.push_str(&value.to_string()),
+                ContentBlock::Image(_) | ContentBlock::Audio(_) => {
+                    unreachable!("guarded by has_media")
+                }
+                // OpenAI-compatible requests have no representation for
+                // reasoning blocks; they are dropped rather than failing the
+                // request (matching the assistant path, which serializes via
+                // `Message::text` and drops them naturally).
+                ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {}
+                // Chat Completions has no video or document input; fail
+                // closed rather than silently drop an attachment the caller
+                // expected to be sent.
+                ContentBlock::ProviderExtension(_)
+                | ContentBlock::Video(_)
+                | ContentBlock::Document(_) => {
+                    return Err(unrepresentable_block_error());
+                }
+            }
+        }
+        return Ok(MessageContentWire::Text(text));
+    }
+
+    let mut parts = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        match block {
+            ContentBlock::Text(t) => parts.push(ContentPartWire::Text {
+                text: t.clone(),
+                cache_control: None,
+            }),
+            ContentBlock::Json(value) => parts.push(ContentPartWire::Text {
+                text: value.to_string(),
+                cache_control: None,
+            }),
+            ContentBlock::Image(image) => parts.push(ContentPartWire::ImageUrl {
+                image_url: ImageUrlWire {
+                    url: image.url.clone(),
+                },
+            }),
+            ContentBlock::Audio(media) => parts.push(input_audio_part(media)?),
+            // See the string-rendering arm above: reasoning blocks have no
+            // OpenAI representation and are dropped, not failed.
+            ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => {}
+            ContentBlock::ProviderExtension(_)
+            | ContentBlock::Video(_)
+            | ContentBlock::Document(_) => {
+                return Err(unrepresentable_block_error());
+            }
+        }
+    }
+    Ok(MessageContentWire::Parts(parts))
+}
+
+/// Attaches explicit prompt-cache breakpoints to the last system message and
+/// the last user message, the two placements OpenRouter forwards to Anthropic.
+///
+/// Plain-string content is promoted to a single text part so the marker has a
+/// block to sit on; multi-part content gets the marker on its final text part.
+/// Messages without a text part (image-only) are left untouched.
+pub(super) fn apply_cache_breakpoints(messages: &mut [ChatMessageWire]) {
+    for role in ["system", "user"] {
+        if let Some(message) = messages.iter_mut().rev().find(|m| m.role == role) {
+            mark_last_text_part(message);
+        }
+    }
+}
+
+fn mark_last_text_part(message: &mut ChatMessageWire) {
+    let marker = json!({ "type": "ephemeral" });
+    match message.content.take() {
+        Some(MessageContentWire::Text(text)) => {
+            message.content = Some(MessageContentWire::Parts(vec![ContentPartWire::Text {
+                text,
+                cache_control: Some(marker),
+            }]));
+        }
+        Some(MessageContentWire::Parts(mut parts)) => {
+            if let Some(ContentPartWire::Text { cache_control, .. }) = parts
+                .iter_mut()
+                .rev()
+                .find(|part| matches!(part, ContentPartWire::Text { .. }))
+            {
+                *cache_control = Some(marker);
+            }
+            message.content = Some(MessageContentWire::Parts(parts));
+        }
+        None => {}
+    }
+}
+
+/// Error returned when a content block cannot be represented in an OpenAI
+/// request. Failing closed keeps the block from being silently dropped.
+pub(super) fn unrepresentable_block_error() -> Error {
+    Error::Validation(
+        "OpenAI request cannot represent a provider-extension content block; \
+         remove it or target the originating provider"
+            .to_string(),
+    )
+}
+
+/// Renders an audio [`crate::message::MediaRef`] as an OpenAI Chat
+/// Completions `input_audio` content part.
+///
+/// The wire format requires inline base64 data, so a [`MediaRef::Url`] or
+/// [`MediaRef::Path`] reference — which the harness never fetches or reads
+/// itself — fails closed rather than being silently dropped or sent
+/// malformed.
+fn input_audio_part(media: &crate::message::MediaRef) -> Result<ContentPartWire> {
+    use crate::message::MediaRef;
+    match media {
+        MediaRef::Base64 { data, media_type } => Ok(ContentPartWire::InputAudio {
+            input_audio: InputAudioWire {
+                data: data.clone(),
+                format: audio_format_from_media_type(media_type),
+            },
+        }),
+        MediaRef::Url { .. } | MediaRef::Path { .. } => Err(Error::Validation(
+            "OpenAI input_audio requires inline base64 data; resolve the \
+             audio reference to bytes before sending it"
+                .to_string(),
+        )),
+    }
+}
+
+/// Derives the OpenAI `input_audio.format` token (`"wav"`, `"mp3"`, …) from a
+/// MIME type such as `audio/wav`, defaulting to `"wav"` when unrecognized.
+fn audio_format_from_media_type(media_type: &str) -> String {
+    media_type
+        .rsplit('/')
+        .next()
+        .filter(|format| !format.is_empty())
+        .unwrap_or("wav")
+        .to_string()
+}
+
+/// Translates a [`ToolChoice`] into the OpenAI `tool_choice` JSON value.
+pub(super) fn translate_tool_choice(choice: &ToolChoice) -> Value {
+    match choice {
+        ToolChoice::Auto => json!("auto"),
+        ToolChoice::None => json!("none"),
+        ToolChoice::Required => json!("required"),
+        ToolChoice::Tool(name) => json!({
+            "type": "function",
+            "function": { "name": name }
+        }),
+    }
+}
+
+/// The degraded `response_format` wire form for a [`ResponseFormat::JsonObject`]
+/// request against a server that rejects `{"type":"json_object"}` (LM Studio,
+/// and likely other local OpenAI-compatible runtimes).
+///
+/// Maps to a permissive `json_schema` that constrains output to *some* JSON
+/// object without pinning its shape: an empty object schema with `strict:false`,
+/// so the model is free to choose keys. Verified accepted by LM Studio; a strict
+/// or fully-specified schema would over-constrain the free-form "just JSON"
+/// intent that [`ResponseFormat::JsonObject`] expresses.
+pub(super) fn degraded_json_object_format() -> Value {
+    json!({
+        "type": "json_schema",
+        "json_schema": {
+            "name": "json_object",
+            "schema": { "type": "object" },
+            "strict": false,
+        }
+    })
+}
+
+/// Translates a [`ResponseFormat`] into the OpenAI `response_format` JSON value.
+///
+/// Returns `None` for [`ResponseFormat::Text`] so the field is omitted entirely.
+pub(super) fn translate_response_format(format: &ResponseFormat) -> Option<Value> {
+    match format {
+        ResponseFormat::Text => None,
+        ResponseFormat::JsonObject => Some(json!({ "type": "json_object" })),
+        // OpenAI supports native structured output, so `Auto` maps to a JSON
+        // schema request directly. (The agent loop normally resolves `Auto`
+        // before reaching the provider; this keeps direct calls correct too.)
+        ResponseFormat::JsonSchema { name, schema } | ResponseFormat::Auto { name, schema } => {
+            Some(json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": name,
+                    "schema": schema,
+                    "strict": true,
+                }
+            }))
+        }
+    }
+}
+
+/// Parses an OpenAI response body (already decoded into a [`Value`]) into a
+/// provider-neutral [`ModelResponse`].
+///
+/// The first choice is used. The raw JSON is preserved in
+/// [`ModelResponse::raw`].
+///
+/// # Errors
+///
+/// Returns [`Error::Serialization`] if the value does not match the
+/// expected response shape, or [`Error::Model`] when no choices are
+/// present.
+/// Test-only shorthand for [`parse_chat_response`] with inline extraction off.
+/// The production paths call [`parse_chat_response`] directly with the model's
+/// configured [`ReasoningTagExtraction`].
+#[cfg(test)]
+pub(super) fn parse_response(value: Value) -> Result<ModelResponse> {
+    parse_chat_response(value, None)
+}
+
+/// Like [`parse_response`], but also normalizes reasoning into a leading
+/// [`ContentBlock::Thinking`] block. Side-channel reasoning
+/// (`reasoning_content` / `reasoning`) is always extracted; inline
+/// `<think>…</think>` tags in the visible content are extracted only when
+/// `reasoning_tags` is `Some`. When both are present, side-channel reasoning
+/// leads and inline reasoning follows, joined by the configured separator.
+pub(super) fn parse_chat_response(
+    value: Value,
+    reasoning_tags: Option<&ReasoningTagExtraction>,
+) -> Result<ModelResponse> {
+    let parsed: ChatCompletionResponse = serde_json::from_value(value.clone())?;
+
+    let choice = parsed
+        .choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Model("openai response contained no choices".to_string()))?;
+
+    let mut content = Vec::new();
+
+    // Side-channel reasoning first, normalized the same way as the stream path.
+    let mut reasoning = String::new();
+    for value in [choice.message.reasoning_content, choice.message.reasoning]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(fragment) = reasoning_value_text(value) {
+            reasoning.push_str(&fragment);
+        }
+    }
+
+    // Inline `<think>` extraction on the visible content, when enabled.
+    let visible = match (
+        choice.message.content.filter(|t| !t.is_empty()),
+        reasoning_tags,
+    ) {
+        (Some(text), Some(config)) => {
+            let (visible, inline) = extract_reasoning(config, &text);
+            if !inline.is_empty() {
+                if !reasoning.is_empty() {
+                    reasoning.push_str(config.separator());
+                }
+                reasoning.push_str(&inline);
+            }
+            visible
+        }
+        (Some(text), None) => text,
+        (None, _) => String::new(),
+    };
+
+    if !reasoning.is_empty() {
+        content.push(ContentBlock::Thinking {
+            text: reasoning,
+            signature: None,
+        });
+    }
+    if !visible.is_empty() {
+        content.push(ContentBlock::Text(visible));
+    }
+
+    let tool_calls = choice
+        .message
+        .tool_calls
+        .into_iter()
+        .enumerate()
+        .map(|(index, call)| {
+            // Local servers routinely omit `id`; synthesize the same
+            // `tool-{index}` fallback the streaming path uses so the agent loop
+            // can still correlate the tool result back to this call. An empty
+            // id is treated as absent.
+            tool_call_from_wire(
+                "openai response",
+                index,
+                &call.id,
+                &call.function.name,
+                &call.function.arguments,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let usage = parsed.usage.map(convert_usage);
+
+    let message = AssistantMessage {
+        id: parsed.id,
+        content,
+        tool_calls,
+        usage,
+        // Stamped by the transport call site, which knows the configured
+        // provider/model; this parser is provider-agnostic wire decoding.
+        origin: None,
+    };
+
+    Ok(ModelResponse {
+        message,
+        usage,
+        finish_reason: choice.finish_reason,
+        raw: Some(value),
+        resolved_model: None,
+        continue_turn: None,
+        served_from_cache: false,
+        correlation: None,
+        resolved_route: None,
+    })
+}
+
+/// Returns the effective call id for a streamed tool-call slot: the
+/// provider-assigned id when present, or a stable `tool-{slot}` fallback keyed to
+/// the slot's position so delta ids and the final call id always agree.
+pub(super) fn tool_call_id(slot: usize, id: &str) -> String {
+    if id.is_empty() {
+        static NEXT_SYNTHETIC_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(1);
+        let sequence = NEXT_SYNTHETIC_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        format!("tacall-{sequence}-{slot}")
+    } else {
+        id.chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .collect()
+    }
+}
+
+/// Builds a provider-neutral [`ToolCall`] from the wire fields, tolerating the
+/// defects small local models produce.
+///
+/// `slot` is the tool call's position in the response (used to synthesize a
+/// stable `tool-{slot}` id when the provider omits one — Ollama did so until
+/// v0.12.11). When the arguments cannot be parsed even after repair, the call is
+/// marked [`ToolCall::invalid`] with the raw arguments preserved rather than
+/// failing the whole model call: the agent loop feeds the error back to the
+/// model as a tool result so it can retry (mirroring LangChain and the AI SDK),
+/// and — because the call still resolves — a malformed argument blob can never
+/// become a never-resolving tool call that stalls the loop.
+pub(super) fn tool_call_from_wire(
+    context: &str,
+    slot: usize,
+    id: &str,
+    name: &str,
+    raw: &str,
+) -> ToolCall {
+    let call_id = tool_call_id(slot, id);
+    match parse_tool_arguments(raw) {
+        Ok(arguments) => ToolCall {
+            id: call_id,
+            name: name.to_string(),
+            arguments,
+            invalid: None,
+        },
+        Err(detail) => {
+            let reason = format!(
+                "{context} contained invalid JSON arguments for tool call `{call_id}` (`{name}`): {detail}; raw arguments: {raw:?}"
+            );
+            ToolCall::invalid(call_id, name, raw, reason)
+        }
+    }
+}
+
+/// Parses a tool-call arguments string into JSON, returning `Err(detail)` with a
+/// short human-readable reason when the string cannot be recovered.
+///
+/// This never fails the model call itself; the caller
+/// ([`tool_call_from_wire`]) turns an `Err` into an [`ToolCall::invalid`] call.
+pub(super) fn parse_tool_arguments(raw: &str) -> std::result::Result<Value, String> {
+    // Some OpenAI-compatible backends emit an empty arguments string for a
+    // zero-argument tool call. That is a well-formed "no arguments" payload, not
+    // malformed JSON, so map it to an empty object instead of failing the call.
+    if raw.trim().is_empty() {
+        return Ok(Value::Object(Map::new()));
+    }
+    match serde_json::from_str(raw) {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            // Gateways leak chat-template delimiters into `function.arguments`
+            // (`{"a":1}<tool_call|>`), small models emit relaxed JSON, streams
+            // get cut mid-object. One conservative repair ladder, owned by the
+            // protocol crate so every consumer shares it, runs only after the
+            // raw string has already failed to parse — well-formed arguments
+            // are never rewritten. It yields an object or nothing.
+            if let Some(value) = tinytools_agent::repair::json::recover_object(raw) {
+                return Ok(value);
+            }
+            Err(err.to_string())
+        }
+    }
+}
+
+/// Converts an OpenAI [`UsageWire`] into the harness-neutral [`Usage`].
+pub(super) fn convert_usage(wire: UsageWire) -> Usage {
+    // OpenAI-compatible endpoints sometimes omit `total_tokens` entirely
+    // (deserializes to `0` via `#[serde(default)]`); fall back to
+    // `prompt + completion` so `total_tokens` is never a misleading zero for
+    // a call that clearly consumed tokens.
+    let total_tokens = if wire.total_tokens > 0 {
+        wire.total_tokens
+    } else {
+        wire.prompt_tokens + wire.completion_tokens
+    };
+    Usage {
+        input_tokens: wire.prompt_tokens,
+        output_tokens: wire.completion_tokens,
+        total_tokens,
+        cache_read_tokens: wire
+            .prompt_tokens_details
+            .as_ref()
+            .map(|d| d.cached_tokens)
+            .unwrap_or(0)
+            .max(wire.prompt_cache_hit_tokens),
+        cache_creation_tokens: wire
+            .prompt_tokens_details
+            .as_ref()
+            .map(|details| details.cache_write_tokens)
+            .unwrap_or(0),
+        reasoning_tokens: wire
+            .completion_tokens_details
+            .map(|d| d.reasoning_tokens)
+            .unwrap_or(0),
+        charged_amount: None,
+        context_window_tokens: None,
+    }
+}
+
+/// Normalizes provider-specific reasoning/thinking payloads into text.
+///
+/// OpenAI-compatible gateways do not agree on this field: some stream a plain
+/// `reasoning_content` string, others use `reasoning`, and a few wrap text in
+/// an object/array. Preserve renderable text when obvious and ignore opaque
+/// shapes rather than failing an otherwise valid completion.
+pub(super) fn reasoning_value_text(value: Value) -> Option<String> {
+    match value {
+        Value::String(text) => (!text.is_empty()).then_some(text),
+        Value::Object(map) => ["text", "content", "summary"]
+            .into_iter()
+            .find_map(|key| map.get(key).and_then(Value::as_str))
+            .filter(|text| !text.is_empty())
+            .map(str::to_string),
+        Value::Array(values) => {
+            let text = values
+                .into_iter()
+                .filter_map(reasoning_value_text)
+                .collect::<String>();
+            (!text.is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+/// Extracts the reasoning/thinking text from a streamed delta, accepting the
+/// common OpenAI-compatible aliases.
+pub(super) fn delta_reasoning_text(delta: &mut ChunkDeltaWire) -> String {
+    let mut text = String::new();
+    for value in [delta.reasoning_content.take(), delta.reasoning.take()]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(fragment) = reasoning_value_text(value) {
+            text.push_str(&fragment);
+        }
+    }
+    text
+}

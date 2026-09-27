@@ -1,0 +1,26 @@
+[package]
+name = "tinyinference-providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Provider routing, authentication protocols, and error classification for TinyInference."
+documentation = "https://docs.rs/tinyinference-providers"
+readme = "../../README.md"
+keywords = ["llm", "inference", "oauth", "providers"]
+categories = ["api-bindings", "authentication"]
+
+[dependencies]
+base64 = "0.23"
+rand = "0.10"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

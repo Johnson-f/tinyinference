@@ -3003,16 +3003,29 @@ async fn sse_stream_error_string_codes_are_unchanged_and_non_status_numbers_are_
     assert_eq!(error.code.as_deref(), Some("rate_limit_exceeded"));
     assert!(error.retryable);
 
-    // A number that is not an HTTP status is not treated as one. A numeric
-    // `code` used to hide `type` entirely; `type` now stands in for it.
+    // A number outside the error range is not a status, and must not promote
+    // `type` into the code: that would switch off the message heuristics and
+    // retry a permanent auth failure.
     let error = stream_error_for(json!({
         "code": 70000,
-        "type": "server_error",
-        "message": "upstream exploded"
+        "type": "error",
+        "message": "Invalid API key"
     }))
     .await;
+    assert!(!error.retryable, "an invalid API key is permanent");
     assert_eq!(error.status, None);
-    assert_eq!(error.code.as_deref(), Some("server_error"));
+    assert_eq!(error.code, None);
+
+    let error = stream_error_for(json!({ "code": 70000, "message": "502 Bad Gateway" })).await;
+    assert_eq!(error.status, None);
+    assert!(
+        error.retryable,
+        "an upstream 502 in the message stays retryable"
+    );
+
+    // 2xx is never an error status.
+    let error = stream_error_for(json!({ "code": 200, "message": "upstream exploded" })).await;
+    assert_eq!(error.status, None);
 }
 
 #[test]

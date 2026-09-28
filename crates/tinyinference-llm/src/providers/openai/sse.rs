@@ -655,18 +655,21 @@ impl SseState {
             .unwrap_or("provider reported a stream error")
             .to_string();
         // OpenRouter-style providers send an HTTP status as a numeric `code`
-        // (`"code": 400`) inside an HTTP 200 stream. Read it as the status so a
-        // deterministic 4xx classifies non-retryable instead of falling through
-        // to the retryable default.
+        // (`"code": 400`) inside an HTTP 200 stream. Read an error-range number
+        // as the status so a deterministic 4xx classifies non-retryable instead
+        // of falling through to the retryable default.
         let status = error
             .get("code")
             .and_then(Value::as_u64)
             .and_then(|code| u16::try_from(code).ok())
-            .filter(|code| (100..=599).contains(code));
+            .filter(|code| (400..=599).contains(code));
+        // Unchanged: a numeric `code` yields no string code (and does not
+        // promote `type`), which keeps the classifier's message heuristics on
+        // for a non-status number.
         let code = error
             .get("code")
+            .or_else(|| error.get("type"))
             .and_then(Value::as_str)
-            .or_else(|| error.get("type").and_then(Value::as_str))
             .map(str::to_string);
         let retryable =
             crate::failure::classify_provider_failure(status, code.as_deref(), &message)

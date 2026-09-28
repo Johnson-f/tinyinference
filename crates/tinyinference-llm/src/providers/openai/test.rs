@@ -2954,6 +2954,80 @@ async fn sse_stream_mid_stream_error_preserves_partial_message() {
     ));
 }
 
+async fn stream_error_for(error: serde_json::Value) -> ProviderError {
+    let raw = vec![format!("data: {}\n\n", json!({ "error": error })).into_bytes()];
+    collect_sse(raw)
+        .await
+        .into_iter()
+        .find_map(|item| match item {
+            ModelStreamItem::ProviderFailed(error) => Some(error),
+            _ => None,
+        })
+        .expect("a stream error payload emits ProviderFailed")
+}
+
+#[tokio::test]
+async fn sse_stream_error_with_numeric_4xx_code_is_not_retryable() {
+    // OpenRouter sends the HTTP status as a numeric `code` inside an HTTP 200
+    // stream. A deterministic 400 must not be retried (openhuman#6724).
+    let error = stream_error_for(json!({
+        "code": 400,
+        "message": "Message at index 2 has role 'tool' but is not preceded by an assistant message with a matching tool_call"
+    }))
+    .await;
+    assert_eq!(error.status, Some(400));
+    assert_eq!(error.code, None);
+    assert!(
+        !error.retryable,
+        "a numeric 400 is a terminal request error"
+    );
+}
+
+#[tokio::test]
+async fn sse_stream_error_with_numeric_429_or_5xx_code_stays_retryable() {
+    for status in [429, 503] {
+        let error = stream_error_for(json!({ "code": status, "message": "try later" })).await;
+        assert_eq!(error.status, Some(status));
+        assert!(error.retryable, "numeric {status} stays retryable");
+    }
+}
+
+#[tokio::test]
+async fn sse_stream_error_string_codes_are_unchanged_and_non_status_numbers_are_ignored() {
+    let error = stream_error_for(json!({
+        "code": "rate_limit_exceeded",
+        "message": "Rate limit reached"
+    }))
+    .await;
+    assert_eq!(error.status, None);
+    assert_eq!(error.code.as_deref(), Some("rate_limit_exceeded"));
+    assert!(error.retryable);
+
+    // A number outside the error range is not a status, and must not promote
+    // `type` into the code: that would switch off the message heuristics and
+    // retry a permanent auth failure.
+    let error = stream_error_for(json!({
+        "code": 70000,
+        "type": "error",
+        "message": "Invalid API key"
+    }))
+    .await;
+    assert!(!error.retryable, "an invalid API key is permanent");
+    assert_eq!(error.status, None);
+    assert_eq!(error.code, None);
+
+    let error = stream_error_for(json!({ "code": 70000, "message": "502 Bad Gateway" })).await;
+    assert_eq!(error.status, None);
+    assert!(
+        error.retryable,
+        "an upstream 502 in the message stays retryable"
+    );
+
+    // 2xx is never an error status.
+    let error = stream_error_for(json!({ "code": 200, "message": "upstream exploded" })).await;
+    assert_eq!(error.status, None);
+}
+
 #[test]
 fn stamp_origin_records_provider_api_and_effective_model() {
     let model = OpenAiModel::new("key").with_model("gpt-4.1");

@@ -119,3 +119,5 @@ mod config_test;
 mod local_test;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod wire_test;

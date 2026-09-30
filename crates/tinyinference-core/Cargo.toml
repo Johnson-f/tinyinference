@@ -17,6 +17,9 @@ httpdate = { workspace = true }
 regex = { workspace = true }
 url = { workspace = true }
 
+[dev-dependencies]
+serde_json = { workspace = true }
+
 [features]
 default = []
 

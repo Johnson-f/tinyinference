@@ -136,14 +136,14 @@ fn redact_prefix(val: &str) -> &str {
     let mut end = 0;
     while let Some((idx, ch)) = chars.next() {
         end = idx + ch.len_utf8();
-        if ch == '\\' {
-            if let Some((escape_idx, escape)) = chars.next() {
-                end = escape_idx + escape.len_utf8();
-                if escape == 'u' {
-                    for _ in 0..4 {
-                        if let Some((hex_idx, hex)) = chars.next() {
-                            end = hex_idx + hex.len_utf8();
-                        }
+        if ch == '\\'
+            && let Some((escape_idx, escape)) = chars.next()
+        {
+            end = escape_idx + escape.len_utf8();
+            if escape == 'u' {
+                for _ in 0..4 {
+                    if let Some((hex_idx, hex)) = chars.next() {
+                        end = hex_idx + hex.len_utf8();
                     }
                 }
             }

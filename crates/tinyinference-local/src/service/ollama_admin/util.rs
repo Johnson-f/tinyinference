@@ -42,6 +42,27 @@ pub(crate) fn kill_pid_by_id(pid: u32) {
     }
 }
 
+/// Confirm that a live PID still runs the executable recorded in its marker.
+/// A marker PID can be reused after a crash, so health on the configured URL
+/// alone is not evidence that the process is ours.
+pub(crate) fn pid_matches_binary(pid: u32, binary_path: &str) -> bool {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    let target = Pid::from_u32(pid);
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::Some(&[target]), true);
+    let Some(executable) = sys.process(target).and_then(|process| process.exe()) else {
+        return false;
+    };
+    let recorded = std::path::Path::new(binary_path);
+    match (
+        std::fs::canonicalize(executable),
+        std::fs::canonicalize(recorded),
+    ) {
+        (Ok(actual), Ok(expected)) => actual == expected,
+        _ => executable == recorded,
+    }
+}
+
 /// Test connectivity to a user-supplied Ollama URL.
 ///
 /// Validates the URL via [`validate_ollama_url`], then issues a GET to

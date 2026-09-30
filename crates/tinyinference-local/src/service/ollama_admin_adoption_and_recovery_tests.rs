@@ -57,6 +57,17 @@ async fn wait_until_dead(pid: u32) -> bool {
     false
 }
 
+fn process_binary(pid: u32) -> std::path::PathBuf {
+    use sysinfo::{Pid, ProcessesToUpdate, System};
+    let target = Pid::from_u32(pid);
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::Some(&[target]), true);
+    sys.process(target)
+        .and_then(|process| process.exe())
+        .expect("process executable")
+        .to_path_buf()
+}
+
 #[tokio::test]
 async fn external_adoption_shutdown_leaves_external_process_running() {
     let _guard = crate::service::inference_test_guard();
@@ -205,7 +216,7 @@ async fn reclaim_orphan_kills_our_previous_daemon_when_healthy() {
     let marker_path = crate::service::paths::ollama_spawn_marker_path(&config);
     write_marker_at(
         &marker_path,
-        &OllamaSpawnMarker::new(pid, std::path::Path::new("test-stub")),
+        &OllamaSpawnMarker::new(pid, &process_binary(pid)),
     )
     .expect("write marker");
 
@@ -224,13 +235,44 @@ async fn reclaim_orphan_kills_our_previous_daemon_when_healthy() {
 }
 
 #[tokio::test]
+async fn reclaim_orphan_does_not_kill_reused_pid_when_healthy() {
+    let _guard = crate::service::inference_test_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let app = Router::new().route("/api/tags", get(|| async { Json(json!({ "models": [] })) }));
+    let base = spawn_mock(app).await;
+    let mut config = tmp_config(&tmp);
+    config.local_ai.base_url = Some(base);
+    let service = LocalAiService::new(&config);
+
+    let mut bystander = sleep_command().spawn().expect("spawn bystander");
+    let pid = bystander.id().expect("pid");
+    let marker_path = crate::service::paths::ollama_spawn_marker_path(&config);
+    write_marker_at(
+        &marker_path,
+        &OllamaSpawnMarker::new(pid, std::path::Path::new("/unrelated/ollama")),
+    )
+    .expect("write marker");
+
+    service.reclaim_orphan_if_ours(&config).await;
+
+    assert!(
+        pid_is_alive(pid),
+        "a reused unrelated pid must not be killed"
+    );
+    assert_eq!(
+        read_marker_at(&marker_path).map(|marker| marker.pid),
+        Some(pid)
+    );
+    let _ = bystander.kill().await;
+    let _ = bystander.wait().await;
+}
+
+#[tokio::test]
 async fn stale_marker_does_not_break_diagnostics() {
     let _guard = crate::service::inference_test_guard();
     let tmp = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("OPENHUMAN_OLLAMA_BASE_URL", "http://127.0.0.1:1");
-    }
-    let config = tmp_config(&tmp);
+    let mut config = tmp_config(&tmp);
+    config.local_ai.base_url = Some("http://127.0.0.1:1".to_string());
 
     let marker_path = crate::service::paths::ollama_spawn_marker_path(&config);
     write_marker_at(
@@ -253,8 +295,4 @@ async fn stale_marker_does_not_break_diagnostics() {
     );
     // Diagnostics is read-only: the marker is only consumed by the bootstrap.
     assert!(marker_path.exists());
-
-    unsafe {
-        std::env::remove_var("OPENHUMAN_OLLAMA_BASE_URL");
-    }
 }

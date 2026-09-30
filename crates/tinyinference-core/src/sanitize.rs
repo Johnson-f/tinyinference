@@ -98,7 +98,7 @@ pub fn scrub_secret_patterns(input: &str) -> String {
 
 /// Key/value credential shapes: `token: "…"`, `api_key=…`, `bearer: …`, etc.
 static SENSITIVE_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(token|api[_-]?key|password|secret|user[_-]?key|bearer|credential)["']?\s*[:=]\s*(?:"([^"]{8,})"|'([^']{8,})'|([a-zA-Z0-9_\-\.]{8,}))"#).unwrap()
+    Regex::new(r#"(?i)(token|api[_-]?key|password|secret|user[_-]?key|bearer|credential)["']?\s*[:=]\s*(?:"((?:\\.|[^"\\]){8,})"|'((?:\\.|[^'\\]){8,})'|([a-zA-Z0-9_+./=\-]{8,}))"#).unwrap()
 });
 
 /// Bare AWS access-key IDs — `AKIA…`/`ASIA…` followed by 16 base32 chars — which
@@ -115,6 +115,15 @@ static OPENAI_KEY_REGEX: LazyLock<Regex> =
 /// (`Authorization: Bearer <token>`) — the KV regex only catches `bearer:`/`=`.
 static BEARER_SPACE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(Bearer)\s+([A-Za-z0-9_\-\.=+/]{16,})").unwrap());
+
+/// Authorization headers can carry Basic credentials, which are encoded but
+/// remain recoverable and must be removed in full.
+static AUTHORIZATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)(authorization["']?\s*[:=]\s*["']?)(basic|bearer)\s+([A-Za-z0-9_\-\.=+/]{8,})"#,
+    )
+    .unwrap()
+});
 
 /// Preserve the first 4 chars of `val` for context, returning the redacted
 /// prefix (empty when the value is too short to safely reveal any of it).
@@ -174,8 +183,13 @@ pub fn scrub_credentials(input: &str) -> String {
     });
 
     // Space-separated `Bearer <token>`: keep the scheme word, redact the token.
-    BEARER_SPACE_REGEX
+    let stage_authorization = AUTHORIZATION_REGEX
         .replace_all(&stage_openai, |caps: &regex::Captures<'_>| {
+            format!("{}{} *[REDACTED]", &caps[1], &caps[2])
+        });
+
+    BEARER_SPACE_REGEX
+        .replace_all(&stage_authorization, |caps: &regex::Captures<'_>| {
             format!("{} *[REDACTED]", &caps[1])
         })
         .to_string()
@@ -306,6 +320,22 @@ mod tests {
             out.contains("[REDACTED]"),
             "redaction marker present: {out}"
         );
+    }
+
+    #[test]
+    fn scrubs_complete_basic_authorization_credentials() {
+        let out = scrub_credentials("Authorization: Basic dXNlcjpzdXBlclNlY3JldA==");
+        assert!(!out.contains("dXNlcjpzdXBlclNlY3JldA=="));
+        assert!(out.contains("Basic *[REDACTED]"));
+    }
+
+    #[test]
+    fn scrubs_plus_and_escaped_quotes_in_labelled_values() {
+        let plus = scrub_credentials("api_key=abcd+efgh/ijklmnop==");
+        assert!(!plus.contains("efgh/ijklmnop"));
+
+        let escaped = scrub_credentials(r#"token="abcd\"efghijklmnop""#);
+        assert!(!escaped.contains("efghijklmnop"));
     }
 
     #[test]

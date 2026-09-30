@@ -42,10 +42,12 @@ pub fn extract_first_emoji(text: &str) -> Option<String> {
     None
 }
 
+/// Whether `ch` is a regional-indicator symbol (half of a flag emoji).
 pub fn is_regional_indicator(ch: char) -> bool {
     ('\u{1F1E6}'..='\u{1F1FF}').contains(&ch)
 }
 
+/// Whether `ch` can begin (or, for joiners/selectors, extend) an emoji.
 pub fn is_emoji_start(ch: char) -> bool {
     matches!(ch,
         '\u{203C}' | '\u{2049}'       // exclamation marks

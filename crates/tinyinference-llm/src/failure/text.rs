@@ -165,10 +165,11 @@ pub fn parse_retry_after_secs(err: &str) -> Option<u64> {
                 .chars()
                 .take_while(|c| c.is_ascii_digit() || *c == '.')
                 .collect();
-            if let Ok(secs) = num_str.parse::<f64>() {
-                if secs.is_finite() && secs >= 0.0 {
-                    return Some(secs.ceil() as u64);
-                }
+            if let Ok(secs) = num_str.parse::<f64>()
+                && secs.is_finite()
+                && secs >= 0.0
+            {
+                return Some(secs.ceil() as u64);
             }
         }
     }

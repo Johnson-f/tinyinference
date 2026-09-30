@@ -177,6 +177,11 @@ pub fn scrub_credentials(input: &str) -> String {
             .or(caps.get(3))
             .or(caps.get(4))
             .expect("sensitive key-value match has a value");
+        // Already redacted: an unquoted value stops at `*`, so a second pass
+        // would match the kept prefix and stack another marker. Leave it.
+        if input[caps.get(0).expect("full match").end()..].starts_with("*[REDACTED]") {
+            return full_match.to_string();
+        }
         // Replace only the value span. Rebuilding the key from captures used
         // to add a second opening quote to JSON (`""token": ...`), making
         // tool results impossible to parse after redaction.
@@ -377,6 +382,12 @@ mod tests {
         assert!(scrubbed.contains("password=\"secr*[REDACTED]\""));
         assert!(!scrubbed.contains("abcdef"));
         assert!(!scrubbed.contains("secret123456"));
+    }
+
+    #[test]
+    fn scrub_credentials_is_idempotent() {
+        let once = scrub_credentials("token=aB3dEfGh1234 password: hunter2hunter2");
+        assert_eq!(scrub_credentials(&once), once);
     }
 
     #[test]

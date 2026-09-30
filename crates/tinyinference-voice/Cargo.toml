@@ -14,12 +14,18 @@ categories = ["api-bindings", "asynchronous"]
 [dependencies]
 base64 = "0.23"
 reqwest = { workspace = true, features = ["multipart"] }
+# Optional so hosts that publish a JSON schema for their config can derive it
+# on the API-style enums without this crate requiring schemars.
+schemars = { version = "1", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tinyinference-core = { version = "0.3.0", path = "../tinyinference-core" }
 tinyinference-local = { version = "0.3.0", path = "../tinyinference-local" }
 tokio = { workspace = true, features = ["fs", "io-util"] }
 uuid = { workspace = true }
+
+[features]
+schemars = ["dep:schemars"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

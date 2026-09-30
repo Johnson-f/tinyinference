@@ -68,7 +68,14 @@ pub fn structured_http_status(message: &str) -> Option<u16> {
     None
 }
 
-fn contains_business_limit(lower: &str) -> bool {
+/// Whether an already-lowercased rate-limit message is a **business** limit
+/// (plan, balance, quota, package) rather than a transient throttle.
+///
+/// Retrying a business limit is futile, so callers that hold only the flattened
+/// error text (a host that has already stringified the provider error) use this
+/// to decide whether to offer a retry. The provider-code scan matches the Z.AI
+/// business codes 1113 and 1311 as standalone integer tokens.
+pub fn contains_business_limit(lower: &str) -> bool {
     [
         "plan does not include",
         "doesn't include",

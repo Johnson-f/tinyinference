@@ -7,7 +7,7 @@ use crate::service::paths::ollama_spawn_marker_path;
 use crate::spawn_marker::{self, OllamaSpawnMarker};
 
 use super::super::LocalAiService;
-use super::util::kill_pid_by_id;
+use super::util::{kill_pid_by_id, pid_matches_binary};
 
 impl LocalAiService {
     pub(in crate::service) async fn ensure_ollama_server(
@@ -68,6 +68,14 @@ impl LocalAiService {
                 "[local_ai] ollama spawn marker pid={} alive but :11434 not healthy yet; \
                  deferring reclaim",
                 marker.pid
+            );
+            return;
+        }
+        if !pid_matches_binary(marker.pid, &marker.binary_path) {
+            log::warn!(
+                "[local_ai] ollama marker pid={} no longer matches recorded binary {}; leaving process untouched",
+                marker.pid,
+                marker.binary_path
             );
             return;
         }

@@ -133,7 +133,7 @@ pub fn is_provider_config_rejection_message(body: &str) -> bool {
         // DeepSeek account balance is exhausted. Body carries the upstream
         // `{"error":{"message":"Insufficient Balance",...}}` envelope.
         // Same user-billing class as the OpenRouter S5 shape above.
-        // NOTE: `is_budget_exhausted_message` (billing_error.rs) also
+        // NOTE: `is_budget_exhausted_message` (billing.rs) also
         // contains this phrase. In `expected_error_kind` (observability.rs)
         // this classifier is checked first (line 199 vs 205), so a re-
         // reported "Insufficient Balance" error routes to

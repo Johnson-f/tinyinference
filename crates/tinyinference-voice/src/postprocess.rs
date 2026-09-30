@@ -172,26 +172,35 @@ mod tests {
         assert_eq!(result, "raw text");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn slow_llm_times_out_and_falls_back_to_raw_text() {
+        let started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let handler_started = started.clone();
         let app = Router::new().route(
             "/v1/chat/completions",
-            post(|| async {
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                Json(chat_response("too late"))
+            post(move || {
+                let handler_started = handler_started.clone();
+                async move {
+                    handler_started.notify_one();
+                    std::future::pending::<Json<Value>>().await
+                }
             }),
         );
         let base = spawn_mock(app).await;
         let (runtime, service) = runtime_and_service(&base, "ready");
-
-        let result = cleanup_transcription(
-            &service,
-            &runtime,
-            "raw text",
-            None,
-            Duration::from_millis(100),
-        )
-        .await;
+        let cleanup = tokio::spawn(async move {
+            cleanup_transcription(
+                &service,
+                &runtime,
+                "raw text",
+                None,
+                Duration::from_millis(100),
+            )
+            .await
+        });
+        started.notified().await;
+        tokio::time::advance(Duration::from_millis(101)).await;
+        let result = cleanup.await.unwrap();
 
         assert_eq!(result, "raw text");
     }

@@ -98,7 +98,7 @@ pub fn scrub_secret_patterns(input: &str) -> String {
 
 /// Key/value credential shapes: `token: "…"`, `api_key=…`, `bearer: …`, etc.
 static SENSITIVE_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(token|api[_-]?key|password|secret|user[_-]?key|bearer|credential)["']?\s*[:=]\s*(?:"((?:\\.|[^"\\]){8,})"|'((?:\\.|[^'\\]){8,})'|([a-zA-Z0-9_+./=\-]{8,}))"#).unwrap()
+    Regex::new(r#"(?i)(token|api[_-]?key|password|secret|user[_-]?key|bearer|credential)["']?\s*[:=]\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([a-zA-Z0-9_+./=\-]+))"#).unwrap()
 });
 
 /// Bare AWS access-key IDs — `AKIA…`/`ASIA…` followed by 16 base32 chars — which
@@ -128,14 +128,32 @@ static AUTHORIZATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 /// Preserve the first 4 chars of `val` for context, returning the redacted
 /// prefix (empty when the value is too short to safely reveal any of it).
 fn redact_prefix(val: &str) -> &str {
-    if val.chars().count() > 4 {
-        match val.char_indices().nth(4) {
-            Some((idx, _)) => &val[..idx],
-            None => val,
-        }
-    } else {
-        ""
+    if val.chars().count() <= 4 {
+        return "";
     }
+    let mut chars = val.char_indices().peekable();
+    let mut logical_chars = 0;
+    let mut end = 0;
+    while let Some((idx, ch)) = chars.next() {
+        end = idx + ch.len_utf8();
+        if ch == '\\' {
+            if let Some((escape_idx, escape)) = chars.next() {
+                end = escape_idx + escape.len_utf8();
+                if escape == 'u' {
+                    for _ in 0..4 {
+                        if let Some((hex_idx, hex)) = chars.next() {
+                            end = hex_idx + hex.len_utf8();
+                        }
+                    }
+                }
+            }
+        }
+        logical_chars += 1;
+        if logical_chars == 4 {
+            break;
+        }
+    }
+    &val[..end]
 }
 
 /// Scrub credentials from tool output to prevent accidental exfiltration.
@@ -339,6 +357,18 @@ mod tests {
     }
 
     #[test]
+    fn redacts_short_labelled_values_and_keeps_json_escape_pairs_valid() {
+        let short = scrub_credentials(r#"{"api_key":"short"}"#);
+        assert!(!short.contains("short"));
+
+        let escaped = scrub_credentials(r#"{"token":"abc\\secret-value"}"#);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&escaped).expect("escaped JSON remains valid");
+        assert_eq!(parsed["token"], "abc\\*[REDACTED]");
+        assert!(!escaped.contains("secret-value"));
+    }
+
+    #[test]
     fn test_scrub_credentials() {
         let input = "API_KEY=sk-1234567890abcdef; token: 1234567890; password=\"secret123456\"";
         let scrubbed = scrub_credentials(input);
@@ -361,9 +391,10 @@ mod tests {
     }
 
     #[test]
-    fn scrub_credentials_short_values_not_redacted() {
-        // Values shorter than 8 chars are not redacted.
+    fn scrub_credentials_short_values_are_redacted() {
         let input = r#"api_key="short""#;
-        assert_eq!(scrub_credentials(input), input);
+        let output = scrub_credentials(input);
+        assert_eq!(output, r#"api_key="shor*[REDACTED]""#);
+        assert!(!output.contains("short"));
     }
 }

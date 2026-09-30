@@ -221,7 +221,10 @@ fn quota_exhausted_matches_common_phrasings() {
         "plan quota exceeded",
         "usage limit exceeded for this period",
     ] {
-        assert!(body_indicates_quota_exhausted(body), "should match: {body:?}");
+        assert!(
+            body_indicates_quota_exhausted(body),
+            "should match: {body:?}"
+        );
     }
 }
 
@@ -331,7 +334,10 @@ fn auth_key_error_body_matcher() {
         "no api key supplied",
         "Invalid or missing API key",
     ] {
-        assert!(body_indicates_auth_key_error(body), "should match: {body:?}");
+        assert!(
+            body_indicates_auth_key_error(body),
+            "should match: {body:?}"
+        );
     }
     assert!(!body_indicates_auth_key_error("quota exceeded"));
     // Provider-specific clauses (e.g. OpenRouter "user not found") stay in the host.

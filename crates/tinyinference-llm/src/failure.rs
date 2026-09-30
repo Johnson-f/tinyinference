@@ -233,9 +233,7 @@ pub fn body_indicates_provider_access_policy_denied(body: &str) -> bool {
 /// Status-agnostic; callers add their own status gate (`400`).
 pub fn body_indicates_moderation_rejection(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
-    lower.contains("message rejected")
-        || lower.contains("ombudsman")
-        || lower.contains("\"score\"")
+    lower.contains("message rejected") || lower.contains("ombudsman") || lower.contains("\"score\"")
 }
 
 /// Whether a provider error body is the known generic upstream envelope a

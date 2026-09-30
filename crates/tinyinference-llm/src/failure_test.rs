@@ -343,3 +343,138 @@ fn auth_key_error_body_matcher() {
     // Provider-specific clauses (e.g. OpenRouter "user not found") stay in the host.
     assert!(!body_indicates_auth_key_error("User not found."));
 }
+
+// ── String-level predicates and extractors (failure::text) ──────────────
+
+#[test]
+fn extract_provider_error_detail_pulls_openai_message() {
+    let raw = r#"custom_openai API error (404 Not Found): {"error":{"message":"Project `proj_X` does not have access to model `gpt-5.5`","type":"invalid_request_error","param":null,"code":"model_not_found"}}"#;
+    let detail = extract_provider_error_detail(raw).expect("expected JSON message");
+    assert!(
+        detail.contains("does not have access to model"),
+        "got: {detail}"
+    );
+    assert!(detail.contains("gpt-5.5"));
+}
+
+#[test]
+fn extract_provider_error_detail_returns_none_for_transport_errors() {
+    // Plain transport failure — no provider JSON body to quote. Surfacing
+    // raw transport text would leak internal infra URLs.
+    let raw = "error sending request for url (https://internal-api.example.invalid/openai/v1/chat/completions)";
+    assert!(extract_provider_error_detail(raw).is_none());
+}
+
+#[test]
+fn extract_provider_error_detail_decodes_standard_json_escapes() {
+    // The escaped solidus matters most in practice: provider bodies routinely
+    // carry URLs as `https:\/\/…`. `\r`, `\b` and `\f` complete the JSON
+    // standard set. Every one of them must decode — none may survive as a
+    // literal backslash.
+    let raw = r#"provider API error (400): {"error":{"message":"GET https:\/\/api.example.com\/v1\/models failed\r\nretry\tlater\b\f done"}}"#;
+    let detail = extract_provider_error_detail(raw).expect("expected JSON message");
+    assert!(
+        !detail.contains('\\'),
+        "no escape should survive decoding, got: {detail:?}"
+    );
+    assert!(
+        detail.contains("https://api.example.com/v1/models"),
+        "escaped solidus must decode, got: {detail:?}"
+    );
+    assert!(
+        detail.contains('\r'),
+        "carriage return must decode: {detail:?}"
+    );
+    assert!(detail.contains('\n'), "newline must decode: {detail:?}");
+    assert!(detail.contains('\t'), "tab must decode: {detail:?}");
+    assert!(
+        detail.contains('\u{8}'),
+        "backspace must decode: {detail:?}"
+    );
+    assert!(
+        detail.contains('\u{c}'),
+        "form feed must decode: {detail:?}"
+    );
+}
+
+#[test]
+fn extract_provider_error_detail_preserves_unknown_escapes() {
+    // Genuinely unsupported sequences keep both characters — an unhandled
+    // `\uXXXX` is better shown to the user as visible literal text than
+    // silently mangled into a character nobody asked for. `\"` and `\\`
+    // keep their existing meaning.
+    let raw = r#"provider API error: {"error":{"message":"quote \" hi and slash \\ then unicode \u263A and \q \s \&"}}"#;
+    let detail = extract_provider_error_detail(raw).expect("expected JSON message");
+    assert!(detail.contains("quote \" hi"), "got: {detail:?}");
+    assert!(detail.contains("slash \\ then"), "got: {detail:?}");
+    assert!(detail.contains(r"\u263A"), "got: {detail:?}");
+    assert!(detail.contains(r"\q"), "got: {detail:?}");
+    assert!(detail.contains(r"\s"), "got: {detail:?}");
+    assert!(detail.contains(r"\&"), "got: {detail:?}");
+}
+
+#[test]
+fn retry_after_secs_rounds_up_and_reads_camel_case_and_quoted_keys() {
+    assert_eq!(parse_retry_after_secs("Retry-After: 30"), Some(30));
+    assert_eq!(parse_retry_after_secs("retry_after 1.2"), Some(2));
+    assert_eq!(parse_retry_after_secs(r#"{"retry_after": 30}"#), Some(30));
+    assert_eq!(parse_retry_after_secs(r#"{"retryAfter": 7}"#), Some(7));
+    assert_eq!(parse_retry_after_secs("no hint here"), None);
+}
+
+#[test]
+fn text_predicates_match_their_anchors() {
+    assert!(is_empty_provider_response_text(
+        "model returned an empty response"
+    ));
+    assert!(!is_empty_provider_response_text(
+        "summarizer returned empty response"
+    ));
+    assert!(is_malformed_tool_history_text(
+        "role 'tool' must match a tool_call"
+    ));
+    assert!(is_connection_dropped_text("error sending request for url"));
+    assert!(!is_connection_dropped_text("request timed out"));
+    assert!(is_provider_request_rejected_text(
+        "openrouter api error (422 unprocessable)"
+    ));
+    assert!(!is_provider_request_rejected_text(
+        "offset 400 of 404 bytes"
+    ));
+    assert!(is_transient_unavailability_text("model is overloaded"));
+    assert!(!is_transient_unavailability_text(
+        "model unavailable on this endpoint"
+    ));
+    assert!(is_fallback_chain_exhausted(
+        "All providers/models failed. Attempts:"
+    ));
+}
+
+#[test]
+fn provider_name_is_extracted_from_api_error_prefix() {
+    assert_eq!(
+        extract_provider_name("OpenRouter API error (429 Too Many Requests): x"),
+        Some("openrouter".to_string())
+    );
+    assert_eq!(extract_provider_name("https://x API error (1)"), None);
+    assert_eq!(extract_provider_name("plain failure"), None);
+}
+
+#[test]
+fn provider_detail_is_quoted_below_the_summary() {
+    let raw = r#"p API error (400): {"error":{"message":"bad param"}}"#;
+    assert_eq!(
+        with_provider_detail("Summary.", raw),
+        "Summary.\n\n> bad param"
+    );
+    assert_eq!(with_provider_detail("Summary.", "boom"), "Summary.");
+}
+
+#[test]
+fn provider_detail_is_bounded_and_ellipsized() {
+    let long = "x".repeat(400);
+    let raw = format!(r#"{{"message":"{long}"}}"#);
+    let detail = extract_provider_error_detail(&raw).unwrap();
+    assert!(detail.chars().count() <= 303);
+    assert!(detail.ends_with("..."));
+}

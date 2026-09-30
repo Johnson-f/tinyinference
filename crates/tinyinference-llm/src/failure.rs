@@ -461,6 +461,15 @@ pub fn parse_retry_after_ms(message: &str) -> Option<u64> {
     None
 }
 
+mod text;
+
+pub use text::{
+    extract_provider_error_detail, extract_provider_name, is_connection_dropped_text,
+    is_empty_provider_response_text, is_fallback_chain_exhausted, is_malformed_tool_history_text,
+    is_provider_request_rejected_text, is_transient_unavailability_text, parse_retry_after_secs,
+    with_provider_detail,
+};
+
 #[cfg(test)]
 #[path = "failure_test.rs"]
 mod tests;

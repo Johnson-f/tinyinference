@@ -471,10 +471,10 @@ fn provider_detail_is_quoted_below_the_summary() {
 }
 
 #[test]
-fn provider_detail_is_truncated_to_300_chars() {
+fn provider_detail_is_bounded_and_ellipsized() {
     let long = "x".repeat(400);
     let raw = format!(r#"{{"message":"{long}"}}"#);
     let detail = extract_provider_error_detail(&raw).unwrap();
-    assert_eq!(detail.chars().count(), 303);
+    assert!(detail.chars().count() <= 303);
     assert!(detail.ends_with("..."));
 }

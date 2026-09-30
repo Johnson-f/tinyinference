@@ -139,10 +139,11 @@ fn read_u64(v: &Value, keys: &[&str]) -> Option<u64> {
         if let Some(n) = v.get(*k).and_then(Value::as_u64) {
             return Some(n);
         }
-        if let Some(f) = v.get(*k).and_then(Value::as_f64) {
-            if f.is_finite() && f >= 0.0 {
-                return Some(f as u64);
-            }
+        if let Some(f) = v.get(*k).and_then(Value::as_f64)
+            && f.is_finite()
+            && f >= 0.0
+        {
+            return Some(f as u64);
         }
     }
     None
@@ -157,10 +158,11 @@ fn read_ms(v: &Value, ms_keys: &[&str], sec_keys: &[&str]) -> Option<u64> {
         return Some(ms);
     }
     for k in sec_keys {
-        if let Some(f) = v.get(*k).and_then(Value::as_f64) {
-            if f.is_finite() && f >= 0.0 {
-                return Some((f * 1000.0).round() as u64);
-            }
+        if let Some(f) = v.get(*k).and_then(Value::as_f64)
+            && f.is_finite()
+            && f >= 0.0
+        {
+            return Some((f * 1000.0).round() as u64);
         }
         if let Some(n) = v.get(*k).and_then(Value::as_u64) {
             return Some(n.saturating_mul(1000));

@@ -94,3 +94,24 @@ fn retry_after_accepts_integer_and_fractional_seconds() {
     );
     assert_eq!(parse_retry_after_ms("Retry-After: inf"), None);
 }
+
+#[test]
+fn business_limit_text_is_recognised_without_a_status() {
+    for message in [
+        "your plan does not include this model",
+        "insufficient_balance",
+        "out of credits",
+        "error code 1311 returned",
+        "1113",
+    ] {
+        assert!(contains_business_limit(message), "{message}");
+    }
+    for message in [
+        "too many requests",
+        "rate limit exceeded",
+        "code 13110 upstream",
+        "code 21113",
+    ] {
+        assert!(!contains_business_limit(message), "{message}");
+    }
+}

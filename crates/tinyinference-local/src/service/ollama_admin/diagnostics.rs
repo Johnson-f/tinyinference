@@ -259,6 +259,7 @@ impl LocalAiService {
         }))
     }
 
+    #[cfg(test)]
     pub(in crate::service) async fn list_models_at(
         &self,
         base: &str,

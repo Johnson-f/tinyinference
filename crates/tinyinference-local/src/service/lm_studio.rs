@@ -238,17 +238,4 @@ impl LocalAiService {
         );
         Some(payload.models)
     }
-
-    pub(in crate::service) async fn has_lm_studio_model(
-        &self,
-        config: &Config,
-        model: &str,
-    ) -> Result<bool, String> {
-        let target = model.trim().to_ascii_lowercase();
-        Ok(self
-            .list_lm_studio_models(config)
-            .await?
-            .into_iter()
-            .any(|m| m.name.to_ascii_lowercase() == target))
-    }
 }

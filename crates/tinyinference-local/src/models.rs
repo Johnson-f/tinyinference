@@ -35,8 +35,6 @@ pub trait LocalModelConfig {
     fn local_stt_model_id(&self) -> &str;
     /// Configured text-to-speech voice ID.
     fn local_tts_voice_id(&self) -> &str;
-    /// Configured model quantization label.
-    fn local_quantization(&self) -> &str;
 }
 
 const VISION_MODEL_SUGGESTIONS: &[&str] =
@@ -358,16 +356,6 @@ pub fn effective_tts_voice_id(config: &impl LocalModelConfig) -> String {
         "en_US-lessac-medium".to_string()
     } else {
         raw.to_string()
-    }
-}
-
-/// Resolve and normalize the configured quantization label.
-pub fn effective_quantization(config: &impl LocalModelConfig) -> String {
-    let raw = config.local_quantization().trim();
-    if raw.is_empty() {
-        "q4".to_string()
-    } else {
-        raw.to_ascii_lowercase()
     }
 }
 

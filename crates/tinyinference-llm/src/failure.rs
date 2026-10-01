@@ -468,8 +468,9 @@ pub use text::{
     is_codex_token_expired_text, is_connection_dropped_text, is_context_length_text,
     is_empty_provider_response_text, is_fallback_chain_exhausted, is_malformed_tool_history_text,
     is_model_unavailable_text, is_payment_required_text, is_provider_request_rejected_text,
-    is_rate_limit_text, is_recoverable_failure_text, is_server_error_text, is_timeout_text, is_transient_unavailability_text,
-    is_vision_unsupported_text, parse_retry_after_secs, with_provider_detail,
+    is_rate_limit_text, is_recoverable_failure_text, is_server_error_text, is_timeout_text,
+    is_transient_unavailability_text, is_vision_unsupported_text, parse_retry_after_secs,
+    with_provider_detail,
 };
 
 #[cfg(test)]

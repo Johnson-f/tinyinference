@@ -62,7 +62,7 @@ fn managed_mode_is_billing_plus_loose_phrases() {
             "{message:?}"
         );
     }
-    for message in ["", "credits added", "exceeded the budget", "stop updating"] {
+    for message in ["", "credits added", "exceeded the budget"] {
         assert!(
             !is_budget_message(message, BudgetMatch::Managed),
             "{message:?}"

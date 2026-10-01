@@ -140,8 +140,8 @@ fn enforce_mvp_chat_allowlist(resolved: &str) -> String {
 /// (`MVP_ALLOWED_VISION_MODELS = &[""]`) that matched only the empty string and
 /// so rewrote *every* configured vision model to `""`, including capable ones —
 /// which is how a nameless model pull once came about. Both that bug and its
-/// replacement failed the same way: they
-/// answered "which model?" with something the user never asked for.
+/// replacement failed the same way: they answered "which model?" with
+/// something the user never asked for.
 fn enforce_vision_capability(resolved: &str) -> crate::Result<String> {
     if tinyinference_llm::model::model_id_supports_vision(resolved) {
         return Ok(resolved.to_string());

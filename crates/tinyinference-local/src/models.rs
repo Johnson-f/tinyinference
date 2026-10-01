@@ -6,8 +6,7 @@
 //! `effective_embedding_model_id` intentionally bypass that allowlist for LM
 //! Studio so user-managed model IDs (e.g. an LM-Studio-served
 //! `text-embedding-bge-m3`) are passed through unchanged; the generic
-//! `effective_*` helpers still enforce the MVP tier restriction for
-//! OpenHuman-managed Ollama assets.
+//! `effective_*` helpers still enforce the MVP allowlist for Ollama model IDs.
 
 use super::profile::{LocalProviderKind, kind_from_provider_string};
 
@@ -140,7 +139,8 @@ fn enforce_mvp_chat_allowlist(resolved: &str) -> String {
 /// An earlier incarnation of this guard was an allowlist
 /// (`MVP_ALLOWED_VISION_MODELS = &[""]`) that matched only the empty string and
 /// so rewrote *every* configured vision model to `""`, including capable ones —
-/// which is how a nameless model pull once came about. Both that bug and its replacement failed the same way: they
+/// which is how a nameless model pull once came about. Both that bug and its
+/// replacement failed the same way: they
 /// answered "which model?" with something the user never asked for.
 fn enforce_vision_capability(resolved: &str) -> crate::Result<String> {
     if tinyinference_llm::model::model_id_supports_vision(resolved) {

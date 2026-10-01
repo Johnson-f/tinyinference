@@ -14,7 +14,6 @@ struct TestLocalAiConfig {
     embedding_model_id: String,
     stt_model_id: String,
     tts_voice_id: String,
-    quantization: String,
 }
 
 impl LocalModelConfig for TestConfig {
@@ -38,9 +37,6 @@ impl LocalModelConfig for TestConfig {
     }
     fn local_tts_voice_id(&self) -> &str {
         &self.local_ai.tts_voice_id
-    }
-    fn local_quantization(&self) -> &str {
-        &self.local_ai.quantization
     }
 }
 
@@ -464,13 +460,11 @@ fn ollama_embedding_path_still_enforces_allowlist_after_lm_studio_bypass() {
 }
 
 #[test]
-fn stt_tts_and_quantization_defaults_are_applied() {
+fn stt_and_tts_defaults_are_applied() {
     let mut config = test_config();
     config.local_ai.stt_model_id.clear();
     config.local_ai.tts_voice_id.clear();
-    config.local_ai.quantization = "Q5_K_M".to_string();
 
     assert_eq!(effective_stt_model_id(&config), "ggml-base-q5_1.bin");
     assert_eq!(effective_tts_voice_id(&config), "en_US-lessac-medium");
-    assert_eq!(effective_quantization(&config), "q5_k_m");
 }

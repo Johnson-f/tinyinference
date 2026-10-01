@@ -318,11 +318,8 @@ fn resolve_vision_model_id_errors_on_a_chat_only_model_instead_of_substituting()
     );
 }
 
-/// The auto-pull half of P1: several callers feed
-/// `effective_vision_model_id` straight into `ensure_ollama_model_available`,
-/// so a substituted id here is exactly how an unchosen model got downloaded.
-/// Empty keeps those paths off it (and `ensure_ollama_model_available`
-/// rejects a blank id rather than pulling a nameless model).
+/// #5146 P1: a chat-only model must not resolve to a substitute the user
+/// never chose; it resolves to nothing usable instead.
 #[test]
 fn effective_vision_model_id_is_empty_for_a_chat_only_model() {
     let mut config = test_config();

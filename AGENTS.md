@@ -13,7 +13,7 @@ The public crates are `crates/tinyinference-core` and
 `crates/tinyinference-local`. Core owns provider-neutral inference and hosted
 transports; local depends on core and owns hardware, process, filesystem, and
 local-runtime integrations. Keep feature areas in module directories with
-`mod.rs`, `types.rs`, and `test.rs` where the area is large. Centralize
+`mod.rs`, `types.rs`, and `mod_tests.rs` where the area is large. Centralize
 deliberate exports in each `src/lib.rs`. Keep provider wire types private unless
 callers must construct them.
 
@@ -53,8 +53,7 @@ applicable. Keep Markdown files at 500 lines or fewer.
 
 ## Tests
 
-Keep unit tests beside their module in dedicated `test.rs` files or an existing
-module-local test submodule. Tests must not depend on network access, wall-clock
+Keep unit tests beside their module in sibling `*_tests.rs` files, never an inline `mod tests` block. Tests must not depend on network access, wall-clock
 timing, ambient credentials, or mutable process environment. Use synthetic HTTP
 payloads and byte streams for provider behavior. Add tests for serialization,
 stream reconstruction, malformed tool calls, error classification, and vector
@@ -65,3 +64,28 @@ dimension contracts whenever those surfaces change.
 Keep commits small and focused. Pull requests should summarize API/behavior
 changes and list exact verification commands. Open ready-for-review PRs against
 `tinyhumansai/tinyinference`; use drafts only for genuinely incomplete work.
+
+## Tests live in `*_tests.rs` files
+
+- Unit tests are never inline. Do not write a `#[cfg(test)] mod tests { ... }`
+  block in a source file. Put the tests in a sibling `<module>_tests.rs`
+  (`mod_tests.rs` beside a `mod.rs`, `lib_tests.rs` beside `lib.rs`) and declare
+  it at the bottom of the module:
+
+  ```rust
+  #[cfg(test)]
+  #[path = "foo_tests.rs"]
+  mod tests;
+  ```
+
+- The test file starts with `use super::*;` and carries no `#[cfg(test)]` of its
+  own. It is still a child module, so it reaches private items exactly as an
+  inline module did.
+- Name test files `<module>_tests.rs`; a second group for the same module is
+  `<module>_<topic>_tests.rs`. Never `test.rs`, `tests.rs` or `<module>_test.rs`.
+- Integration tests stay in the crate's `tests/` directory.
+- OpenHuman's `scripts/externalize-inline-tests.mjs <repo-root> --write` moves
+  inline test modules out mechanically; without `--write` it only reports.
+- Existing `test.rs` and `<module>_test.rs` files predate this rule. Rename each
+  to `<module>_tests.rs` (keep its `mod` name, add the `#[path]` attribute) the
+  next time you touch it.

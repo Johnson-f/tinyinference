@@ -35,9 +35,9 @@ const STRICT_NEEDLES: &[&str] = &[
 ///
 /// | mode | normalisation | matches |
 /// | --- | --- | --- |
-/// | `Billing` | ASCII lowercase | substring of any [`BILLING_PHRASES`] entry |
+/// | `Billing` | ASCII lowercase | substring of any `BILLING_PHRASES` entry |
 /// | `Managed` | lowercase, runs of `-`, `_` and whitespace folded to one space | `budget`..`exceed`, `top up`, `add`..`credits`, `out of credits`, `no remaining credits` (the first and third allow any text between the words), **or** `Billing` on the original message |
-/// | `Strict` | lowercase, every non-alphanumeric byte to a space | a [`STRICT_NEEDLES`] entry as a whole-word sequence, so `stop updating` never reads as `top up` |
+/// | `Strict` | lowercase, every non-alphanumeric byte to a space | a `STRICT_NEEDLES` entry as a whole-word sequence, so `stop updating` never reads as `top up` |
 ///
 /// `Strict` deliberately does **not** include the `Billing`-only phrases
 /// (`insufficient budget`, `insufficient balance`, `credit balance is too low`):

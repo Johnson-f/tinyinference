@@ -27,11 +27,21 @@ fn ignores_non_budget_messages() {
 
 #[test]
 fn billing_mode_matches_only_the_billing_phrases() {
-    for message in ["Insufficient budget", "please add credits", "Credit balance is too low"] {
-        assert!(is_budget_message(message, BudgetMatch::Billing), "{message:?}");
+    for message in [
+        "Insufficient budget",
+        "please add credits",
+        "Credit balance is too low",
+    ] {
+        assert!(
+            is_budget_message(message, BudgetMatch::Billing),
+            "{message:?}"
+        );
     }
     for message in ["top up your wallet", "out of credits", "budget will exceed"] {
-        assert!(!is_budget_message(message, BudgetMatch::Billing), "{message:?}");
+        assert!(
+            !is_budget_message(message, BudgetMatch::Billing),
+            "{message:?}"
+        );
     }
 }
 
@@ -47,10 +57,16 @@ fn managed_mode_is_billing_plus_loose_phrases() {
         "You're out_of_credits",
         "no remaining credits",
     ] {
-        assert!(is_budget_message(message, BudgetMatch::Managed), "{message:?}");
+        assert!(
+            is_budget_message(message, BudgetMatch::Managed),
+            "{message:?}"
+        );
     }
     for message in ["", "credits added", "exceeded the budget", "stop updating"] {
-        assert!(!is_budget_message(message, BudgetMatch::Managed), "{message:?}");
+        assert!(
+            !is_budget_message(message, BudgetMatch::Managed),
+            "{message:?}"
+        );
     }
 }
 
@@ -63,7 +79,10 @@ fn strict_mode_needs_whole_word_needles_and_skips_billing_only_phrases() {
         "{\"error\":\"out_of credits\"}",
         "add credits now",
     ] {
-        assert!(is_budget_message(message, BudgetMatch::Strict), "{message:?}");
+        assert!(
+            is_budget_message(message, BudgetMatch::Strict),
+            "{message:?}"
+        );
     }
     for message in [
         "stop updating",
@@ -73,6 +92,9 @@ fn strict_mode_needs_whole_word_needles_and_skips_billing_only_phrases() {
         "budget was exceeded",
         "",
     ] {
-        assert!(!is_budget_message(message, BudgetMatch::Strict), "{message:?}");
+        assert!(
+            !is_budget_message(message, BudgetMatch::Strict),
+            "{message:?}"
+        );
     }
 }

@@ -509,5 +509,19 @@ fn status_word_predicates_match_the_phrases_the_chat_ladder_branches_on() {
     assert!(is_codex_token_expired_text(
         "codex authentication token is expired"
     ));
-    assert!(!is_codex_token_expired_text("authentication token is expired"));
+    assert!(!is_codex_token_expired_text(
+        "authentication token is expired"
+    ));
+}
+
+#[test]
+fn recoverable_failure_text_matches_transient_markers_only() {
+    assert!(is_recoverable_failure_text("Request TIMED OUT"));
+    assert!(is_recoverable_failure_text(
+        "dns error: failed to lookup address"
+    ));
+    assert!(is_recoverable_failure_text("HTTP 503 Service Unavailable"));
+    assert!(is_recoverable_failure_text("Too Many Requests"));
+    assert!(!is_recoverable_failure_text("permission denied"));
+    assert!(!is_recoverable_failure_text("exit code 1"));
 }

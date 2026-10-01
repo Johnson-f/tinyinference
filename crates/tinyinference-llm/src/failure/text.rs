@@ -367,3 +367,36 @@ pub fn is_vision_unsupported_text(lower: &str) -> bool {
 pub fn is_codex_token_expired_text(lower: &str) -> bool {
     lower.contains("codex authentication token is expired")
 }
+
+/// Failures that are informative and plausibly recoverable by changing the next
+/// action (longer timeout, smaller batch, different network retry/fallback)
+/// rather than by abandoning the turn. Deliberately marker-based and
+/// conservative: it only controls breaker headroom, never converts a failure
+/// into success. Callers pass the raw result; it is lowercased here.
+pub fn is_recoverable_failure_text(result: &str) -> bool {
+    let lower = result.to_ascii_lowercase();
+    [
+        "timed out",
+        "timeout",
+        "deadline exceeded",
+        "temporarily unavailable",
+        "temporary failure",
+        "connection reset",
+        "connection refused",
+        "connection closed",
+        "connection aborted",
+        "network is unreachable",
+        "host is unreachable",
+        "dns error",
+        "failed to lookup address",
+        "failed to resolve",
+        "rate limit",
+        "too many requests",
+        "retry after",
+        "503 service unavailable",
+        "502 bad gateway",
+        "504 gateway timeout",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}

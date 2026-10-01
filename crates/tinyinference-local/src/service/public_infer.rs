@@ -219,7 +219,7 @@ impl LocalAiService {
             return Err("local ai is disabled".to_string());
         }
 
-        if !matches!(self.status.lock().state.as_str(), "ready") {
+        if !matches!(self.status.lock().state.as_str(), "ready" | "degraded") {
             self.bootstrap(config).await;
         }
 
@@ -351,7 +351,7 @@ impl LocalAiService {
         if !config.local_ai.runtime_enabled {
             return Err("local ai is disabled".to_string());
         }
-        if !matches!(self.status.lock().state.as_str(), "ready") {
+        if !matches!(self.status.lock().state.as_str(), "ready" | "degraded") {
             self.bootstrap(config).await;
         }
 

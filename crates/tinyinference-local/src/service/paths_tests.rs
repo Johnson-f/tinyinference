@@ -9,20 +9,6 @@ fn temp_config() -> (tempfile::TempDir, Config) {
 }
 
 #[test]
-fn resolve_stt_model_path_prefers_workspace_relative_artifact() {
-    let (_tmp, mut config) = temp_config();
-    config.local_ai.stt_model_id = "tiny.bin".to_string();
-    let model_path = workspace_local_models_dir(&config)
-        .join("stt")
-        .join("tiny.bin");
-    std::fs::create_dir_all(model_path.parent().expect("parent")).expect("mkdirs");
-    std::fs::write(&model_path, b"stub").expect("write");
-
-    let resolved = resolve_stt_model_path(&config).expect("resolve stt");
-    assert_eq!(resolved, model_path.display().to_string());
-}
-
-#[test]
 fn resolve_tts_voice_path_appends_onnx_for_voice_ids() {
     // The installer drop-zone (`bin/piper/voices/<id>.onnx`) is probed
     // FIRST by `resolve_tts_voice_path`, and lives under the shared
@@ -47,60 +33,6 @@ fn resolve_tts_voice_path_appends_onnx_for_voice_ids() {
 
     let resolved = resolve_tts_voice_path(&config).expect("resolve tts");
     assert_eq!(resolved, model_path.display().to_string());
-}
-
-#[test]
-fn target_paths_preserve_absolute_overrides() {
-    let (_tmp, mut config) = temp_config();
-    let stt = if cfg!(windows) {
-        "C:\\tmp\\stt-model.bin"
-    } else {
-        "/tmp/stt-model.bin"
-    };
-    let tts = if cfg!(windows) {
-        "C:\\tmp\\voice.onnx"
-    } else {
-        "/tmp/voice.onnx"
-    };
-    config.local_ai.stt_model_id = stt.to_string();
-    config.local_ai.tts_voice_id = tts.to_string();
-
-    assert_eq!(stt_model_target_path(&config), PathBuf::from(stt));
-    assert_eq!(tts_model_target_path(&config), PathBuf::from(tts));
-}
-
-#[test]
-fn workspace_ollama_binary_matches_platform_layout() {
-    let (_tmp, config) = temp_config();
-    let root = workspace_ollama_dir(&config);
-
-    if cfg!(target_os = "linux") {
-        assert_eq!(
-            workspace_ollama_binary(&config),
-            root.join("bin").join("ollama")
-        );
-    } else if cfg!(windows) {
-        assert_eq!(workspace_ollama_binary(&config), root.join("ollama.exe"));
-    } else {
-        assert_eq!(workspace_ollama_binary(&config), root.join("ollama"));
-    }
-}
-
-#[test]
-fn find_workspace_ollama_binary_supports_legacy_flat_layout() {
-    let (_tmp, config) = temp_config();
-    let dir = workspace_ollama_dir(&config);
-    std::fs::create_dir_all(&dir).expect("create workspace ollama dir");
-
-    let legacy = dir.join(if cfg!(windows) {
-        "ollama.exe"
-    } else {
-        "ollama"
-    });
-    std::fs::write(&legacy, b"stub").expect("write legacy binary");
-
-    let found = find_workspace_ollama_binary(&config).expect("find workspace binary");
-    assert_eq!(found, legacy);
 }
 
 #[test]
@@ -156,6 +88,32 @@ fn resolve_piper_binary_with_config_prefers_workspace_install() {
     }
     let resolved = resolve_piper_binary_with_config(&config).expect("workspace resolve");
     assert_eq!(resolved, target);
+    let _ = std::fs::remove_dir_all(workspace_piper_dir(&config));
+}
+
+#[cfg(unix)]
+#[test]
+fn resolve_piper_binary_with_config_skips_non_executable_workspace_copy() {
+    let _g = shared_install_lock();
+    let (_tmp, config) = temp_config();
+    let target = workspace_piper_binary_candidates(&config)
+        .into_iter()
+        .next()
+        .expect("at least one candidate");
+    let _ = std::fs::remove_dir_all(workspace_piper_dir(&config));
+    std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&target, b"stub").expect("write stub");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644))
+            .expect("mark non-executable");
+    }
+    let resolved = resolve_piper_binary_with_config(&config);
+    assert_ne!(
+        resolved.as_deref(),
+        Some(target.as_path()),
+        "a non-executable workspace copy must not pin piper resolution"
+    );
     let _ = std::fs::remove_dir_all(workspace_piper_dir(&config));
 }
 

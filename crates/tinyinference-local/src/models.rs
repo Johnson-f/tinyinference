@@ -1,12 +1,10 @@
 //! Local model and voice identifier resolution.
 //!
-//! Most `effective_*` functions enforce the MVP model allowlist: if a resolved
-//! model ID is not in the allowlist the function silently falls back to the
-//! default MVP model and logs a warning. `effective_chat_model_id` and
-//! `effective_embedding_model_id` intentionally bypass that allowlist for LM
-//! Studio so user-managed model IDs (e.g. an LM-Studio-served
-//! `text-embedding-bge-m3`) are passed through unchanged; the generic
-//! `effective_*` helpers still enforce the MVP allowlist for Ollama model IDs.
+//! Models are pulled and served by the user's own runtime, so a configured
+//! model ID is passed through unchanged. Defaults apply only when no ID is
+//! configured (and, for Ollama, to a few legacy pre-Ollama chat values that
+//! are not Ollama tags at all). User-managed runtimes (LM Studio, MLX, OMLX,
+//! OpenAI-compatible) get no Ollama-branded default.
 
 use super::profile::{LocalProviderKind, kind_from_provider_string};
 
@@ -63,55 +61,6 @@ pub const DEFAULT_LOW_VISION_MODEL: &str = "moondream:1.8b-v2-q4_K_S";
 /// Default Ollama embedding model for managed local inference.
 pub const DEFAULT_OLLAMA_EMBED_MODEL: &str = "bge-m3";
 
-/// Chat models allowed in the current local Ollama build.
-/// Any resolved chat model ID not listed here is redirected to `MVP_DEFAULT_CHAT_MODEL`.
-///
-/// Every id here must be pullable from the public Ollama library as written —
-/// an entry that does not resolve makes the allowlist silently redirect the
-/// user back to the default, or leaves them with a model that `ollama pull`
-/// cannot fetch (GH #5055).
-///
-/// `preset_chat_models_are_allowlisted_and_resolve_unchanged` pins the
-/// chat models hosts commonly suggest to users.
-///
-/// Verified against the live registry (#5146 §1.3):
-/// `GET https://registry.ollama.ai/v2/library/<name>/manifests/<tag>` returns
-/// `200` for all five entries. Note that `gemma4` **does** now exist on the
-/// Ollama library (it did not when #5055 removed it) and is multimodal at
-/// every size, which is why the 16 GB+ tier can use one model for chat and
-/// vision. `gemma3n:e4b-it-q8_0` stays allowlisted for back-compat with users
-/// who already pulled it under the previous default.
-const MVP_ALLOWED_CHAT_MODELS: &[&str] = &[
-    "gemma3:270m-it-qat",
-    "gemma3:1b-it-qat",
-    "gemma3:4b-it-qat",
-    "gemma4:e4b-it-q8_0",
-    "gemma3n:e4b-it-q8_0",
-];
-const MVP_DEFAULT_CHAT_MODEL: &str = "gemma3:1b-it-qat";
-
-/// Embedding models allowed in MVP (2–4 GB tier uses all-minilm).
-// bge-m3 (1024-dim, 8192-token context) is the canonical local embedder
-// for memory tree's fixed on-disk format. all-minilm (384-dim) is kept
-// for back-compat with users who pulled it under an older default, but
-// new selections should default to bge-m3.
-const MVP_ALLOWED_EMBEDDING_MODELS: &[&str] = &["bge-m3", "all-minilm:latest"];
-
-fn enforce_mvp_chat_allowlist(resolved: &str) -> String {
-    let lower = resolved.to_ascii_lowercase();
-    for allowed in MVP_ALLOWED_CHAT_MODELS {
-        if lower == allowed.to_ascii_lowercase() {
-            return resolved.to_string();
-        }
-    }
-    tracing::warn!(
-        resolved,
-        fallback = MVP_DEFAULT_CHAT_MODEL,
-        "[local_ai] chat model not in MVP allowlist, redirecting to default"
-    );
-    MVP_DEFAULT_CHAT_MODEL.to_string()
-}
-
 /// Guarantee a vision request never reaches a chat-only model: `Ok(id)` when
 /// `resolved` accepts image input, `Err(actionable message)` when it does not.
 ///
@@ -159,22 +108,8 @@ fn enforce_vision_capability(resolved: &str) -> crate::Result<String> {
     )))
 }
 
-fn enforce_mvp_embedding_allowlist(resolved: &str) -> String {
-    let lower = resolved.to_ascii_lowercase();
-    for allowed in MVP_ALLOWED_EMBEDDING_MODELS {
-        if lower == allowed.to_ascii_lowercase() {
-            return resolved.to_string();
-        }
-    }
-    tracing::warn!(
-        resolved,
-        fallback = MVP_ALLOWED_EMBEDDING_MODELS[0],
-        "[local_ai] embedding model not in MVP allowlist, redirecting to default"
-    );
-    MVP_ALLOWED_EMBEDDING_MODELS[0].to_string()
-}
-
-/// Resolve the effective local chat model, enforcing managed-runtime limits.
+/// Resolve the effective local chat model: the configured ID unchanged, or the
+/// Ollama default when none is configured.
 pub fn effective_chat_model_id(config: &impl LocalModelConfig) -> String {
     if is_user_managed_runtime(config.local_provider_name()) {
         let model_id = raw_chat_model_id(config);
@@ -192,7 +127,7 @@ pub fn effective_chat_model_id(config: &impl LocalModelConfig) -> String {
         config.local_legacy_model_id().trim()
     };
     if raw.is_empty() {
-        return enforce_mvp_chat_allowlist(DEFAULT_OLLAMA_MODEL);
+        return DEFAULT_OLLAMA_MODEL.to_string();
     }
     let lower = raw.to_ascii_lowercase();
     if lower.ends_with(".gguf")
@@ -200,9 +135,9 @@ pub fn effective_chat_model_id(config: &impl LocalModelConfig) -> String {
         || lower == "qwen3-1.7b"
         || lower == "qwen2.5-1.5b-instruct"
     {
-        return enforce_mvp_chat_allowlist(DEFAULT_OLLAMA_MODEL);
+        return DEFAULT_OLLAMA_MODEL.to_string();
     }
-    enforce_mvp_chat_allowlist(raw)
+    raw.to_string()
 }
 
 fn raw_chat_model_id(config: &impl LocalModelConfig) -> String {
@@ -300,13 +235,8 @@ pub fn resolve_vision_model_id(config: &impl LocalModelConfig) -> crate::Result<
 pub fn effective_embedding_model_id(config: &impl LocalModelConfig) -> String {
     let raw = config.local_embedding_model_id().trim();
 
-    // LM Studio serves embeddings under user-managed names (e.g.
-    // `text-embedding-bge-m3`) that are deliberately outside the
-    // OpenHuman-managed Ollama MVP allowlist. Mirror `effective_chat_model_id`
-    // and pass a configured id through unchanged so the user can target the
-    // exact served model instead of having it rewritten back to `bge-m3`
-    // (#3920). The allowlist remains in force for the managed Ollama path
-    // below, where the ids are OpenHuman-pulled assets.
+    // User-managed runtimes get no Ollama-branded default (#3920): an empty
+    // id stays empty so diagnostics surface the missing model.
     if is_user_managed_runtime(config.local_provider_name()) {
         if raw.is_empty() {
             tracing::debug!(
@@ -323,9 +253,9 @@ pub fn effective_embedding_model_id(config: &impl LocalModelConfig) -> String {
     }
 
     if raw.is_empty() {
-        return enforce_mvp_embedding_allowlist(DEFAULT_OLLAMA_EMBED_MODEL);
+        return DEFAULT_OLLAMA_EMBED_MODEL.to_string();
     }
-    enforce_mvp_embedding_allowlist(raw)
+    raw.to_string()
 }
 
 /// Resolve the configured speech-to-text model or its default.

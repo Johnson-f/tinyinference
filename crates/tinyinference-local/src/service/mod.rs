@@ -6,7 +6,6 @@
 //! process: the user installs and runs their runtime and pulls their models.
 
 #![allow(
-    dead_code,
     missing_docs,
     clippy::await_holding_lock,
     clippy::field_reassign_with_default,

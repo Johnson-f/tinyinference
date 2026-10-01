@@ -148,14 +148,6 @@ fn is_executable_file(_path: &std::path::Path) -> bool {
     true
 }
 
-/// Workspace dir for downloaded STT model files. Lives next to the Ollama dir
-/// so users with a single shared root see all local-AI artifacts together. The
-/// `whisper` leaf is retained verbatim so an existing install keeps resolving
-/// after the bundled whisper.cpp engine was removed.
-pub(crate) fn workspace_whisper_dir(config: &Config) -> PathBuf {
-    shared_root_dir(config).join("bin").join("whisper")
-}
-
 /// Workspace dir for Piper artifacts.
 pub fn workspace_piper_dir(config: &Config) -> PathBuf {
     shared_root_dir(config).join("bin").join("piper")
@@ -190,54 +182,6 @@ pub(crate) fn workspace_piper_binary_candidates(config: &Config) -> Vec<PathBuf>
         root.join("piper").join(bin_name),
         root.join("bin").join(bin_name),
     ]
-}
-
-pub(crate) fn resolve_stt_model_path(config: &Config) -> Result<String, String> {
-    let id = model_ids::effective_stt_model_id(config);
-    resolve_stt_model_path_by_id(&id, config)
-}
-
-/// Resolve the on-disk GGML model path for an explicit `model_id`.
-///
-/// Used when the caller has already computed the effective model id (e.g.
-/// from a per-request override) and needs the path without re-reading the
-/// config default. Probes the same candidate set as `resolve_stt_model_path`.
-pub(crate) fn resolve_stt_model_path_by_id(id: &str, config: &Config) -> Result<String, String> {
-    let path = PathBuf::from(id);
-    if path.is_file() {
-        return Ok(path.display().to_string());
-    }
-    // The voice installer places the GGML model file under
-    // `workspace_whisper_dir(config)/ggml-<size>.bin`, but the legacy
-    // local-AI flow stages STT models under `workspace_local_models_dir`.
-    // Probe both so a user who installed via the new Install button
-    // doesn't need to redo anything.
-    let legacy = workspace_local_models_dir(config).join("stt").join(id);
-    if legacy.is_file() {
-        return Ok(legacy.display().to_string());
-    }
-    let installer = workspace_whisper_dir(config).join(id);
-    if installer.is_file() {
-        return Ok(installer.display().to_string());
-    }
-    // Also probe the ggml-prefixed form for short ids like `tiny`.
-    let bare = id.trim().strip_prefix("whisper-").unwrap_or(id.trim());
-    let normalized = if bare.starts_with("ggml-") {
-        bare.to_string()
-    } else {
-        format!("ggml-{bare}.bin")
-    };
-    let normalized_path = workspace_whisper_dir(config).join(&normalized);
-    if normalized_path.is_file() {
-        return Ok(normalized_path.display().to_string());
-    }
-    Err(format!(
-        "STT model not found. Expected one of '{}', '{}', '{}', '{}'",
-        path.display(),
-        legacy.display(),
-        installer.display(),
-        normalized_path.display()
-    ))
 }
 
 pub fn resolve_tts_voice_path(config: &Config) -> Result<String, String> {
@@ -281,32 +225,6 @@ pub fn resolve_tts_voice_path(config: &Config) -> Result<String, String> {
         installer_display,
         legacy.display()
     ))
-}
-
-pub(crate) fn stt_model_target_path(config: &Config) -> PathBuf {
-    let id = model_ids::effective_stt_model_id(config);
-    let path = PathBuf::from(&id);
-    if path.is_absolute() {
-        path
-    } else {
-        workspace_local_models_dir(config).join("stt").join(id)
-    }
-}
-
-pub(crate) fn tts_model_target_path(config: &Config) -> PathBuf {
-    let voice_id = model_ids::effective_tts_voice_id(config);
-    let path = PathBuf::from(&voice_id);
-    if path.is_absolute() {
-        return path;
-    }
-    let filename = if voice_id.ends_with(".onnx") {
-        voice_id
-    } else {
-        format!("{voice_id}.onnx")
-    };
-    workspace_local_models_dir(config)
-        .join("tts")
-        .join(filename)
 }
 
 #[cfg(test)]

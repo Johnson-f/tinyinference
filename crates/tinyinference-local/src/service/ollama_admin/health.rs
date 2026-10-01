@@ -1,9 +1,5 @@
-use std::path::PathBuf;
-
-use crate::install::find_system_ollama_binary;
 use crate::ollama::{ollama_base_url, ollama_base_url_from_override};
 use crate::service::RuntimeConfig as Config;
-use crate::service::paths::{find_workspace_ollama_binary, workspace_ollama_binary};
 
 use super::super::LocalAiService;
 
@@ -95,32 +91,6 @@ impl LocalAiService {
         self.ollama_healthy_at(&ollama_base_url()).await
     }
 
-    /// Filesystem-only precondition: is *any* Ollama binary discoverable?
-    ///
-    /// This is the cheapest possible check — no process spawns, no HTTP, no
-    /// timeouts. Callers that need to decide whether it's even worth talking
-    /// to `/api/tags` should consult this first. Returning `false` here means
-    /// the UI should drive the user to install Ollama instead of polling for
-    /// model state that can never appear.
-    pub(in crate::service) fn ollama_binary_present(&self, config: &Config) -> bool {
-        if let Some(ref custom) = config.local_ai.ollama_binary_path
-            && PathBuf::from(custom).is_file()
-        {
-            return true;
-        }
-        if let Some(env_path) = std::env::var("OLLAMA_BIN")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-            && PathBuf::from(env_path).is_file()
-        {
-            return true;
-        }
-        if find_workspace_ollama_binary(config).is_some() {
-            return true;
-        }
-        find_system_ollama_binary().is_some()
-    }
-
     /// Quick check that the Ollama runner can actually exec models against the given URL.
     pub(in crate::service) async fn ollama_runner_ok_at(&self, base_url: &str) -> bool {
         let resp = self
@@ -156,118 +126,6 @@ impl LocalAiService {
             }
             _ => false,
         }
-    }
-
-    /// Kill any running Ollama server process so we can restart with the correct binary.
-    /// Kill the `ollama serve` daemon openhuman itself spawned, if any.
-    ///
-    /// **No-op when openhuman never spawned a daemon** (i.e. it adopted an
-    /// externally-managed one via the `ollama_healthy()` fast-path, or no
-    /// daemon was started at all). This avoids the friendly-fire bug from
-    /// the previous blanket `taskkill /IM ollama.exe` / `pkill -f` which
-    /// would terminate any Ollama on the host — including ones started by
-    /// the user's CLI, tray app, or other tooling.
-    ///
-    /// External daemons can be replaced/restarted by the user; killing
-    /// them out from under their owner is never the right move from inside
-    /// a desktop app.
-    pub(in crate::service) async fn kill_ollama_server(&self) {
-        let maybe_child = self.owned_ollama.lock().take();
-        let Some(mut child) = maybe_child else {
-            log::debug!(
-                "[local_ai] kill_ollama_server: no openhuman-owned daemon; \
-                 leaving any external Ollama on :11434 untouched"
-            );
-            return;
-        };
-        let pid = child.id().unwrap_or(0);
-        match child.kill().await {
-            Ok(()) => {
-                log::info!("[local_ai] killed openhuman-owned ollama serve (pid={pid})");
-                // Reap so the OS doesn't keep the zombie around on Unix.
-                let _ = child.wait().await;
-            }
-            Err(err) => {
-                log::warn!("[local_ai] kill of owned ollama serve pid={pid} failed: {err}");
-            }
-        }
-        // Give the kernel a moment to release :11434 before any imminent
-        // respawn races for the same port.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    }
-
-    /// Public shutdown hook for the Tauri exit lifecycle.
-    ///
-    /// Kills the openhuman-owned `ollama serve` (if any) and clears the
-    /// spawn marker so the next launch doesn't try to reclaim a daemon
-    /// that's already dead. Idempotent — safe to call from both
-    /// `RunEvent::ExitRequested` and window-close paths.
-    pub async fn shutdown_owned_ollama(&self, config: &Config) {
-        self.kill_ollama_server().await;
-        crate::spawn_marker::clear_marker_at(&crate::service::paths::ollama_spawn_marker_path(
-            config,
-        ));
-    }
-
-    pub(in crate::service) fn resolve_binary_path(&self, config: &Config) -> Option<String> {
-        // 1. Explicit user-configured path in Settings.
-        if let Some(ref custom) = config.local_ai.ollama_binary_path {
-            let p = PathBuf::from(custom);
-            if p.is_file() {
-                log::debug!(
-                    "[local_ai] resolve_binary_path: using configured path {}",
-                    p.display()
-                );
-                return Some(custom.clone());
-            }
-        }
-
-        // 2. OLLAMA_BIN env var (mirrors bootstrap detection).
-        if let Some(from_env) = std::env::var("OLLAMA_BIN")
-            .ok()
-            .filter(|v| !v.trim().is_empty())
-        {
-            let p = PathBuf::from(&from_env);
-            if p.is_file() {
-                log::debug!(
-                    "[local_ai] resolve_binary_path: using OLLAMA_BIN {}",
-                    p.display()
-                );
-                return Some(from_env);
-            }
-        }
-
-        // 3. Workspace-managed binary installed by the app.
-        let workspace_bin = workspace_ollama_binary(config);
-        if workspace_bin.is_file() {
-            log::debug!(
-                "[local_ai] resolve_binary_path: using workspace binary {}",
-                workspace_bin.display()
-            );
-            return Some(workspace_bin.display().to_string());
-        }
-
-        // 4. Bare `ollama` on PATH — same as bootstrap's `which ollama` step.
-        let binary_name = if cfg!(windows) {
-            "ollama.exe"
-        } else {
-            "ollama"
-        };
-        if let Some(path_var) = std::env::var_os("PATH") {
-            for dir in std::env::split_paths(&path_var) {
-                let candidate = dir.join(binary_name);
-                if candidate.is_file() {
-                    log::debug!(
-                        "[local_ai] resolve_binary_path: found on PATH at {}",
-                        candidate.display()
-                    );
-                    return Some(candidate.display().to_string());
-                }
-            }
-        }
-
-        // 5. Platform-specific well-known locations (macOS bundles, Windows, Linux).
-        crate::install::find_system_ollama_binary().map(|p| p.display().to_string())
     }
 
     pub(in crate::service) async fn has_model(&self, model: &str) -> Result<bool, String> {

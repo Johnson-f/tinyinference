@@ -478,3 +478,36 @@ fn provider_detail_is_bounded_and_ellipsized() {
     assert!(detail.chars().count() <= 303);
     assert!(detail.ends_with("..."));
 }
+
+#[test]
+fn status_word_predicates_match_the_phrases_the_chat_ladder_branches_on() {
+    assert!(is_rate_limit_text("rate limit reached"));
+    assert!(is_rate_limit_text("http 429"));
+    assert!(!is_rate_limit_text("rate cap"));
+    assert!(is_timeout_text("request timed out"));
+    assert!(is_timeout_text("timeout"));
+    assert!(!is_timeout_text("time out"));
+    assert!(is_auth_error_text("401"));
+    assert!(is_auth_error_text("invalid api key"));
+    assert!(is_auth_error_text("unauthorized"));
+    assert!(!is_auth_error_text("forbidden"));
+    assert!(is_payment_required_text("402"));
+    assert!(is_payment_required_text("payment required"));
+    assert!(is_payment_required_text("insufficient balance"));
+    assert!(!is_payment_required_text("insufficient budget"));
+    assert!(is_server_error_text("internal server error"));
+    assert!(is_server_error_text("503"));
+    assert!(!is_server_error_text("502 bad gateway"));
+    assert!(is_context_length_text("context length exceeded"));
+    assert!(is_context_length_text("context token cap"));
+    assert!(!is_context_length_text("length only"));
+    assert!(is_model_unavailable_text("model foo not found"));
+    assert!(is_model_unavailable_text("the model does not have access"));
+    assert!(!is_model_unavailable_text("not found"));
+    assert!(is_vision_unsupported_text("capability=vision"));
+    assert!(is_vision_unsupported_text("does not support vision input"));
+    assert!(is_codex_token_expired_text(
+        "codex authentication token is expired"
+    ));
+    assert!(!is_codex_token_expired_text("authentication token is expired"));
+}

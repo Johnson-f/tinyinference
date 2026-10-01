@@ -1,41 +1,50 @@
-use crate::device::DeviceProfile;
+//! Service construction, status snapshots, and the endpoint probe.
+//!
+//! `bootstrap` only *probes* the user's configured endpoint. It never spawns a
+//! runtime process and never asks the runtime to pull a model.
+
+use crate::lm_studio::lm_studio_base_url;
 use crate::models as model_ids;
-use crate::presets::VisionMode;
-use crate::provider::{LocalAiProvider, provider_from_name};
+use crate::ollama::ollama_base_url_from_override;
+use crate::provider::{
+    LocalAiProvider, ModelDiscoveryApi, model_discovery_api, provider_from_name,
+};
 use crate::service::RuntimeConfig as Config;
-use crate::service::presets_adapter;
 use crate::status::LocalAiStatus;
 
 use super::LocalAiService;
+use super::ollama_admin::OllamaHealthStatus;
+
+/// Result of probing the configured endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EndpointProbe {
+    /// The endpoint answered its model listing promptly.
+    Ready,
+    /// The endpoint is alive but slow, or answered with an error.
+    Degraded(String),
+    /// Nothing answered at the endpoint.
+    Unreachable(String),
+}
 
 impl LocalAiService {
     pub fn new(config: &Config) -> Self {
         let model_id = model_ids::effective_chat_model_id(config);
-        let vision_model_id = model_ids::effective_vision_model_id(config);
-        let embedding_model_id = model_ids::effective_embedding_model_id(config);
-        let vision_mode = vision_mode_str(config);
         let provider = provider_from_name(&config.local_ai.provider);
         Self {
             status: parking_lot::Mutex::new(LocalAiStatus {
                 state: "idle".to_string(),
                 model_id: model_id.clone(),
-                chat_model_id: model_id.clone(),
-                vision_model_id: vision_model_id.clone(),
-                embedding_model_id: embedding_model_id.clone(),
+                chat_model_id: model_id,
+                vision_model_id: model_ids::effective_vision_model_id(config),
+                embedding_model_id: model_ids::effective_embedding_model_id(config),
                 stt_model_id: model_ids::effective_stt_model_id(config),
                 tts_voice_id: model_ids::effective_tts_voice_id(config),
-                quantization: model_ids::effective_quantization(config),
                 vision_state: initial_vision_state(config),
-                vision_mode,
+                vision_mode: vision_mode_str(config),
                 embedding_state: "idle".to_string(),
                 stt_state: "idle".to_string(),
                 tts_state: "idle".to_string(),
                 provider: provider.as_str().to_string(),
-                download_progress: None,
-                downloaded_bytes: None,
-                total_bytes: None,
-                download_speed_bps: None,
-                eta_seconds: None,
                 warning: None,
                 error_detail: None,
                 error_category: None,
@@ -48,17 +57,15 @@ impl LocalAiService {
             }),
             bootstrap_lock: tokio::sync::Mutex::new(()),
             last_memory_summary_at: parking_lot::Mutex::new(None),
-            owned_ollama: parking_lot::Mutex::new(None),
             http: reqwest::Client::builder()
                 // Local models can take >30s on cold start and first-token generation.
                 // Keep the total timeout generous so inline autocomplete and local
                 // chat stay reliable.
                 .timeout(std::time::Duration::from_secs(120))
-                // ...but bound the *connect* phase tightly. When the Ollama server
-                // isn't running, the default connect timeout (long on Windows
-                // loopback) cascades through `has_model` × 3 in `assets_status`
-                // and blows past the 30s RPC envelope. 500ms is well under any
-                // realistic loopback connect latency; if the server is up,
+                // ...but bound the *connect* phase tightly. When the user's
+                // runtime isn't running, the default connect timeout (long on
+                // Windows loopback) would stall every probe. 500ms is well under
+                // any realistic loopback connect latency; if the server is up,
                 // reqwest's per-request `.timeout()` still bounds the rest of
                 // the exchange.
                 .connect_timeout(std::time::Duration::from_millis(500))
@@ -76,28 +83,21 @@ impl LocalAiService {
 
     pub fn reset_to_idle(&self, config: &Config) {
         let model_id = model_ids::effective_chat_model_id(config);
-        let vision_mode = vision_mode_str(config);
         let provider = provider_from_name(&config.local_ai.provider);
         let mut status = self.status.lock();
         status.state = "idle".to_string();
         status.model_id = model_id.clone();
-        status.chat_model_id = model_id.clone();
+        status.chat_model_id = model_id;
         status.vision_model_id = model_ids::effective_vision_model_id(config);
         status.embedding_model_id = model_ids::effective_embedding_model_id(config);
         status.stt_model_id = model_ids::effective_stt_model_id(config);
         status.tts_voice_id = model_ids::effective_tts_voice_id(config);
-        status.quantization = model_ids::effective_quantization(config);
         status.vision_state = initial_vision_state(config);
-        status.vision_mode = vision_mode;
+        status.vision_mode = vision_mode_str(config);
         status.embedding_state = "idle".to_string();
         status.stt_state = "idle".to_string();
         status.tts_state = "idle".to_string();
         status.provider = provider.as_str().to_string();
-        status.download_progress = None;
-        status.downloaded_bytes = None;
-        status.total_bytes = None;
-        status.download_speed_bps = None;
-        status.eta_seconds = None;
         status.warning = None;
         status.error_detail = None;
         status.error_category = None;
@@ -116,219 +116,132 @@ impl LocalAiService {
         status.warning = Some(warning);
     }
 
-    /// Force the status field to `"disabled"`. Used by the
-    /// `local_ai_shutdown_owned` RPC so the UI flips to the disabled
-    /// state immediately after the user toggles local AI off — without
-    /// waiting for the natural `local_ai_status` poll to re-bootstrap
-    /// (which it never does from the `"ready"` state).
+    /// Force the status field to `"disabled"` so the UI flips immediately
+    /// after the user turns local inference off, without waiting for the next
+    /// status poll.
     pub fn mark_disabled(&self, config: &Config) {
         log::info!("[local_ai] mark_disabled: status forced to disabled by gate toggle");
-        let vision_mode = presets_adapter::vision_mode_for_config(&config.local_ai);
-        *self.status.lock() = LocalAiStatus::disabled(config, &format!("{vision_mode:?}"));
+        *self.status.lock() = LocalAiStatus::disabled(config, &vision_mode_str(config));
     }
 
+    /// Probe the configured endpoint and record whether it is usable.
+    ///
+    /// Sets `state` to `"disabled"`, `"ready"`, `"degraded"`, or
+    /// `"unreachable"`. This is a cheap read-only probe (Ollama `GET
+    /// /api/tags`, or `GET /v1/models` for OpenAI-compatible runtimes): it
+    /// never spawns a runtime process and never pulls a model. A `ready` or
+    /// `degraded` state is kept until [`Self::reset_to_idle`]; an
+    /// `unreachable` endpoint is probed again on the next call, so a runtime
+    /// the user starts later is picked up.
     pub async fn bootstrap(&self, config: &Config) {
         let _guard = self.bootstrap_lock.lock().await;
-        let device = crate::device::detect_device_profile();
-        let effective_config = config_with_recommended_tier_if_unselected(config, &device);
 
-        if !effective_config.local_ai.runtime_enabled {
-            let vision_mode = presets_adapter::vision_mode_for_config(&effective_config.local_ai);
-            *self.status.lock() =
-                LocalAiStatus::disabled(&effective_config, &format!("{vision_mode:?}"));
+        if !local_inference_enabled(config) {
+            tracing::debug!(
+                runtime_enabled = config.local_ai.runtime_enabled,
+                opt_in_confirmed = config.local_ai.opt_in_confirmed,
+                "[local_ai] bootstrap: local inference not opted in; status disabled"
+            );
+            *self.status.lock() = LocalAiStatus::disabled(config, &vision_mode_str(config));
             return;
         }
 
-        // Return early if already succeeded or previously degraded.
-        // "degraded" means a prior bootstrap attempt already failed; further
-        // automatic retries just spam Ollama pull requests.  An explicit retry
-        // (local_ai_download with force=true) resets to "idle" first.
         if matches!(self.status.lock().state.as_str(), "ready" | "degraded") {
             return;
         }
 
+        let provider = provider_from_name(&config.local_ai.provider);
         {
-            let provider = provider_from_name(&effective_config.local_ai.provider);
+            let model_id = model_ids::effective_chat_model_id(config);
             let mut status = self.status.lock();
-            status.model_id = model_ids::effective_chat_model_id(&effective_config);
-            status.chat_model_id = model_ids::effective_chat_model_id(&effective_config);
-            status.vision_model_id = model_ids::effective_vision_model_id(&effective_config);
-            status.embedding_model_id = model_ids::effective_embedding_model_id(&effective_config);
-            status.stt_model_id = model_ids::effective_stt_model_id(&effective_config);
-            status.tts_voice_id = model_ids::effective_tts_voice_id(&effective_config);
-            status.quantization = model_ids::effective_quantization(&effective_config);
-            status.state = "loading".to_string();
+            status.model_id = model_id.clone();
+            status.chat_model_id = model_id;
+            status.vision_model_id = model_ids::effective_vision_model_id(config);
+            status.embedding_model_id = model_ids::effective_embedding_model_id(config);
+            status.stt_model_id = model_ids::effective_stt_model_id(config);
+            status.tts_voice_id = model_ids::effective_tts_voice_id(config);
             status.provider = provider.as_str().to_string();
-            status.vision_mode = vision_mode_str(&effective_config);
-            status.warning = Some(format!(
-                "Connecting to local {} runtime",
-                provider.display_name()
-            ));
-            status.download_progress = None;
-            status.downloaded_bytes = None;
-            status.total_bytes = None;
-            status.download_speed_bps = None;
-            status.eta_seconds = None;
-            status.error_detail = None;
-            status.error_category = None;
+            status.vision_mode = vision_mode_str(config);
             status.active_backend = provider.as_str().to_string();
             status.backend_reason = Some(format!(
                 "Inference delegated to {} runtime",
                 provider.display_name()
             ));
-            status.model_path = Some(model_path_for_config(&effective_config));
+            status.model_path = Some(model_path_for_config(config));
         }
 
-        if provider_from_name(&effective_config.local_ai.provider) == LocalAiProvider::LmStudio {
-            log::debug!(
-                "[local_ai] LM Studio bootstrap branch entry preload_embedding={} preload_tts={}",
-                effective_config.local_ai.preload_embedding_model,
-                effective_config.local_ai.preload_tts_voice
-            );
-            log::trace!("[local_ai] LM Studio bootstrap availability check start");
-            if let Err(err) = self.ensure_lm_studio_available(&effective_config).await {
-                log::debug!("[local_ai] LM Studio bootstrap degraded: {err}");
-                let mut status = self.status.lock();
-                status.state = "degraded".to_string();
-                status.error_category = Some("server".to_string());
-                status.warning = Some(err);
-                return;
-            }
-            log::debug!("[local_ai] LM Studio bootstrap availability check succeeded");
-
-            log::trace!(
-                "[local_ai] LM Studio bootstrap embedding preload decision: {}",
-                effective_config.local_ai.preload_embedding_model
-            );
-            if effective_config.local_ai.preload_embedding_model {
-                let embedding_model = model_ids::effective_embedding_model_id(&effective_config);
-                log::debug!(
-                    "[local_ai] LM Studio bootstrap embedding preload start model={embedding_model}"
-                );
-                {
-                    let mut status = self.status.lock();
-                    status.state = "downloading".to_string();
-                    status.embedding_state = "downloading".to_string();
-                    status.warning = Some(format!(
-                        "Downloading embedding model via Ollama: `{embedding_model}`"
-                    ));
-                }
-                if let Err(err) = async {
-                    log::trace!(
-                        "[local_ai] LM Studio bootstrap embedding ensure_ollama_server start"
-                    );
-                    self.ensure_ollama_server(&effective_config).await?;
-                    log::trace!(
-                        "[local_ai] LM Studio bootstrap embedding ensure_ollama_server succeeded"
-                    );
-                    log::trace!(
-                        "[local_ai] LM Studio bootstrap embedding ensure_ollama_model_available start model={embedding_model}"
-                    );
-                    self.ensure_ollama_model_available(&effective_config, &embedding_model, "embedding")
-                        .await?;
-                    log::trace!(
-                        "[local_ai] LM Studio bootstrap embedding ensure_ollama_model_available succeeded model={embedding_model}"
-                    );
-                    Ok::<(), String>(())
-                }
-                .await
-                {
-                    log::warn!("[local_ai] LM Studio bootstrap embedding preload failed: {err}");
-                    self.status.lock().embedding_state = "missing".to_string();
-                } else {
-                    log::debug!(
-                        "[local_ai] LM Studio bootstrap embedding preload succeeded model={embedding_model}"
-                    );
-                    self.status.lock().embedding_state = "ready".to_string();
-                }
-            }
-
-            log::trace!(
-                "[local_ai] LM Studio bootstrap TTS preload decision: {}",
-                effective_config.local_ai.preload_tts_voice
-            );
-            if effective_config.local_ai.preload_tts_voice {
-                log::debug!("[local_ai] LM Studio bootstrap TTS preload start");
-                if let Err(err) = self.ensure_tts_asset_available(&effective_config).await {
-                    log::warn!("[local_ai] LM Studio bootstrap TTS preload failed: {err}");
-                    self.status.lock().tts_state = "missing".to_string();
-                } else {
-                    log::debug!("[local_ai] LM Studio bootstrap TTS preload succeeded");
-                }
-            }
-
-            let mut status = self.status.lock();
-            status.state = "ready".to_string();
-            status.vision_state = "disabled".to_string();
-            if !effective_config.local_ai.preload_embedding_model {
-                status.embedding_state = "idle".to_string();
-            } else if status.embedding_state != "ready" {
-                status.embedding_state = "missing".to_string();
-            }
-            if !effective_config.local_ai.preload_tts_voice {
-                status.tts_state = "idle".to_string();
-            }
-            status.warning = None;
-            status.error_detail = None;
-            status.error_category = None;
-            status.download_progress = None;
-            status.downloaded_bytes = None;
-            status.total_bytes = None;
-            status.download_speed_bps = None;
-            status.eta_seconds = None;
-            status.model_path = Some(model_path_for_config(&effective_config));
-            log::debug!(
-                "[local_ai] LM Studio bootstrap ready embedding_state={} tts_state={}",
-                status.embedding_state,
-                status.tts_state
-            );
-            return;
-        }
-
-        if let Err(err) = self.ensure_ollama_server(&effective_config).await {
-            log::warn!(
-                "[local_ai] bootstrap degraded: external runtime connectivity check failed: {err}"
-            );
-            let mut status = self.status.lock();
-            status.state = "degraded".to_string();
-            status.error_category = Some("server".to_string());
-            status.warning = Some(format_degraded_warning(&err, &effective_config));
-            return;
-        }
-
-        if let Err(err) = self.ensure_models_available(&effective_config).await {
-            let mut status = self.status.lock();
-            status.state = "degraded".to_string();
-            status.error_category = Some("download".to_string());
-            status.warning = Some(format_degraded_warning(&err, &effective_config));
-            return;
-        }
+        let (endpoint, probe) = self.probe_endpoint(config).await;
+        let safe_endpoint = tinyinference_core::sanitize::redact_url(&endpoint);
+        tracing::debug!(
+            provider = provider.as_str(),
+            endpoint = %safe_endpoint,
+            ?probe,
+            "[local_ai] bootstrap: endpoint probe finished"
+        );
 
         let mut status = self.status.lock();
-        status.state = "ready".to_string();
-        status.vision_state =
-            match presets_adapter::vision_mode_for_config(&effective_config.local_ai) {
-                VisionMode::Disabled => "disabled".to_string(),
-                VisionMode::Bundled => "ready".to_string(),
-                VisionMode::Ondemand => "idle".to_string(),
-            };
-        status.embedding_state = if effective_config.local_ai.preload_embedding_model {
-            "ready".to_string()
-        } else {
-            "idle".to_string()
-        };
-        if !effective_config.local_ai.preload_tts_voice {
-            status.tts_state = "idle".to_string();
+        match probe {
+            EndpointProbe::Ready => {
+                status.state = "ready".to_string();
+                status.vision_state = initial_vision_state(config);
+                status.embedding_state = "idle".to_string();
+                status.warning = None;
+                status.error_detail = None;
+                status.error_category = None;
+            }
+            EndpointProbe::Degraded(detail) => {
+                status.state = "degraded".to_string();
+                status.warning = Some(format!(
+                    "Local {} runtime at {safe_endpoint} is responding slowly or with errors",
+                    provider.display_name()
+                ));
+                status.error_detail = Some(detail);
+                status.error_category = Some("server".to_string());
+            }
+            EndpointProbe::Unreachable(detail) => {
+                status.state = "unreachable".to_string();
+                status.warning = Some(format!(
+                    "Local {} runtime is not reachable at {safe_endpoint}. Start it and load \
+                     your models yourself; OpenHuman does not install or launch it.",
+                    provider.display_name()
+                ));
+                status.error_detail = Some(detail);
+                status.error_category = Some("server".to_string());
+            }
         }
-        status.warning = None;
-        status.error_detail = None;
-        status.error_category = None;
-        status.download_progress = None;
-        status.downloaded_bytes = None;
-        status.total_bytes = None;
-        status.download_speed_bps = None;
-        status.eta_seconds = None;
-        status.model_path = Some(model_path_for_config(&effective_config));
+    }
+
+    /// Probe the configured endpoint without side effects. Returns the probed
+    /// base URL and the verdict.
+    async fn probe_endpoint(&self, config: &Config) -> (String, EndpointProbe) {
+        let provider = provider_from_name(&config.local_ai.provider);
+        let ollama_base = ollama_base_url_from_override(config.local_ai.base_url.as_deref());
+        let openai_shaped = provider == LocalAiProvider::LmStudio
+            || model_discovery_api(&config.local_ai.provider, &ollama_base)
+                == ModelDiscoveryApi::OpenAiModels;
+
+        if openai_shaped {
+            let base = lm_studio_base_url(config.local_ai.base_url.as_deref());
+            let verdict = match self.list_lm_studio_models(config).await {
+                Ok(_) => EndpointProbe::Ready,
+                Err(err) if super::ollama_admin::models_error_means_unreachable(&err) => {
+                    EndpointProbe::Unreachable(err)
+                }
+                Err(err) => EndpointProbe::Degraded(err),
+            };
+            return (base, verdict);
+        }
+
+        let verdict = match self.ollama_health_status_at(&ollama_base).await {
+            OllamaHealthStatus::Running => EndpointProbe::Ready,
+            OllamaHealthStatus::Degraded => {
+                EndpointProbe::Degraded("health probe answered only on the slow retry".to_string())
+            }
+            OllamaHealthStatus::Stopped => {
+                EndpointProbe::Unreachable(format!("no healthy answer from {ollama_base}/api/tags"))
+            }
+        };
+        (ollama_base, verdict)
     }
 
     pub fn should_run_memory_autosummary(&self, config: &Config) -> bool {
@@ -349,72 +262,23 @@ impl LocalAiService {
     }
 }
 
-fn config_with_recommended_tier_if_unselected(config: &Config, device: &DeviceProfile) -> Config {
-    let current_tier = crate::service::presets_adapter::current_tier_from_config(&config.local_ai);
-
-    // Local AI is opt-in on every device. The only way to keep it enabled
-    // across a restart is an explicit opt-in (`apply_preset` on a real tier),
-    // which sets `opt_in_confirmed = true`. Every other state — fresh install,
-    // pre-MVP upgrade with a stale `selected_tier`, manual config edit — is
-    // hard-overridden to disabled here, regardless of device RAM.
-    if !config.local_ai.opt_in_confirmed {
-        tracing::debug!(
-            total_ram_gb = device.total_ram_gb(),
-            min_required_gb = crate::presets::MIN_RAM_GB_FOR_LOCAL_AI,
-            ?current_tier,
-            selected_tier = ?config.local_ai.selected_tier,
-            "[local_ai] bootstrap: opt_in_confirmed=false, hard-overriding to disabled (cloud fallback)"
-        );
-        let mut effective_config = config.clone();
-        effective_config.local_ai.runtime_enabled = false;
-        return effective_config;
-    }
-
-    // User has explicitly opted in via apply_preset.
-    // Ensure runtime_enabled is true — the on-disk field may be stale (old
-    // installs that had `enabled = true` before the rename now serde-default to
-    // false, so we set it here based on the authoritative opt_in_confirmed flag).
-    let mut effective_config = config.clone();
-    effective_config.local_ai.runtime_enabled = true;
-    effective_config
-}
-
-fn format_degraded_warning(err: &str, config: &Config) -> String {
-    let current = crate::service::presets_adapter::current_tier_from_config(&config.local_ai);
-    match current {
-        crate::presets::ModelTier::Ram16PlusGb => {
-            format!(
-                "{err}. Hint: your device may not support the 16 GB+ tier model. \
-                 Try switching to the 8-16 GB or 4-8 GB tier in Settings > Local AI Model."
-            )
-        }
-        crate::presets::ModelTier::Ram8To16Gb => {
-            format!(
-                "{err}. Hint: your device may not support the 8-16 GB tier model. \
-                 Try switching to the 4-8 GB or 2-4 GB tier in Settings > Local AI Model."
-            )
-        }
-        crate::presets::ModelTier::Ram4To8Gb => format!(
-            "{err}. Hint: your device may not support the 4-8 GB tier vision sidecar. \
-             Try switching to the 2-4 GB tier for text-only local AI."
-        ),
-        _ => err.to_string(),
-    }
+/// Local inference is opt-in. `opt_in_confirmed` is authoritative: an
+/// explicit opt-in enables it even when a stale on-disk `runtime_enabled` is
+/// false, and without it local inference stays disabled.
+pub(crate) fn local_inference_enabled(config: &Config) -> bool {
+    config.local_ai.opt_in_confirmed
 }
 
 fn initial_vision_state(config: &Config) -> String {
-    match presets_adapter::vision_mode_for_config(&config.local_ai) {
-        VisionMode::Disabled => "disabled".to_string(),
-        VisionMode::Ondemand | VisionMode::Bundled => "idle".to_string(),
+    if super::vision_configured(&config.local_ai) {
+        "idle".to_string()
+    } else {
+        "disabled".to_string()
     }
 }
 
 fn vision_mode_str(config: &Config) -> String {
-    format!(
-        "{:?}",
-        presets_adapter::vision_mode_for_config(&config.local_ai)
-    )
-    .to_ascii_lowercase()
+    super::vision_mode_label(&config.local_ai).to_string()
 }
 
 fn model_path_for_config(config: &Config) -> String {

@@ -12,7 +12,7 @@ use crate::service::RuntimeConfig as Config;
 
 use super::super::LocalAiService;
 use super::health::OllamaHealthStatus;
-use super::util::lm_studio_models_error_means_unreachable;
+use super::util::models_error_means_unreachable;
 
 const MIN_CONTEXT_TOKENS: u64 = tinyinference_embeddings::RECOMMENDED_OLLAMA_CONTEXT_TOKENS as u64;
 
@@ -457,7 +457,7 @@ impl LocalAiService {
         let (models, models_error, healthy) = match models_result {
             Ok(models) => (models, None, true),
             Err(err) => {
-                let reachable = !lm_studio_models_error_means_unreachable(&err);
+                let reachable = !models_error_means_unreachable(&err);
                 (vec![], Some(err), reachable)
             }
         };

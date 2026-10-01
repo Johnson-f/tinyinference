@@ -1,6 +1,6 @@
 use crate::ollama::{OllamaTagsResponse, validate_ollama_url};
 
-pub(super) fn lm_studio_models_error_means_unreachable(error: &str) -> bool {
+pub(in crate::service) fn models_error_means_unreachable(error: &str) -> bool {
     error.starts_with("lm studio models request failed:")
 }
 

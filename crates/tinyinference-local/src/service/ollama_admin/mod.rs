@@ -8,6 +8,7 @@ mod util;
 
 pub(in crate::service) use health::OllamaHealthStatus;
 // Re-export free functions that form the public/crate API of this module.
+pub(in crate::service) use util::models_error_means_unreachable;
 pub use util::test_ollama_connection;
 
 #[cfg(test)]

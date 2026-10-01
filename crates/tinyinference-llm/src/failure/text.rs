@@ -299,3 +299,71 @@ fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
         None => s.to_string(),
     }
 }
+
+/// Whether a lowercased flattened error reads as a rate limit (`rate limit`
+/// wording or a bare `429`). The broadest of the status-ish arms: a host must
+/// test its own, more specific rate caps first.
+pub fn is_rate_limit_text(lower: &str) -> bool {
+    lower.contains("rate limit") || lower.contains("429")
+}
+
+/// Whether a lowercased flattened error reads as a request timeout.
+pub fn is_timeout_text(lower: &str) -> bool {
+    lower.contains("timeout") || lower.contains("timed out")
+}
+
+/// Whether a lowercased flattened error reads as an authentication failure
+/// (`401`, `unauthorized`, or a mention of the API key).
+pub fn is_auth_error_text(lower: &str) -> bool {
+    lower.contains("401") || lower.contains("unauthorized") || lower.contains("api key")
+}
+
+/// Whether a lowercased flattened error reads as a payment / balance failure
+/// (`402`, `payment required`, `insufficient balance`).
+pub fn is_payment_required_text(lower: &str) -> bool {
+    lower.contains("402")
+        || lower.contains("payment required")
+        || lower.contains("insufficient balance")
+}
+
+/// Whether a lowercased flattened error reads as a provider-side 5xx outage
+/// (`500`, `internal server`, `service unavailable`, `503`).
+pub fn is_server_error_text(lower: &str) -> bool {
+    lower.contains("500")
+        || lower.contains("internal server")
+        || lower.contains("service unavailable")
+        || lower.contains("503")
+}
+
+/// Whether a lowercased flattened error reads as a context-length overflow:
+/// the word `context` together with a length/limit/exceed/token word.
+pub fn is_context_length_text(lower: &str) -> bool {
+    lower.contains("context")
+        && (lower.contains("length")
+            || lower.contains("limit")
+            || lower.contains("exceed")
+            || lower.contains("token"))
+}
+
+/// Whether a lowercased flattened error reads as a model that is missing or
+/// unavailable (`model` plus not found / unavailable / does not exist / does
+/// not have access). Pair with [`is_transient_unavailability_text`] to tell a
+/// stale model pin from a temporary outage.
+pub fn is_model_unavailable_text(lower: &str) -> bool {
+    lower.contains("model")
+        && (lower.contains("not found")
+            || lower.contains("unavailable")
+            || lower.contains("does not exist")
+            || lower.contains("does not have access"))
+}
+
+/// Whether a lowercased flattened error says the model cannot take image input.
+pub fn is_vision_unsupported_text(lower: &str) -> bool {
+    lower.contains("does not support vision") || lower.contains("capability=vision")
+}
+
+/// Whether a lowercased flattened error is the Codex OAuth refresh-failure
+/// sentinel (`codex authentication token is expired`).
+pub fn is_codex_token_expired_text(lower: &str) -> bool {
+    lower.contains("codex authentication token is expired")
+}

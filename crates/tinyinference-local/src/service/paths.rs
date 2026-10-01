@@ -1,4 +1,6 @@
-//! Workspace paths for Ollama, Piper, and downloaded assets.
+//! Workspace paths for user-supplied local voice assets (Piper binary and
+//! voices). Nothing here downloads or installs anything; these helpers only
+//! resolve files the user already placed on disk.
 
 use std::path::PathBuf;
 
@@ -37,64 +39,8 @@ fn shared_root_dir(config: &Config) -> PathBuf {
     }
 }
 
-pub(crate) fn workspace_ollama_dir(config: &Config) -> PathBuf {
-    shared_root_dir(config).join("bin").join("ollama")
-}
-
-pub(crate) fn workspace_ollama_binary(config: &Config) -> PathBuf {
-    if cfg!(target_os = "linux") {
-        return workspace_ollama_dir(config).join("bin").join("ollama");
-    }
-
-    let name = if cfg!(windows) {
-        "ollama.exe"
-    } else {
-        "ollama"
-    };
-    workspace_ollama_dir(config).join(name)
-}
-
-pub(crate) fn workspace_ollama_binary_candidates(config: &Config) -> Vec<PathBuf> {
-    let dir = workspace_ollama_dir(config);
-    let binary_name = if cfg!(windows) {
-        "ollama.exe"
-    } else {
-        "ollama"
-    };
-
-    let mut candidates = Vec::new();
-    if cfg!(target_os = "linux") {
-        candidates.push(dir.join("bin").join(binary_name));
-    }
-    candidates.push(dir.join(binary_name));
-    candidates.push(
-        dir.join("Ollama.app")
-            .join("Contents")
-            .join("Resources")
-            .join(binary_name),
-    );
-    candidates
-}
-
-pub(crate) fn find_workspace_ollama_binary(config: &Config) -> Option<PathBuf> {
-    workspace_ollama_binary_candidates(config)
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-}
-
 pub(crate) fn workspace_local_models_dir(config: &Config) -> PathBuf {
     shared_root_dir(config).join("models").join("local-ai")
-}
-
-/// Spawn marker file recording the PID of any `ollama serve` openhuman
-/// itself spawned. Read on next launch to recognise our own orphan when
-/// openhuman crashed before its graceful-shutdown hook ran. Lives under
-/// the shared root so it survives per-user config rewrites and sits next
-/// to the workspace install dir.
-pub(crate) fn ollama_spawn_marker_path(config: &Config) -> PathBuf {
-    shared_root_dir(config)
-        .join("local-ai")
-        .join("ollama.spawn")
 }
 
 /// Standard Unix locations a CLI binary may live in that are **not**
@@ -134,10 +80,7 @@ fn resolve_binary_in_dirs(bin_name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 }
 
 pub fn resolve_piper_binary() -> Option<PathBuf> {
-    // Precedence: workspace install > env override > PATH lookup. The
-    // workspace install path is the canonical drop-zone populated by
-    // `install_piper::install_piper`; checking it first means a user who just
-    // clicked Install in the VoicePanel doesn't also have to export PIPER_BIN.
+    // Precedence: env override > PATH lookup > standard Unix dirs.
     if let Some(from_env) = std::env::var("PIPER_BIN")
         .ok()
         .filter(|v| !v.trim().is_empty())
@@ -169,20 +112,41 @@ pub fn resolve_piper_binary() -> Option<PathBuf> {
     None
 }
 
-/// Config-aware piper resolution: workspace install first, env second,
-/// PATH third.
+/// Config-aware piper resolution: an executable the user placed under the
+/// workspace Piper dir first, then `PIPER_BIN`, then `PATH`.
+///
+/// The workspace dir is only probed, never populated: Piper is installed by
+/// the user.
 pub fn resolve_piper_binary_with_config(config: &Config) -> Option<PathBuf> {
-    let install = crate::piper::PiperInstall::new(workspace_piper_dir(config));
-    if let Some(workspace) = crate::piper::find_workspace_piper_binary(&install) {
+    if let Some(workspace) = workspace_piper_binary_candidates(config)
+        .into_iter()
+        .find(|candidate| candidate.is_file() && is_executable_file(candidate))
+    {
+        log::debug!(
+            "[voice:piper] resolved workspace binary {}",
+            workspace.display()
+        );
         return Some(workspace);
     }
     resolve_piper_binary()
 }
 
-// ---------------------------------------------------------------------------
-// Workspace install paths — used by install_piper and the local-AI asset
-// downloader.
-// ---------------------------------------------------------------------------
+/// Whether `path` carries an execute bit for anybody. A non-executable
+/// workspace copy is skipped so `PIPER_BIN` / `PATH` stay reachable.
+///
+/// Windows has no execute bit, so every regular file qualifies there.
+#[cfg(unix)]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(_path: &std::path::Path) -> bool {
+    true
+}
 
 /// Workspace dir for downloaded STT model files. Lives next to the Ollama dir
 /// so users with a single shared root see all local-AI artifacts together. The

@@ -184,8 +184,6 @@ async fn non_404_status_does_not_trigger_the_fallback() {
     );
 }
 
-// ── #5146 P1: never pull a model the user did not choose ────────────────────
-
 // #6032 — two-phase health probe classification. `ollama_health_status_at`
 // returns `Running` on a fast 200, `Degraded` when the 2s fast probe times out
 // but the 8s retry succeeds, and `Stopped` otherwise.

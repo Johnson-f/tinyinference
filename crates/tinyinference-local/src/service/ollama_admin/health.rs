@@ -1,4 +1,3 @@
-
 use super::super::LocalAiService;
 
 /// Fine-grained result of a health probe against an Ollama endpoint.

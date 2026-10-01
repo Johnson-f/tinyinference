@@ -84,6 +84,9 @@ fn status_wire_shape_has_no_download_fields() {
         "download_speed_bps",
         "eta_seconds",
     ] {
-        assert!(value.get(removed).is_none(), "{removed} must not be serialized");
+        assert!(
+            value.get(removed).is_none(),
+            "{removed} must not be serialized"
+        );
     }
 }

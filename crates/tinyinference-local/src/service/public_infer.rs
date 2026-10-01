@@ -188,7 +188,10 @@ impl LocalAiService {
     /// Multi-turn chat completion via Ollama /api/chat.
     /// Messages are `[{role: "user"|"assistant"|"system", content: "..."}]`.
     /// Returns the assistant reply string.
-    #[allow(dead_code, reason = "crate-internal entry point kept for multi-turn callers")]
+    #[allow(
+        dead_code,
+        reason = "crate-internal entry point kept for multi-turn callers"
+    )]
     pub(crate) async fn chat_with_history(
         &self,
         config: &Config,

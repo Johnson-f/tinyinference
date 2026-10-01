@@ -253,7 +253,11 @@ async fn vision_prompt_reports_an_unavailable_vision_model() {
         err.contains("ollama pull"),
         "error should say how to install it: {err}"
     );
-    assert_eq!(pulls.load(Ordering::SeqCst), 0, "the service must never pull");
+    assert_eq!(
+        pulls.load(Ordering::SeqCst),
+        0,
+        "the service must never pull"
+    );
     assert_eq!(service.status.lock().vision_state, "missing");
 }
 

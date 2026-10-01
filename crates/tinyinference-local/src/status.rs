@@ -10,6 +10,16 @@ use serde::{Deserialize, Serialize};
 use crate::models::{self as model_ids, LocalModelConfig};
 use crate::provider::provider_from_name;
 
+/// Observable state of the configured local inference endpoint.
+///
+/// `state` is one of:
+/// - `"disabled"`: local inference is turned off in the host config.
+/// - `"idle"`: enabled but the endpoint has not been probed yet.
+/// - `"ready"`: the endpoint answered its model listing promptly.
+/// - `"degraded"`: the endpoint is alive but slow, or answered the model
+///   listing with an error; inference may still work.
+/// - `"unreachable"`: nothing answered at the configured endpoint. The user
+///   has to start their runtime; this crate never starts one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LocalAiStatus {
     pub state: String,
@@ -19,22 +29,17 @@ pub struct LocalAiStatus {
     pub embedding_model_id: String,
     pub stt_model_id: String,
     pub tts_voice_id: String,
-    pub quantization: String,
     pub vision_state: String,
     pub vision_mode: String,
     pub embedding_state: String,
     pub stt_state: String,
     pub tts_state: String,
     pub provider: String,
-    pub download_progress: Option<f32>,
-    pub downloaded_bytes: Option<u64>,
-    pub total_bytes: Option<u64>,
-    pub download_speed_bps: Option<u64>,
-    pub eta_seconds: Option<u64>,
     pub warning: Option<String>,
-    /// Extended error text (e.g. stderr from install script) for UI display.
+    /// Extended error text (e.g. the endpoint probe failure) for UI display.
     pub error_detail: Option<String>,
-    /// Category of failure: "install", "download", "server", or None.
+    /// Category of failure: `"server"` when the configured endpoint could not
+    /// be reached or answered unexpectedly, or `None`.
     pub error_category: Option<String>,
     pub model_path: Option<String>,
     pub active_backend: String,
@@ -56,18 +61,12 @@ impl LocalAiStatus {
             embedding_model_id: model_ids::effective_embedding_model_id(config),
             stt_model_id: model_ids::effective_stt_model_id(config),
             tts_voice_id: model_ids::effective_tts_voice_id(config),
-            quantization: model_ids::effective_quantization(config),
             vision_state: "disabled".to_string(),
             vision_mode: vision_mode.to_ascii_lowercase(),
             embedding_state: "disabled".to_string(),
             stt_state: "disabled".to_string(),
             tts_state: "disabled".to_string(),
             provider: provider.as_str().to_string(),
-            download_progress: None,
-            downloaded_bytes: None,
-            total_bytes: None,
-            download_speed_bps: None,
-            eta_seconds: None,
             warning: None,
             error_detail: None,
             error_category: None,
@@ -79,60 +78,6 @@ impl LocalAiStatus {
             gen_toks_per_sec: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalAiAssetStatus {
-    pub state: String,
-    pub id: String,
-    pub provider: String,
-    pub path: Option<String>,
-    pub warning: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalAiAssetsStatus {
-    pub chat: LocalAiAssetStatus,
-    pub vision: LocalAiAssetStatus,
-    pub embedding: LocalAiAssetStatus,
-    pub tts: LocalAiAssetStatus,
-    pub quantization: String,
-    /// True when the configured Ollama endpoint is reachable enough for model
-    /// checks. When false, the frontend should render external-runtime
-    /// guidance rather than app-managed install/start affordances.
-    pub ollama_available: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalAiDownloadProgressItem {
-    pub id: String,
-    pub provider: String,
-    pub state: String,
-    pub progress: Option<f32>,
-    pub downloaded_bytes: Option<u64>,
-    pub total_bytes: Option<u64>,
-    pub speed_bps: Option<u64>,
-    pub eta_seconds: Option<u64>,
-    pub warning: Option<String>,
-    pub path: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LocalAiDownloadsProgress {
-    pub state: String,
-    pub warning: Option<String>,
-    pub progress: Option<f32>,
-    pub downloaded_bytes: Option<u64>,
-    pub total_bytes: Option<u64>,
-    pub speed_bps: Option<u64>,
-    pub eta_seconds: Option<u64>,
-    pub chat: LocalAiDownloadProgressItem,
-    pub vision: LocalAiDownloadProgressItem,
-    pub embedding: LocalAiDownloadProgressItem,
-    pub tts: LocalAiDownloadProgressItem,
-    /// Mirrors `LocalAiAssetsStatus::ollama_available` so a single
-    /// `local_ai.downloads_progress` poll can render the right UI state.
-    pub ollama_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

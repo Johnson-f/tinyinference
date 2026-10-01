@@ -9,7 +9,6 @@ struct Config {
     embedding: String,
     stt: String,
     tts: String,
-    quantization: String,
 }
 
 impl crate::models::LocalModelConfig for Config {
@@ -33,9 +32,6 @@ impl crate::models::LocalModelConfig for Config {
     }
     fn local_tts_voice_id(&self) -> &str {
         &self.tts
-    }
-    fn local_quantization(&self) -> &str {
-        &self.quantization
     }
 }
 
@@ -74,4 +70,23 @@ fn disabled_status_uses_config_vision_mode() {
 
     let status = LocalAiStatus::disabled(&config, "disabled");
     assert_eq!(status.vision_mode, "disabled");
+}
+
+#[test]
+fn status_wire_shape_has_no_download_fields() {
+    let status = LocalAiStatus::disabled(&Config::default(), "disabled");
+    let value = serde_json::to_value(&status).unwrap();
+    for removed in [
+        "quantization",
+        "download_progress",
+        "downloaded_bytes",
+        "total_bytes",
+        "download_speed_bps",
+        "eta_seconds",
+    ] {
+        assert!(
+            value.get(removed).is_none(),
+            "{removed} must not be serialized"
+        );
+    }
 }

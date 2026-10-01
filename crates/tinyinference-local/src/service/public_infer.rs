@@ -188,6 +188,10 @@ impl LocalAiService {
     /// Multi-turn chat completion via Ollama /api/chat.
     /// Messages are `[{role: "user"|"assistant"|"system", content: "..."}]`.
     /// Returns the assistant reply string.
+    #[allow(
+        dead_code,
+        reason = "crate-internal entry point kept for multi-turn callers"
+    )]
     pub(crate) async fn chat_with_history(
         &self,
         config: &Config,
@@ -219,7 +223,7 @@ impl LocalAiService {
             return Err("local ai is disabled".to_string());
         }
 
-        if !matches!(self.status.lock().state.as_str(), "ready") {
+        if !matches!(self.status.lock().state.as_str(), "ready" | "degraded") {
             self.bootstrap(config).await;
         }
 
@@ -351,7 +355,7 @@ impl LocalAiService {
         if !config.local_ai.runtime_enabled {
             return Err("local ai is disabled".to_string());
         }
-        if !matches!(self.status.lock().state.as_str(), "ready") {
+        if !matches!(self.status.lock().state.as_str(), "ready" | "degraded") {
             self.bootstrap(config).await;
         }
 

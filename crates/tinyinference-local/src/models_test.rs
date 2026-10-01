@@ -14,7 +14,6 @@ struct TestLocalAiConfig {
     embedding_model_id: String,
     stt_model_id: String,
     tts_voice_id: String,
-    quantization: String,
 }
 
 impl LocalModelConfig for TestConfig {
@@ -39,9 +38,6 @@ impl LocalModelConfig for TestConfig {
     fn local_tts_voice_id(&self) -> &str {
         &self.local_ai.tts_voice_id
     }
-    fn local_quantization(&self) -> &str {
-        &self.local_ai.quantization
-    }
 }
 
 fn test_config() -> TestConfig {
@@ -54,17 +50,17 @@ fn chat_model_falls_back_for_empty_and_unsupported_ids() {
 
     config.local_ai.chat_model_id = String::new();
     config.local_ai.model_id = String::new();
-    assert_eq!(effective_chat_model_id(&config), MVP_DEFAULT_CHAT_MODEL);
+    assert_eq!(effective_chat_model_id(&config), DEFAULT_OLLAMA_MODEL);
 
     config.local_ai.chat_model_id = "custom.gguf".to_string();
-    assert_eq!(effective_chat_model_id(&config), MVP_DEFAULT_CHAT_MODEL);
+    assert_eq!(effective_chat_model_id(&config), DEFAULT_OLLAMA_MODEL);
 
     config.local_ai.chat_model_id = "qwen3-1.7b".to_string();
-    assert_eq!(effective_chat_model_id(&config), MVP_DEFAULT_CHAT_MODEL);
+    assert_eq!(effective_chat_model_id(&config), DEFAULT_OLLAMA_MODEL);
 }
 
 #[test]
-fn chat_model_allows_mvp_model() {
+fn chat_model_passes_default_model_through() {
     let mut config = test_config();
     config.local_ai.chat_model_id = "gemma3:1b-it-qat".to_string();
     assert_eq!(effective_chat_model_id(&config), "gemma3:1b-it-qat");
@@ -113,66 +109,6 @@ fn lm_studio_chat_model_returns_empty_when_no_model_configured() {
     config.local_ai.chat_model_id = String::new();
     config.local_ai.model_id = String::new();
     assert_eq!(effective_chat_model_id(&config), "");
-}
-
-#[test]
-fn chat_model_rejects_non_mvp_models() {
-    let mut config = test_config();
-
-    // Bare `gemma3n:e4b` is a real Ollama tag but is NOT the allowlisted
-    // quantization, so it still redirects to the default.
-    config.local_ai.chat_model_id = "gemma3n:e4b".to_string();
-    assert_eq!(effective_chat_model_id(&config), MVP_DEFAULT_CHAT_MODEL);
-
-    // Arbitrary non-preset models stay rejected.
-    config.local_ai.chat_model_id = "llama3.1:8b".to_string();
-    assert_eq!(effective_chat_model_id(&config), MVP_DEFAULT_CHAT_MODEL);
-
-    config.local_ai.chat_model_id = "totally-made-up-model:v0".to_string();
-    assert_eq!(effective_chat_model_id(&config), MVP_DEFAULT_CHAT_MODEL);
-}
-
-/// #5146 §1.3: the allowlist must cover every preset chat model.
-///
-/// `gemma3:270m-it-qat` (1 GB tier) and `gemma3:4b-it-qat` (8-16 GB tier)
-/// were previously absent, so applying either preset resolved straight
-/// back to the 1B default — the user picked a tier and silently got a
-/// different model than the one the preset advertised.
-#[test]
-fn preset_chat_models_are_allowlisted_and_resolve_unchanged() {
-    let mut config = test_config();
-    for model_id in [
-        "gemma3:270m-it-qat",
-        "gemma3:1b-it-qat",
-        "gemma3:4b-it-qat",
-        "gemma4:e4b-it-q8_0",
-    ] {
-        config.local_ai.chat_model_id = model_id.to_string();
-        assert_eq!(
-            effective_chat_model_id(&config),
-            model_id,
-            "preset chat model `{model_id}` is not allowlisted and was redirected",
-        );
-    }
-}
-
-/// GH #5055 / #5146 §1.3: every allowlisted chat model must be a real,
-/// fully-qualified Ollama id.
-///
-/// The #5055 form of this test asserted "no entry may start with
-/// `gemma4:`", because no `gemma4` namespace existed at the time. Gemma 4
-/// has since been published and `gemma4:e4b-it-q8_0` resolves against
-/// `registry.ollama.ai`, so that assertion was pinning an expired fact.
-/// The durable invariant is the `<model>:<tag>` shape plus the
-/// preset cross-check above.
-#[test]
-fn mvp_chat_allowlist_entries_are_fully_qualified() {
-    for model in MVP_ALLOWED_CHAT_MODELS {
-        assert!(
-            model.contains(':'),
-            "`{model}` must be a fully-qualified `<model>:<tag>` id"
-        );
-    }
 }
 
 #[test]
@@ -322,11 +258,8 @@ fn resolve_vision_model_id_errors_on_a_chat_only_model_instead_of_substituting()
     );
 }
 
-/// The auto-pull half of P1: several callers feed
-/// `effective_vision_model_id` straight into `ensure_ollama_model_available`,
-/// so a substituted id here is exactly how an unchosen model got downloaded.
-/// Empty keeps those paths off it (and `ensure_ollama_model_available`
-/// rejects a blank id rather than pulling a nameless model).
+/// #5146 P1: a chat-only model must not resolve to a substitute the user
+/// never chose; it resolves to nothing usable instead.
 #[test]
 fn effective_vision_model_id_is_empty_for_a_chat_only_model() {
     let mut config = test_config();
@@ -387,37 +320,19 @@ fn embedding_model_empty_falls_back_to_bge_m3() {
 }
 
 #[test]
-fn embedding_model_passes_through_allowlisted_legacy() {
-    // all-minilm:latest is kept in MVP_ALLOWED_EMBEDDING_MODELS for
-    // back-compat with users who already pulled it under the prior
-    // default. It is NOT 1024-dim — memory tree's post-call validator
-    // will surface that mismatch at embed time — but the allowlist
-    // enforcer itself must let the value pass through unchanged.
+fn embedding_model_passes_through_legacy_all_minilm() {
+    // all-minilm:latest is NOT 1024-dim — memory tree's post-call validator
+    // surfaces that mismatch at embed time — but resolution itself must let
+    // the configured value pass through unchanged.
     let mut config = test_config();
     config.local_ai.embedding_model_id = "all-minilm:latest".to_string();
     assert_eq!(effective_embedding_model_id(&config), "all-minilm:latest");
 }
 
 #[test]
-fn embedding_model_rejects_non_allowlisted_and_redirects_to_default() {
-    // Any non-allowlisted value (including legacy nomic-embed-text:latest
-    // and arbitrary user input) is silently redirected to the canonical
-    // default. This is the path that fired the "embedding model not in
-    // MVP allowlist, redirecting to default" warning on every embed
-    // resolution before bge-m3 was added to the allowlist.
-    let mut config = test_config();
-    config.local_ai.embedding_model_id = "nomic-embed-text:latest".to_string();
-    assert_eq!(effective_embedding_model_id(&config), "bge-m3");
-
-    config.local_ai.embedding_model_id = "totally-made-up-model:v0".to_string();
-    assert_eq!(effective_embedding_model_id(&config), "bge-m3");
-}
-
-#[test]
 fn lm_studio_embedding_model_passes_through_served_name() {
     // The native local-runtime fix for #3920: LM Studio serves embeddings
-    // under user-managed names that are not in the MVP allowlist. A
-    // configured id must reach the runtime unchanged rather than being
+    // under user-managed names. A configured id must reach the runtime unchanged rather than being
     // rewritten back to bge-m3 (which the LM Studio server would not have
     // under that exact name).
     let mut config = test_config();
@@ -431,9 +346,6 @@ fn lm_studio_embedding_model_passes_through_served_name() {
 
 #[test]
 fn lm_studio_embedding_model_passes_through_arbitrary_id() {
-    // Contrast with `embedding_model_rejects_non_allowlisted_and_redirects_to_default`:
-    // the SAME non-allowlisted id is rewritten to bge-m3 on the managed
-    // Ollama path but passes through unchanged on the LM Studio path.
     let mut config = test_config();
     config.local_ai.provider = "lm_studio".to_string();
     config.local_ai.embedding_model_id = "nomic-embed-text:latest".to_string();
@@ -454,23 +366,35 @@ fn lm_studio_embedding_model_empty_stays_unconfigured() {
     assert_eq!(effective_embedding_model_id(&config), "");
 }
 
+/// Regression: users pull their own Ollama models, so a configured chat or
+/// embedding model the old MVP allowlist did not know must resolve unchanged
+/// instead of being redirected to `gemma3:1b-it-qat` / `bge-m3`.
 #[test]
-fn ollama_embedding_path_still_enforces_allowlist_after_lm_studio_bypass() {
-    // Guard: the LM Studio bypass must not weaken the managed Ollama path.
-    // Default provider (Ollama) still rewrites a non-allowlisted id.
+fn ollama_models_outside_the_old_allowlist_resolve_unchanged() {
     let mut config = test_config();
+    config.local_ai.provider = "ollama".to_string();
+    config.local_ai.chat_model_id = "llama3.1:8b".to_string();
+    config.local_ai.embedding_model_id = "nomic-embed-text".to_string();
+    assert_eq!(effective_chat_model_id(&config), "llama3.1:8b");
+    assert_eq!(effective_embedding_model_id(&config), "nomic-embed-text");
+
+    // Default provider (empty string) behaves the same way.
+    config.local_ai.provider.clear();
+    config.local_ai.chat_model_id = "gemma3n:e4b".to_string();
     config.local_ai.embedding_model_id = "text-embedding-bge-m3".to_string();
-    assert_eq!(effective_embedding_model_id(&config), "bge-m3");
+    assert_eq!(effective_chat_model_id(&config), "gemma3n:e4b");
+    assert_eq!(
+        effective_embedding_model_id(&config),
+        "text-embedding-bge-m3"
+    );
 }
 
 #[test]
-fn stt_tts_and_quantization_defaults_are_applied() {
+fn stt_and_tts_defaults_are_applied() {
     let mut config = test_config();
     config.local_ai.stt_model_id.clear();
     config.local_ai.tts_voice_id.clear();
-    config.local_ai.quantization = "Q5_K_M".to_string();
 
     assert_eq!(effective_stt_model_id(&config), "ggml-base-q5_1.bin");
     assert_eq!(effective_tts_voice_id(&config), "en_US-lessac-medium");
-    assert_eq!(effective_quantization(&config), "q5_k_m");
 }

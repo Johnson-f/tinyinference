@@ -16,19 +16,6 @@ fn diagnostic_body_snippet(body: &str) -> String {
 }
 
 impl LocalAiService {
-    pub(in crate::service) async fn ensure_lm_studio_available(
-        &self,
-        config: &Config,
-    ) -> Result<(), String> {
-        // Probe connectivity only — the server must be reachable. Whether any
-        // models are loaded is a separate concern surfaced via diagnostics and
-        // the asset-status warning, so bootstrap can succeed and the UI can
-        // show an actionable "load a model in LM Studio" CTA instead of a
-        // hard error.
-        self.list_lm_studio_models(config).await?;
-        Ok(())
-    }
-
     pub(in crate::service) async fn list_lm_studio_models(
         &self,
         config: &Config,
@@ -220,8 +207,7 @@ impl LocalAiService {
         // (GH #5053) — that is the case that must fall through to the original
         // /v1/models error. A fresh Ollama with nothing pulled yet legitimately
         // returns `{"models":[]}`, and treating that as a failure hid a
-        // reachable runtime behind a 404, so the UI could not offer the
-        // model-download action.
+        // reachable runtime behind a 404.
         if let Some(error) = payload
             .error
             .as_deref()
@@ -251,18 +237,5 @@ impl LocalAiService {
             "[local_ai:lm_studio] recovered model discovery via the Ollama /api/tags fallback"
         );
         Some(payload.models)
-    }
-
-    pub(in crate::service) async fn has_lm_studio_model(
-        &self,
-        config: &Config,
-        model: &str,
-    ) -> Result<bool, String> {
-        let target = model.trim().to_ascii_lowercase();
-        Ok(self
-            .list_lm_studio_models(config)
-            .await?
-            .into_iter()
-            .any(|m| m.name.to_ascii_lowercase() == target))
     }
 }

@@ -119,9 +119,17 @@ async fn diagnostics_with_running_server_but_missing_models_flags_issues() {
         Some(base.as_str()),
         "diagnostics must echo back the base url being checked"
     );
-    // No models are installed → expected chat model issue surfaces.
+    // No models are installed → expected chat model issue surfaces, telling
+    // the user to pull it themselves (the runtime never pulls).
     let issues = diag["issues"].as_array().cloned().unwrap_or_default();
     assert!(!issues.is_empty());
+    assert!(
+        issues
+            .iter()
+            .filter_map(|issue| issue.as_str())
+            .any(|issue| issue.contains("is not installed; run `ollama pull ")),
+        "missing-model issue should carry an `ollama pull` hint, got: {issues:?}"
+    );
     let repair_actions = diag["repair_actions"]
         .as_array()
         .cloned()

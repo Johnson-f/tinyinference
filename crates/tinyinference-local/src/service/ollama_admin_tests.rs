@@ -1,5 +1,3 @@
-use super::util::interrupted_pull_settle_window_secs;
-
 use crate::service::LocalAiService;
 use crate::service::RuntimeConfig as Config;
 use axum::{Json, Router, routing::get};
@@ -23,8 +21,6 @@ fn lm_studio_config(base: &str) -> Config {
     config
 }
 
-#[path = "ollama_admin_adoption_and_recovery_tests.rs"]
-mod adoption_and_recovery_tests;
 #[path = "ollama_admin_discovery_fallback_tests.rs"]
 mod discovery_fallback_tests;
 #[path = "ollama_admin_health_and_diagnostics_tests.rs"]

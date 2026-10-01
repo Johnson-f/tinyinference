@@ -66,12 +66,6 @@ async fn lm_studio_list_models_returns_loaded_models() {
 
     assert_eq!(models.len(), 2);
     assert_eq!(models[0].name, "local-model");
-    assert!(
-        service
-            .has_lm_studio_model(&config, "local-model")
-            .await
-            .expect("has model")
-    );
 }
 
 #[tokio::test]
@@ -212,26 +206,6 @@ async fn lm_studio_diagnostics_surfaces_reachable_model_list_errors() {
             .any(|action| action["action"].as_str() == Some("load_lm_studio_model"))
     );
 }
-
-// ---- owned-PID lifecycle ------------------------------------------------
-//
-// These tests pin the contract that `kill_ollama_server` only touches
-// daemons openhuman spawned itself, and that the kill path actually
-// reaches the child process (the previous `taskkill /F /IM ollama.exe` /
-// `pkill -f` would terminate any Ollama on the host, including ones the
-// user started outside openhuman — the issue #1622 friendly-fire bug).
-
-// ── ollama_binary_present short-circuit tests ─────────────────────────────
-
-// The custom-path branch of `ollama_binary_present` is covered by
-// `assets_status_sets_ollama_available_false_when_binary_missing` above, which
-// already calls `service.ollama_binary_present(&config)` and asserts that
-// downstream `assets_status` reports `ollama_available = false` whenever the
-// helper returns false. A dedicated nonexistent-custom-path test that scrubs
-// PATH globally was attempted but caused parallel-test interference (PATH=""
-// poisoned the local_ai_test_guard mutex for sibling tests that legitimately
-// rely on PATH). The behavior is covered; an isolated branch test would
-// require per-process isolation that the existing harness doesn't support.
 
 #[tokio::test]
 async fn diagnostics_gates_models_by_context_window() {

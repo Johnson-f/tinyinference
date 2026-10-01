@@ -1,6 +1,7 @@
 //! Typed System One responses and cross-checks against their requests.
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 
 mod types;

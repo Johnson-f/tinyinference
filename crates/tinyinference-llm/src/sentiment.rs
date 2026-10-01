@@ -76,5 +76,5 @@ pub fn parse_sentiment_response(text: &str) -> SentimentResult {
 }
 
 #[cfg(test)]
-#[path = "sentiment_test.rs"]
+#[path = "sentiment_tests.rs"]
 mod tests;

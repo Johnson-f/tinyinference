@@ -158,5 +158,5 @@ fn read_json_string_field(path: &Path, field: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-#[path = "codex_test.rs"]
+#[path = "codex_tests.rs"]
 mod tests;

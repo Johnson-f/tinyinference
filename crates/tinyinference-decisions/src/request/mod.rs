@@ -1,6 +1,7 @@
 //! Typed System One request values and their local validation.
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 
 mod types;

@@ -308,9 +308,9 @@ async fn download_all<G: VideoGenerator + ?Sized>(
 }
 
 #[cfg(test)]
-#[path = "job_test.rs"]
+#[path = "job_tests.rs"]
 mod job_test;
 
 #[cfg(test)]
-#[path = "openrouter_test.rs"]
+#[path = "openrouter_tests.rs"]
 mod openrouter_test;

@@ -279,5 +279,5 @@ pub fn effective_tts_voice_id(config: &impl LocalModelConfig) -> String {
 }
 
 #[cfg(test)]
-#[path = "models_test.rs"]
+#[path = "models_tests.rs"]
 mod tests;

@@ -173,19 +173,22 @@ impl LocalAiService {
             );
         }
         if healthy && !chat_found {
-            issues.push(format!("Chat model `{}` is not installed", expected_chat));
+            issues.push(format!(
+                "Chat model `{0}` is not installed; run `ollama pull {0}`",
+                expected_chat
+            ));
         }
         // Only flag a missing embedding model the host explicitly configured;
         // the user pulls it themselves (`ollama pull <model>`).
         if healthy && !config.local_ai.embedding_model_id.trim().is_empty() && !embedding_found {
             issues.push(format!(
-                "Embedding model `{}` is not installed",
+                "Embedding model `{0}` is not installed; run `ollama pull {0}`",
                 expected_embedding
             ));
         }
         if healthy && crate::service::vision_configured(&config.local_ai) && !vision_found {
             issues.push(format!(
-                "Vision model `{}` is not installed",
+                "Vision model `{0}` is not installed; run `ollama pull {0}`",
                 expected_vision
             ));
         }

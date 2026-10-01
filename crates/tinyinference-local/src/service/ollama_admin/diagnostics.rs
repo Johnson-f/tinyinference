@@ -5,16 +5,14 @@ use crate::ollama::{
     OllamaModelShow, OllamaModelTag, OllamaShowRequest, OllamaShowResponse, OllamaTagsResponse,
     ollama_base_url_from_override,
 };
-use crate::presets::VisionMode;
 use crate::provider::{
     LocalAiProvider, ModelDiscoveryApi, model_discovery_api, provider_from_name,
 };
 use crate::service::RuntimeConfig as Config;
-use crate::service::presets_adapter;
 
 use super::super::LocalAiService;
 use super::health::OllamaHealthStatus;
-use super::util::lm_studio_models_error_means_unreachable;
+use super::util::models_error_means_unreachable;
 
 const MIN_CONTEXT_TOKENS: u64 = tinyinference_embeddings::RECOMMENDED_OLLAMA_CONTEXT_TOKENS as u64;
 
@@ -159,8 +157,6 @@ impl LocalAiService {
         let chat_eligibility = eligibility_for(&expected_chat);
         let embedding_eligibility = eligibility_for(&expected_embedding);
 
-        let binary_path = self.resolve_binary_path(config);
-
         let mut issues: Vec<String> = Vec::new();
         let repair_actions: Vec<serde_json::Value> = Vec::new();
 
@@ -177,23 +173,22 @@ impl LocalAiService {
             );
         }
         if healthy && !chat_found {
-            issues.push(format!("Chat model `{}` is not installed", expected_chat));
-        }
-        if healthy && config.local_ai.preload_embedding_model && !embedding_found {
             issues.push(format!(
-                "Embedding model `{}` is not installed",
+                "Chat model `{0}` is not installed; run `ollama pull {0}`",
+                expected_chat
+            ));
+        }
+        // Only flag a missing embedding model the host explicitly configured;
+        // the user pulls it themselves (`ollama pull <model>`).
+        if healthy && !config.local_ai.embedding_model_id.trim().is_empty() && !embedding_found {
+            issues.push(format!(
+                "Embedding model `{0}` is not installed; run `ollama pull {0}`",
                 expected_embedding
             ));
         }
-        if healthy
-            && matches!(
-                presets_adapter::vision_mode_for_config(&config.local_ai),
-                VisionMode::Bundled
-            )
-            && !vision_found
-        {
+        if healthy && crate::service::vision_configured(&config.local_ai) && !vision_found {
             issues.push(format!(
-                "Vision model `{}` is not installed",
+                "Vision model `{0}` is not installed; run `ollama pull {0}`",
                 expected_vision
             ));
         }
@@ -246,12 +241,11 @@ impl LocalAiService {
             "ollama_status": ollama_status,
             "ollama_runner_ok": runner_ok,
             "ollama_base_url": base_url,
-            "ollama_binary_path": binary_path,
             "installed_models": installed_models,
             "context_requirement": {
                 "min_context_tokens": MIN_CONTEXT_TOKENS,
             },
-            "vision_mode": presets_adapter::vision_mode_for_config(&config.local_ai),
+            "vision_mode": crate::service::vision_mode_label(&config.local_ai),
             "expected": {
                 "chat_model": expected_chat,
                 "chat_found": chat_found,
@@ -268,6 +262,7 @@ impl LocalAiService {
         }))
     }
 
+    #[cfg(test)]
     pub(in crate::service) async fn list_models_at(
         &self,
         base: &str,
@@ -466,7 +461,7 @@ impl LocalAiService {
         let (models, models_error, healthy) = match models_result {
             Ok(models) => (models, None, true),
             Err(err) => {
-                let reachable = !lm_studio_models_error_means_unreachable(&err);
+                let reachable = !models_error_means_unreachable(&err);
                 (vec![], Some(err), reachable)
             }
         };
@@ -517,7 +512,6 @@ impl LocalAiService {
             "lm_studio_base_url": base_url,
             "ollama_running": false,
             "ollama_base_url": serde_json::Value::Null,
-            "ollama_binary_path": serde_json::Value::Null,
             "installed_models": models,
             "vision_mode": "disabled",
             "expected": {

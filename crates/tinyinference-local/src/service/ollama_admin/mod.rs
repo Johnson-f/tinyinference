@@ -1,15 +1,14 @@
-//! Ollama daemon lifecycle: binary resolution, health checks, model pulls,
-//! diagnostics, and start/stop/adopt handling for `ollama serve`.
+//! Read-only access to the user's Ollama / OpenAI-compatible endpoint:
+//! health probes, installed-model listing, and diagnostics.
 //!
-//! Sub-modules split by concern from the original ollama_admin.rs (1586 lines).
-mod binary;
+//! Nothing here pulls a model or starts, stops, or locates a runtime binary.
 mod diagnostics;
 mod health;
-mod model_pull;
-mod server;
 mod util;
 
+pub(in crate::service) use health::OllamaHealthStatus;
 // Re-export free functions that form the public/crate API of this module.
+pub(in crate::service) use util::models_error_means_unreachable;
 pub use util::test_ollama_connection;
 
 #[cfg(test)]

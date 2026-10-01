@@ -19,9 +19,12 @@ The workspace provides:
 - conservative context-window and vision-capability hints for raw model ids
   when a provider cannot supply an authoritative model profile;
 - normalized provider model-catalog parsing and local runtime model, vision,
-  embedding, speech model, voice, and quantization resolution;
-- embedding-provider catalogs, local model-tier presets, Ollama installation,
-  Piper binary/voice installation, local runtime lifecycle and inference;
+  embedding, speech model, and voice resolution;
+- embedding-provider catalogs, and endpoint-only local inference against a
+  runtime the user installs and runs (Ollama, LM Studio, MLX, OMLX, or any
+  OpenAI-compatible server): reachability probes, installed-model discovery,
+  and inference. TinyInference never downloads models or voices, installs a
+  runtime, or starts/stops one;
 - reusable provider OAuth/PKCE, OpenAI Codex authentication, credential-file
   parsing, and deterministic provider-error classification;
 - OpenAI-compatible hosted transcription, Piper synthesis, local-LLM
@@ -50,7 +53,7 @@ TinyAgents vendors this repository at `vendor/tinyinference` and re-exports the
 public modules through its historical `tinyagents::harness::*` paths. New code
 can depend on `tinyinference-llm` for language models,
 `tinyinference-embeddings` for vector generation and retrieval,
-`tinyinference-local` for local runtimes and installers,
+`tinyinference-local` for endpoint-only local inference,
 `tinyinference-providers` for provider authentication and routing primitives,
 `tinyinference-voice` for speech inference and streaming-audio mechanics,
 `tinyinference-image` for image generation and the shared media-reference
@@ -113,7 +116,7 @@ crates/tinyinference-llm/
 crates/tinyinference-embeddings/
 └── src/            embedding clients, vector store, and retriever
 crates/tinyinference-local/
-└── src/            device profiling, local runtimes, model selection, and installers
+└── src/            local endpoint probing, model selection, and inference
 crates/tinyinference-providers/
 └── src/            OAuth/PKCE flows and provider error classification
 crates/tinyinference-voice/

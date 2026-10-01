@@ -34,9 +34,8 @@ fn ready_service(config: &Config) -> LocalAiService {
 
 fn mock_with_tags_and(route: &str, handler: axum::routing::MethodRouter) -> Router {
     use axum::routing::get;
-    // Respond to `/api/tags` with a payload that contains whatever model
-    // the caller asks about, so `has_model` returns true and `embed`
-    // proceeds to the real endpoint.
+    // Respond to `/api/tags` like a runtime that already serves the models
+    // the caller asks about; `embed` goes straight to the real endpoint.
     Router::new()
         .route(
             "/api/tags",
@@ -123,7 +122,7 @@ async fn vision_prompt_disabled_returns_error() {
 //
 // These drive the real `vision_prompt` path against a mock Ollama server.
 // `ready_service` marks the status "ready", which makes `bootstrap` return
-// early, so no process launch or network beyond the mock is involved.
+// early, so no network beyond the mock is involved.
 
 /// Mock Ollama exposing `/api/tags` with `installed` present, and an
 /// `/api/generate` that echoes back the `model` field it was sent. The
@@ -189,23 +188,38 @@ async fn vision_prompt_sends_the_configured_vision_capable_model() {
     );
 }
 
-/// A configured-but-unpullable vision model must report a vision problem
-/// naming the model and the `ollama pull` that fixes it.
+/// A configured vision model the user's runtime does not serve must report a
+/// vision problem naming the model and the `ollama pull` the user can run —
+/// and the service itself must never pull it.
 #[tokio::test]
 async fn vision_prompt_reports_an_unavailable_vision_model() {
     use axum::routing::get;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let _guard = crate::service::inference_test_guard();
 
-    // Empty tag list, and a pull that refuses: nothing to fall back to.
+    let pulls = Arc::new(AtomicUsize::new(0));
+    let pull_counter = pulls.clone();
+    // Empty tag list, and a generate that answers "model not found".
     let app = Router::new()
         .route("/api/tags", get(|| async { Json(json!({ "models": [] })) }))
         .route(
-            "/api/pull",
+            "/api/generate",
             post(|| async {
                 (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    "pull refused",
+                    axum::http::StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "model 'llava:7b' not found" })),
                 )
+            }),
+        )
+        .route(
+            "/api/pull",
+            post(move || {
+                let pulls = pull_counter.clone();
+                async move {
+                    pulls.fetch_add(1, Ordering::SeqCst);
+                    Json(json!({ "status": "success" }))
+                }
             }),
         );
     let base = spawn_mock(app).await;
@@ -225,7 +239,7 @@ async fn vision_prompt_reports_an_unavailable_vision_model() {
             None,
         )
         .await
-        .expect_err("an unpullable vision model must fail");
+        .expect_err("a vision model the runtime does not serve must fail");
 
     unsafe {
         std::env::remove_var("OPENHUMAN_OLLAMA_BASE_URL");
@@ -238,6 +252,11 @@ async fn vision_prompt_reports_an_unavailable_vision_model() {
     assert!(
         err.contains("ollama pull"),
         "error should say how to install it: {err}"
+    );
+    assert_eq!(
+        pulls.load(Ordering::SeqCst),
+        0,
+        "the service must never pull"
     );
     assert_eq!(service.status.lock().vision_state, "missing");
 }
@@ -327,8 +346,8 @@ async fn non_base64_image_reference_is_rejected_with_guidance() {
     use axum::routing::get;
     let _guard = crate::service::inference_test_guard();
 
-    // The payload check runs *after* model availability, so the model must
-    // read as already installed or this would dial a real Ollama.
+    // The payload check runs before any request, but point at a mock anyway
+    // so a regression could never dial a real Ollama.
     let app = Router::new().route(
         "/api/tags",
         get(|| async {

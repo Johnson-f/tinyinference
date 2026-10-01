@@ -1,14 +1,17 @@
-//! Local Ollama / piper stack — implementation split across submodules.
+//! Local inference service over a user-run endpoint (Ollama, LM Studio, or
+//! any OpenAI-compatible server).
+//!
+//! The service probes the configured endpoint and runs inference against it.
+//! It never downloads models, installs runtimes, or spawns/stops a runtime
+//! process: the user installs and runs their runtime and pulls their models.
 
 #![allow(
-    dead_code,
     missing_docs,
     clippy::await_holding_lock,
     clippy::field_reassign_with_default,
     reason = "runtime internals and wire-shaped settings are exercised across feature-specific hosts"
 )]
 
-mod assets;
 mod bootstrap;
 mod lm_studio;
 mod model_rpc;
@@ -33,65 +36,33 @@ pub(crate) fn inference_test_guard() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|error| error.into_inner())
 }
 
-pub(crate) mod presets_adapter {
-    use super::LocalRuntimeSettings;
-    use crate::presets::{ModelTier, VisionMode, all_presets, preset_for_tier};
+/// Whether a local vision model is configured.
+///
+/// Vision is on-demand against the user's endpoint: it is enabled exactly when
+/// the host names a vision model, and is never preloaded or pulled.
+pub(crate) fn vision_configured(settings: &LocalRuntimeSettings) -> bool {
+    !settings.vision_model_id.trim().is_empty()
+}
 
-    pub(crate) fn vision_mode_for_config(config: &LocalRuntimeSettings) -> VisionMode {
-        match current_tier_from_config(config) {
-            ModelTier::Custom if config.vision_model_id.trim().is_empty() => VisionMode::Disabled,
-            ModelTier::Custom if config.preload_vision_model => VisionMode::Bundled,
-            ModelTier::Custom => VisionMode::Ondemand,
-            tier => crate::presets::vision_mode_for_tier(tier),
-        }
-    }
-
-    pub(crate) fn apply_preset_to_config(config: &mut LocalRuntimeSettings, tier: ModelTier) {
-        let Some(preset) = preset_for_tier(tier) else {
-            return;
-        };
-        config.model_id = preset.chat_model_id.to_string();
-        config.chat_model_id = preset.chat_model_id.to_string();
-        config.vision_model_id = preset.vision_model_id.to_string();
-        config.embedding_model_id = preset.embedding_model_id.to_string();
-        config.quantization = preset.quantization.to_string();
-        config.preload_vision_model = matches!(preset.vision_mode, VisionMode::Bundled);
-        config.preload_embedding_model = true;
-        config.selected_tier = Some(tier.as_str().to_string());
-        config.runtime_enabled = true;
-    }
-
-    pub(crate) fn current_tier_from_config(config: &LocalRuntimeSettings) -> ModelTier {
-        if let Some(tier) = config
-            .selected_tier
-            .as_deref()
-            .and_then(ModelTier::from_str_opt)
-            && (tier == ModelTier::Custom
-                || preset_for_tier(tier).is_some_and(|preset| preset_matches(&preset, config)))
-        {
-            return tier;
-        }
-        all_presets()
-            .into_iter()
-            .find(|preset| preset_matches(preset, config))
-            .map_or(ModelTier::Custom, |preset| preset.tier)
-    }
-
-    fn preset_matches(preset: &crate::presets::ModelPreset, config: &LocalRuntimeSettings) -> bool {
-        let vision_matches = if matches!(preset.vision_mode, VisionMode::Disabled) {
-            config.vision_model_id.trim().is_empty()
-        } else {
-            config.vision_model_id == preset.vision_model_id
-        };
-        config.chat_model_id == preset.chat_model_id
-            && vision_matches
-            && config.embedding_model_id == preset.embedding_model_id
+/// Wire label for the vision mode: `"ondemand"` when a vision model is
+/// configured, `"disabled"` otherwise.
+pub(crate) fn vision_mode_label(settings: &LocalRuntimeSettings) -> &'static str {
+    if vision_configured(settings) {
+        "ondemand"
+    } else {
+        "disabled"
     }
 }
 
 /// Host-selected local runtime settings consumed by the runtime service.
+///
+/// These describe an endpoint the user already runs. There are no download
+/// URLs, preload flags, tiers, or binary paths: the user installs the runtime
+/// and pulls the models.
 #[derive(Clone, Default)]
 pub struct LocalRuntimeSettings {
+    /// Use local inference. Authoritative only together with
+    /// `opt_in_confirmed` (see `LocalAiService::bootstrap`).
     pub runtime_enabled: bool,
     pub provider: String,
     pub base_url: Option<String>,
@@ -101,20 +72,9 @@ pub struct LocalRuntimeSettings {
     pub vision_model_id: String,
     pub embedding_model_id: String,
     pub stt_model_id: String,
-    pub stt_download_url: Option<String>,
     pub tts_voice_id: String,
-    pub tts_download_url: Option<String>,
-    pub tts_config_download_url: Option<String>,
-    pub quantization: String,
-    pub preload_vision_model: bool,
-    pub preload_embedding_model: bool,
-    pub preload_stt_model: bool,
-    pub preload_tts_voice: bool,
-    pub download_url: Option<String>,
     pub autosummary_debounce_ms: u64,
-    pub selected_tier: Option<String>,
     pub opt_in_confirmed: bool,
-    pub ollama_binary_path: Option<String>,
     pub num_ctx: Option<u32>,
 }
 
@@ -132,8 +92,6 @@ impl std::fmt::Debug for LocalRuntimeSettings {
             .field("embedding_model_id", &self.embedding_model_id)
             .field("stt_model_id", &self.stt_model_id)
             .field("tts_voice_id", &self.tts_voice_id)
-            .field("quantization", &self.quantization)
-            .field("selected_tier", &self.selected_tier)
             .field("num_ctx", &self.num_ctx)
             .finish_non_exhaustive()
     }
@@ -171,9 +129,6 @@ impl crate::models::LocalModelConfig for RuntimeConfig {
     fn local_tts_voice_id(&self) -> &str {
         &self.local_ai.tts_voice_id
     }
-    fn local_quantization(&self) -> &str {
-        &self.local_ai.quantization
-    }
 }
 
 pub struct LocalAiService {
@@ -181,10 +136,6 @@ pub struct LocalAiService {
     pub(crate) bootstrap_lock: tokio::sync::Mutex<()>,
     pub(crate) last_memory_summary_at: Mutex<Option<std::time::Instant>>,
     pub(crate) http: reqwest::Client,
-    /// Handle to any `ollama serve` openhuman itself spawned. `None` when
-    /// the daemon currently on `:11434` was started outside openhuman (and
-    /// adopted via the health probe) — those are never killed on exit.
-    pub(crate) owned_ollama: Mutex<Option<tokio::process::Child>>,
 }
 
 impl std::fmt::Debug for LocalAiService {
@@ -192,7 +143,6 @@ impl std::fmt::Debug for LocalAiService {
         formatter
             .debug_struct("LocalAiService")
             .field("status", &self.status.lock())
-            .field("has_owned_ollama", &self.owned_ollama.lock().is_some())
             .finish_non_exhaustive()
     }
 }
@@ -213,23 +163,5 @@ impl LocalAiService {
     /// Marks local speech synthesis ready after a host-owned TTS call.
     pub fn mark_tts_ready(&self) {
         self.status.lock().tts_state = "ready".to_string();
-    }
-    /// Returns `true` iff openhuman currently holds an owned Ollama child handle.
-    ///
-    /// Intended for tests and health-check callers that need to inspect the
-    /// ownership state without going through the full bootstrap path.
-    pub fn has_owned_ollama(&self) -> bool {
-        self.owned_ollama.lock().is_some()
-    }
-
-    /// Inject a pre-spawned child as the owned Ollama handle.
-    ///
-    /// This allows integration tests to set up the ownership state without
-    /// running the full `start_and_wait_for_server` path (which requires a
-    /// real Ollama binary). Production code uses the internal field directly
-    /// inside `ollama_admin.rs`; this method is the public bridge for the
-    /// `tests/` integration test crate.
-    pub fn inject_owned_ollama(&self, child: tokio::process::Child) {
-        *self.owned_ollama.lock() = Some(child);
     }
 }

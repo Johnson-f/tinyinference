@@ -3,9 +3,7 @@ use crate::ollama::{
     OllamaGenerateOptions, OllamaGenerateRequest, ollama_base_url_from_override,
     redact_ollama_base_url,
 };
-use crate::presets::VisionMode;
 use crate::service::RuntimeConfig as Config;
-use crate::service::presets_adapter;
 use crate::status::LocalAiEmbeddingResult;
 use base64::{
     Engine as _,
@@ -60,13 +58,11 @@ impl LocalAiService {
         if image_refs.is_empty() {
             return Err("vision prompt requires at least one image reference".to_string());
         }
-        if matches!(
-            presets_adapter::vision_mode_for_config(&config.local_ai),
-            VisionMode::Disabled
-        ) {
+        if !super::vision_configured(&config.local_ai) {
             self.status.lock().vision_state = "disabled".to_string();
             return Err(
-                "vision summaries are unavailable for this RAM tier. Use OCR-only summarization or switch to a higher local AI tier."
+                "no local vision model is configured. Set `vision_model_id` to a vision-capable \
+                 model your local runtime serves, or use OCR-only summarization."
                     .to_string(),
             );
         }
@@ -74,18 +70,13 @@ impl LocalAiService {
 
         // Resolve through `resolve_vision_model_id` rather than
         // `effective_vision_model_id`: the latter returns an empty string when
-        // there is no usable vision model, which used to be handed straight to
-        // `ensure_ollama_model_available` and became a nameless `POST
-        // /api/pull` retried three times before failing opaquely (#5146).
+        // there is no usable vision model, which used to become a nameless
+        // request that failed opaquely (#5146).
         // The resolver guarantees a non-empty, vision-capable id or a message
         // that says what to configure.
         //
         // Since #5146 P1 it also refuses a *chat-only* configured model instead
-        // of substituting one. That arm IS reachable: `vision_mode_for_config`
-        // only checks the tier, so a user on a vision-enabled tier who points
-        // `vision_model_id` at their chat model reaches here and now gets told
-        // exactly that, rather than having a 1.7 GB substitute pulled behind
-        // their back.
+        // of substituting one.
         let vision_model = match model_ids::resolve_vision_model_id(config) {
             Ok(model) => model,
             Err(error) => {
@@ -103,29 +94,6 @@ impl LocalAiService {
             model = %vision_model,
             "[local_ai:vision] resolved vision-capable model"
         );
-
-        // A model that is configured but not pulled (and cannot be pulled)
-        // must also read as a vision problem, not a generic pull failure.
-        if let Err(error) = self
-            .ensure_ollama_model_available(config, &vision_model, "vision")
-            .await
-        {
-            self.status.lock().vision_state = "missing".to_string();
-            tracing::warn!(
-                target: "local_ai::vision",
-                model = %vision_model,
-                %error,
-                "[local_ai:vision] vision model unavailable"
-            );
-            // `vision_model` is now always the model the user configured, so
-            // "pull it" can no longer name a model they never chose — the
-            // substitution note this used to carry has no case left to cover.
-            return Err(format!(
-                "local vision model `{vision_model}` is not available: {error}. \
-                 Pull it with `ollama pull {vision_model}`, or route the vision \
-                 workload to a cloud provider with `vision_provider`."
-            ));
-        }
 
         let images: Vec<String> = image_refs
             .iter()
@@ -173,6 +141,7 @@ impl LocalAiService {
             "[local_ai:vision] sending generate request"
         );
 
+        let body_model = body.model.clone();
         let response = self.http.post(&url).json(&body).send().await.map_err(|e| {
             tracing::warn!(
                 target: "local_ai::vision",
@@ -201,14 +170,19 @@ impl LocalAiService {
                 body = %detail,
                 "[local_ai:vision] non-success response"
             );
+            self.status.lock().vision_state = "missing".to_string();
             return Err(format!(
-                "ollama vision request failed with status {}{}",
+                "local vision model `{}` is not available: ollama vision request failed with \
+                 status {}{}. Make sure your local runtime serves it (e.g. `ollama pull {}`), \
+                 or route the vision workload to a cloud provider with `vision_provider`.",
+                body_model,
                 status,
                 if detail.is_empty() {
                     String::new()
                 } else {
                     format!(": {detail}")
-                }
+                },
+                body_model
             ));
         }
 
@@ -241,9 +215,9 @@ impl LocalAiService {
             return Err("embed requires at least one non-empty input".to_string());
         }
         self.bootstrap(config).await;
+        // The embedding model must already be served by the user's runtime;
+        // a missing model surfaces as the endpoint's own error below.
         let embedding_model = model_ids::effective_embedding_model_id(config);
-        self.ensure_ollama_model_available(config, &embedding_model, "embedding")
-            .await?;
 
         // Embeds are bge-m3 calls (8K context, ~1.3 GB resident) — the
         // single concurrent embed that has historically crashed the

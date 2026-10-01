@@ -30,59 +30,6 @@ fn chat_capability_classifies_embedding_completion_and_unknown() {
     assert_eq!(ollama_chat_capability(&owned(&["COMPLETION"])), Some(true));
 }
 
-#[test]
-fn pull_progress_aggregates_layered_download_events() {
-    let mut progress = OllamaPullProgress::default();
-
-    progress.observe(&OllamaPullEvent {
-        status: Some("pulling".to_string()),
-        digest: Some("sha256:layer-a".to_string()),
-        total: Some(100),
-        completed: Some(20),
-        error: None,
-    });
-    progress.observe(&OllamaPullEvent {
-        status: Some("pulling".to_string()),
-        digest: Some("sha256:layer-b".to_string()),
-        total: Some(200),
-        completed: Some(50),
-        error: None,
-    });
-    progress.observe(&OllamaPullEvent {
-        status: Some("pulling".to_string()),
-        digest: Some("sha256:layer-a".to_string()),
-        total: Some(100),
-        completed: Some(100),
-        error: None,
-    });
-
-    assert_eq!(progress.aggregate_downloaded(), 150);
-    assert_eq!(progress.aggregate_total(), Some(300));
-}
-
-#[test]
-fn pull_progress_falls_back_when_digest_is_missing() {
-    let mut progress = OllamaPullProgress::default();
-
-    progress.observe(&OllamaPullEvent {
-        status: Some("pulling manifest".to_string()),
-        digest: None,
-        total: Some(120),
-        completed: Some(30),
-        error: None,
-    });
-    progress.observe(&OllamaPullEvent {
-        status: Some("pulling manifest".to_string()),
-        digest: None,
-        total: Some(120),
-        completed: Some(80),
-        error: None,
-    });
-
-    assert_eq!(progress.aggregate_downloaded(), 80);
-    assert_eq!(progress.aggregate_total(), Some(120));
-}
-
 // ── /api/show context-length extraction ──────────────────────────
 
 fn show_response(json: serde_json::Value) -> OllamaShowResponse {

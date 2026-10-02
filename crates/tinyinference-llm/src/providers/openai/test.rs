@@ -2609,6 +2609,31 @@ mod explicit_cache_control {
     }
 
     #[test]
+    fn anthropic_cache_control_is_opt_in_per_model_and_matches_routed_ids() {
+        let relay = |id: &str| {
+            OpenAiModel::compatible_provider("OpenHuman", "k", "https://example.com/v1", id)
+                .with_anthropic_cache_control(true)
+        };
+        assert_eq!(
+            marker_count(
+                &relay("openrouter/anthropic/claude-sonnet-4-6"),
+                &cacheable_request()
+            ),
+            2
+        );
+        assert_eq!(marker_count(&relay("hint:coding"), &cacheable_request()), 0);
+        assert_eq!(
+            marker_count(&relay("openai/gpt-5"), &cacheable_request()),
+            0
+        );
+        // "claudette" style vendor names must not match a path segment test.
+        assert_eq!(
+            marker_count(&relay("acme/anthropic-compatible-x"), &cacheable_request()),
+            0
+        );
+    }
+
+    #[test]
     fn from_spec_enables_explicit_breakpoints_for_openrouter_only() {
         let spec = |kind| ProviderSpec {
             kind,

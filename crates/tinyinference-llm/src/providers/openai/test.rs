@@ -2562,6 +2562,52 @@ mod explicit_cache_control {
         );
     }
 
+    fn marker_count(model: &OpenAiModel, request: &ModelRequest) -> usize {
+        let body = model
+            .translate_request_with(request, Degrade::default())
+            .unwrap();
+        serde_json::to_value(&body)
+            .unwrap()
+            .to_string()
+            .matches("cache_control")
+            .count()
+    }
+
+    #[test]
+    fn tinyhumans_marks_anthropic_models_only() {
+        let anthropic = OpenAiModel::tinyhumans("k", "anthropic/claude-sonnet-4-6");
+        assert_eq!(marker_count(&anthropic, &cacheable_request()), 2);
+        let bare = OpenAiModel::tinyhumans("k", "claude-haiku-4-5");
+        assert_eq!(marker_count(&bare, &cacheable_request()), 2);
+        let deepseek = OpenAiModel::tinyhumans("k", "deepseek/deepseek-v4-flash");
+        assert_eq!(marker_count(&deepseek, &cacheable_request()), 0);
+    }
+
+    #[test]
+    fn tinyhumans_uses_the_per_request_model_override() {
+        let model = OpenAiModel::tinyhumans("k", "deepseek/deepseek-v4-flash");
+        let request = cacheable_request().with_model("anthropic/claude-sonnet-4-6");
+        assert_eq!(marker_count(&model, &request), 2);
+    }
+
+    #[test]
+    fn tinyhumans_anthropic_without_a_declared_prefix_is_unmarked() {
+        let model = OpenAiModel::tinyhumans("k", "anthropic/claude-sonnet-4-6");
+        let request = ModelRequest::new(vec![Message::system("rules"), Message::user("hi")]);
+        assert_eq!(marker_count(&model, &request), 0);
+    }
+
+    #[test]
+    fn other_compatible_hosts_never_get_markers_for_anthropic_ids() {
+        let model = OpenAiModel::compatible_provider(
+            "custom",
+            "k",
+            "https://example.com/v1",
+            "anthropic/claude-sonnet-4-6",
+        );
+        assert_eq!(marker_count(&model, &cacheable_request()), 0);
+    }
+
     #[test]
     fn from_spec_enables_explicit_breakpoints_for_openrouter_only() {
         let spec = |kind| ProviderSpec {

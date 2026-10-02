@@ -247,6 +247,14 @@ pub(super) fn merge_system_into_user(messages: &[Message]) -> Vec<Message> {
     merged
 }
 
+/// Returns `true` for a relay-style Anthropic model id (`anthropic/claude-...`,
+/// or a bare `claude-...`), whose prompt cache is opt-in: without explicit
+/// `cache_control` breakpoints it caches nothing, however stable the prefix.
+pub(super) fn is_anthropic_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower.starts_with("anthropic/") || lower.starts_with("claude")
+}
+
 /// Returns `true` for OpenAI o-series reasoning models (`o1`/`o3`/`o4`), which
 /// reject `max_tokens` and require `max_completion_tokens` instead.
 pub(super) fn is_reasoning_model(model: &str) -> bool {
@@ -558,6 +566,24 @@ impl OpenAiModel {
         self
     }
 
+    /// Whether this request should carry explicit `cache_control` breakpoints.
+    ///
+    /// Always on when [`Self::with_explicit_cache_control`] is set (OpenRouter).
+    /// The TinyHumans gateway relays to OpenRouter and accepts a caller-selected
+    /// upstream, so it gets the markers only for an Anthropic-family model, the
+    /// one case where they are needed; every other model there caches a stable
+    /// prefix on its own and keeps the plain `prompt_cache_key` request.
+    fn wants_cache_breakpoints_for(&self, request: &ModelRequest) -> bool {
+        if !request.wants_prompt_cache_breakpoints() {
+            return false;
+        }
+        if self.explicit_cache_control {
+            return true;
+        }
+        let model = request.model.as_deref().unwrap_or(&self.model);
+        self.provider == "tinyhumans" && is_anthropic_model(model)
+    }
+
     /// Bakes provider-specific options onto every request (e.g. a local model's
     /// `{"options": {"num_ctx": 8192}}`). These are merged **under** each
     /// request's own [`ModelRequest::provider_options`], so a per-call option of
@@ -826,7 +852,9 @@ impl OpenAiModel {
     ///
     /// The gateway accepts a caller-selected upstream model. It forwards the
     /// OpenAI-compatible `prompt_cache_key` to retain affinity for a stable
-    /// prompt prefix, without OpenRouter-specific `cache_control` markers.
+    /// prompt prefix. For an Anthropic-family model, whose cache is opt-in, the
+    /// request additionally carries `cache_control` breakpoints (see
+    /// `wants_cache_breakpoints_for`); other models never see them.
     pub fn tinyhumans(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self::compatible_provider(
             "tinyhumans",
@@ -1168,7 +1196,7 @@ impl OpenAiModel {
             .filter(|message| !matches!(message, Message::Custom(_)))
             .map(translate_message)
             .collect::<Result<Vec<_>>>()?;
-        if self.explicit_cache_control && request.wants_prompt_cache_breakpoints() {
+        if self.wants_cache_breakpoints_for(request) {
             apply_cache_breakpoints(&mut messages);
         }
 

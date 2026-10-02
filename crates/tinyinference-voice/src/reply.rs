@@ -172,5 +172,5 @@ fn read_ms(v: &Value, ms_keys: &[&str], sec_keys: &[&str]) -> Option<u64> {
 }
 
 #[cfg(test)]
-#[path = "reply_test.rs"]
+#[path = "reply_tests.rs"]
 mod tests;

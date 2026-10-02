@@ -61,4 +61,5 @@ use crate::usage::Usage;
 mod mock;
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

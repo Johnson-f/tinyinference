@@ -269,5 +269,5 @@ pub fn is_local_provider_string(provider: &str) -> bool {
 }
 
 #[cfg(test)]
-#[path = "profile_test.rs"]
+#[path = "profile_tests.rs"]
 mod tests;

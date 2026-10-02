@@ -114,10 +114,14 @@ use transport::{
 };
 
 #[cfg(test)]
+#[path = "config_tests.rs"]
 mod config_test;
 #[cfg(test)]
+#[path = "local_tests.rs"]
 mod local_test;
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 #[cfg(test)]
+#[path = "wire_tests.rs"]
 mod wire_test;

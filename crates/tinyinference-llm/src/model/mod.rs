@@ -895,4 +895,5 @@ pub async fn collect_model_stream(mut stream: ModelStream) -> Result<ModelRespon
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

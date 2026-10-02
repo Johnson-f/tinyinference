@@ -1,6 +1,7 @@
 //! Async HTTP client, retry policy, and measured evaluation result.
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 
 mod types;

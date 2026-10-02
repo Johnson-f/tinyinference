@@ -415,5 +415,5 @@ pub fn ns_to_tps(tokens: f32, duration_ns: u64) -> Option<f32> {
 }
 
 #[cfg(test)]
-#[path = "ollama_test.rs"]
+#[path = "ollama_tests.rs"]
 mod tests;

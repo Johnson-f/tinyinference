@@ -146,5 +146,5 @@ pub fn sanitize_inline_completion(raw: &str, context: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "completion_test.rs"]
+#[path = "completion_tests.rs"]
 mod tests;

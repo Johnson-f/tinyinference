@@ -224,7 +224,7 @@ pub fn lm_studio_context_window_for(
 }
 
 #[cfg(test)]
-#[path = "lm_studio_test.rs"]
+#[path = "lm_studio_tests.rs"]
 mod tests;
 
 fn redact_url(raw: &str) -> String {

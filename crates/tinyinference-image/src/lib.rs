@@ -85,9 +85,9 @@ pub trait ImageGenerator: Send + Sync {
 }
 
 #[cfg(test)]
-#[path = "reference_test.rs"]
+#[path = "reference_tests.rs"]
 mod reference_test;
 
 #[cfg(test)]
-#[path = "openrouter_test.rs"]
+#[path = "openrouter_tests.rs"]
 mod openrouter_test;

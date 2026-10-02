@@ -143,5 +143,5 @@ fn content_type_or_mpeg(resp: &reqwest::Response) -> String {
 }
 
 #[cfg(test)]
-#[path = "external_tts_test.rs"]
+#[path = "external_tts_tests.rs"]
 mod tests;

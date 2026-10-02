@@ -434,6 +434,7 @@ pub use voyage::{
 };
 
 #[cfg(test)]
+#[path = "lib_tests.rs"]
 mod test;
 pub use cloud::{
     BearerResolver, CloudEmbeddingModel, DEFAULT_CLOUD_DIMENSIONS, DEFAULT_CLOUD_MODEL,

@@ -2598,21 +2598,45 @@ mod explicit_cache_control {
     }
 
     #[test]
-    fn other_compatible_hosts_never_get_markers_for_anthropic_ids() {
+    fn any_compatible_gateway_marks_anthropic_ids_but_never_other_models() {
+        let gateway = |id: &str| {
+            OpenAiModel::compatible_provider("custom", "k", "https://example.com/v1", id)
+        };
+        assert_eq!(
+            marker_count(
+                &gateway("anthropic/claude-sonnet-4-6"),
+                &cacheable_request()
+            ),
+            2
+        );
+        assert_eq!(marker_count(&gateway("gpt-5"), &cacheable_request()), 0);
+        assert_eq!(
+            marker_count(
+                &OpenAiModel::new("k").with_model("gpt-5"),
+                &cacheable_request()
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn anthropic_markers_can_be_opted_out_and_local_runtimes_never_get_them() {
         let model = OpenAiModel::compatible_provider(
             "custom",
             "k",
             "https://example.com/v1",
             "anthropic/claude-sonnet-4-6",
-        );
+        )
+        .with_anthropic_cache_control(false);
         assert_eq!(marker_count(&model, &cacheable_request()), 0);
+        let local = OpenAiModel::ollama_at("http://127.0.0.1:11434", "claude-local").unwrap();
+        assert_eq!(marker_count(&local, &cacheable_request()), 0);
     }
 
     #[test]
     fn anthropic_cache_control_is_opt_in_per_model_and_matches_routed_ids() {
         let relay = |id: &str| {
             OpenAiModel::compatible_provider("OpenHuman", "k", "https://example.com/v1", id)
-                .with_anthropic_cache_control(true)
         };
         assert_eq!(
             marker_count(

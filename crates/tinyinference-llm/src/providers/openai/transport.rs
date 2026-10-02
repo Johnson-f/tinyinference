@@ -126,10 +126,11 @@ pub struct OpenAiModel {
     /// automatic. See [`Self::with_explicit_cache_control`].
     pub(super) explicit_cache_control: bool,
     /// Like `explicit_cache_control`, but applied only when the request's
-    /// effective model is Anthropic-family. For a gateway that relays an
-    /// arbitrary caller-chosen upstream (TinyHumans): the breakpoints are needed
-    /// for a Claude model and unwanted for the rest. See
-    /// [`Self::with_anthropic_cache_control`].
+    /// effective model is Anthropic-family. On by default for every
+    /// OpenAI-compatible endpoint: it keys on the model id, not the host, so any
+    /// gateway relaying a Claude upstream (TinyHumans, OpenRouter, LiteLLM, a
+    /// self-hosted proxy) gets breakpoints, and no other model is affected. Off
+    /// for local runtimes. See [`Self::with_anthropic_cache_control`].
     pub(super) anthropic_cache_control: bool,
     /// Host-supplied request hooks and HTTP client override. See
     /// [`crate::providers::ProviderRequestOptions`]. Currently applied to the
@@ -346,7 +347,7 @@ impl OpenAiModel {
             profile: derive_profile("openai", DEFAULT_MODEL),
             default_provider_options: Value::Null,
             explicit_cache_control: false,
-            anthropic_cache_control: false,
+            anthropic_cache_control: true,
             responses_api_primary: false,
             responses_omit_max_output_tokens: false,
             extra_query_params: Vec::new(),
@@ -578,10 +579,10 @@ impl OpenAiModel {
     /// Whether this request should carry explicit `cache_control` breakpoints.
     ///
     /// Always on when [`Self::with_explicit_cache_control`] is set (OpenRouter).
-    /// With [`Self::with_anthropic_cache_control`] (the TinyHumans gateway, which
-    /// relays a caller-selected upstream) only for an Anthropic-family model,
-    /// the one case where they are needed; every other model caches a stable
-    /// prefix on its own and keeps the plain `prompt_cache_key` request.
+    /// Otherwise (default, see [`Self::with_anthropic_cache_control`]) only for an
+    /// Anthropic-family model on any gateway, the one case where they are
+    /// needed; every other model caches a stable prefix on its own and keeps the
+    /// plain `prompt_cache_key` request.
     fn wants_cache_breakpoints_for(&self, request: &ModelRequest) -> bool {
         if !request.wants_prompt_cache_breakpoints() {
             return false;
@@ -596,9 +597,11 @@ impl OpenAiModel {
     /// Emits explicit `cache_control` breakpoints, but only for requests whose
     /// effective model is Anthropic-family (see [`is_anthropic_model`]).
     ///
-    /// For a relay that serves whatever upstream the caller names. Anthropic's
-    /// cache is opt-in, so a stable prefix caches nothing without markers; every
-    /// other upstream caches automatically and keeps the plain request.
+    /// Default on, for every OpenAI-compatible endpoint, because Anthropic's
+    /// cache is opt-in: a stable prefix caches nothing without markers, and a
+    /// relay cannot add them for the caller. Every other upstream caches
+    /// automatically and keeps the plain request. Pass `false` for an endpoint
+    /// that rejects unknown content-part fields while serving Claude ids.
     /// [`Self::with_explicit_cache_control`] (always on) takes precedence.
     pub fn with_anthropic_cache_control(mut self, enabled: bool) -> Self {
         self.anthropic_cache_control = enabled;
@@ -874,8 +877,8 @@ impl OpenAiModel {
     /// The gateway accepts a caller-selected upstream model. It forwards the
     /// OpenAI-compatible `prompt_cache_key` to retain affinity for a stable
     /// prompt prefix. For an Anthropic-family model, whose cache is opt-in, the
-    /// request additionally carries `cache_control` breakpoints (see
-    /// `wants_cache_breakpoints_for`); other models never see them.
+    /// request additionally carries `cache_control` breakpoints (the default for
+    /// every compatible endpoint, see [`Self::with_anthropic_cache_control`]).
     pub fn tinyhumans(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self::compatible_provider(
             "tinyhumans",
@@ -883,7 +886,6 @@ impl OpenAiModel {
             "https://api.tinyhumans.ai/openai/v1",
             model,
         )
-        .with_anthropic_cache_control(true)
     }
 
     /// Together AI (`https://api.together.xyz/v1`), default model
@@ -946,7 +948,8 @@ impl OpenAiModel {
             .with_auth_style(AuthStyle::None)
             .with_vision(false)
             .with_named_tool_choice(false)
-            .with_json_object_format(false);
+            .with_json_object_format(false)
+            .with_anthropic_cache_control(false);
         output.local_runtime = Some(kind);
         output.json_schema_strict.store(false, Ordering::Relaxed);
         output.profile.max_input_tokens = None;

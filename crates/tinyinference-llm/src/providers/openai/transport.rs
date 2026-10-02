@@ -595,7 +595,8 @@ impl OpenAiModel {
     }
 
     /// Emits explicit `cache_control` breakpoints, but only for requests whose
-    /// effective model is Anthropic-family (see [`is_anthropic_model`]).
+    /// effective model is Anthropic-family (a `claude*` id, or one with an
+    /// `anthropic` path segment such as `openrouter/anthropic/claude-...`).
     ///
     /// Default on, for every OpenAI-compatible endpoint, because Anthropic's
     /// cache is opt-in: a stable prefix caches nothing without markers, and a
@@ -827,6 +828,9 @@ impl OpenAiModel {
             "https://api.anthropic.com/v1",
             "claude-3-5-sonnet-latest",
         )
+        // The compatibility layer ignores `cache_control`; markers there cannot
+        // produce hits, so leave them off and point cache users at `AnthropicModel`.
+        .with_anthropic_cache_control(false)
     }
 
     /// Groq (`https://api.groq.com/openai/v1`), default model

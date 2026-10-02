@@ -118,6 +118,7 @@ mod config_test;
 #[cfg(test)]
 mod local_test;
 #[cfg(test)]
+#[path = "openai_tests.rs"]
 mod test;
 #[cfg(test)]
 mod wire_test;

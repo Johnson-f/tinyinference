@@ -474,5 +474,5 @@ pub use text::{
 };
 
 #[cfg(test)]
-#[path = "failure_test.rs"]
+#[path = "failure_tests.rs"]
 mod tests;

@@ -56,5 +56,5 @@ pub fn evaluate_context(context_length: Option<u64>, required: u64) -> ContextEl
 }
 
 #[cfg(test)]
-#[path = "model_requirements_test.rs"]
+#[path = "model_requirements_tests.rs"]
 mod tests;

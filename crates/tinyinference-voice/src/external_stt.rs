@@ -251,5 +251,5 @@ impl ExternalSttClient {
 }
 
 #[cfg(test)]
-#[path = "external_stt_test.rs"]
+#[path = "external_stt_tests.rs"]
 mod tests;

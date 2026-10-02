@@ -25,5 +25,5 @@ pub fn apply_no_window(cmd: &mut tokio::process::Command) {
 pub fn apply_no_window(_cmd: &mut tokio::process::Command) {}
 
 #[cfg(test)]
-#[path = "process_test.rs"]
+#[path = "process_tests.rs"]
 mod tests;

@@ -100,6 +100,6 @@ pub struct LocalAiTtsResult {
 }
 
 #[cfg(test)]
-#[path = "status_test.rs"]
+#[path = "status_tests.rs"]
 #[allow(clippy::field_reassign_with_default)]
 mod tests;

@@ -123,5 +123,5 @@ pub fn model_discovery_api(provider: &str, base_url: &str) -> ModelDiscoveryApi 
 }
 
 #[cfg(test)]
-#[path = "provider_test.rs"]
+#[path = "provider_tests.rs"]
 mod tests;

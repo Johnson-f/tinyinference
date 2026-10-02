@@ -9,4 +9,5 @@ pub use parsing::{merge_openai_codex_model_hints, parse_models_response};
 pub use types::ModelInfo;
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

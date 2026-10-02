@@ -46,8 +46,10 @@ mod stream;
 pub use config::{AnthropicConfig, build_anthropic_model, endpoint_is_anthropic_messages};
 
 #[cfg(test)]
+#[path = "config_tests.rs"]
 mod config_test;
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;
 
 use async_trait::async_trait;

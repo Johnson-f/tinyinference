@@ -233,4 +233,5 @@ fn tool_calls_char_weight(tool_calls: &[crate::tool::ToolCall]) -> usize {
 }
 
 #[cfg(test)]
+#[path = "mod_tests.rs"]
 mod test;

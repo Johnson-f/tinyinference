@@ -76,5 +76,5 @@ pub fn is_emoji_start(ch: char) -> bool {
 }
 
 #[cfg(test)]
-#[path = "emoji_test.rs"]
+#[path = "emoji_tests.rs"]
 mod tests;

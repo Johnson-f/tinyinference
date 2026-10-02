@@ -2620,18 +2620,7 @@ mod explicit_cache_control {
     }
 
     #[test]
-    fn the_public_local_runtime_builder_and_anthropic_compat_preset_never_mark() {
-        let local = crate::providers::openai::build_local_runtime_chat_model(
-            "ollama",
-            "http://127.0.0.1:11434/v1",
-            "",
-            crate::providers::openai::AuthStyle::None,
-            "claude-local",
-            &[],
-            None,
-            None,
-        );
-        let _ = local; // trait object; the flag is asserted through the concrete preset below
+    fn the_anthropic_compat_preset_never_marks() {
         let compat = OpenAiModel::anthropic("k");
         assert_eq!(marker_count(&compat, &cacheable_request()), 0);
     }

@@ -2562,6 +2562,107 @@ mod explicit_cache_control {
         );
     }
 
+    fn marker_count(model: &OpenAiModel, request: &ModelRequest) -> usize {
+        let body = model
+            .translate_request_with(request, Degrade::default())
+            .unwrap();
+        serde_json::to_value(&body)
+            .unwrap()
+            .to_string()
+            .matches("cache_control")
+            .count()
+    }
+
+    #[test]
+    fn tinyhumans_marks_anthropic_models_only() {
+        let anthropic = OpenAiModel::tinyhumans("k", "anthropic/claude-sonnet-4-6");
+        assert_eq!(marker_count(&anthropic, &cacheable_request()), 2);
+        let bare = OpenAiModel::tinyhumans("k", "claude-haiku-4-5");
+        assert_eq!(marker_count(&bare, &cacheable_request()), 2);
+        let deepseek = OpenAiModel::tinyhumans("k", "deepseek/deepseek-v4-flash");
+        assert_eq!(marker_count(&deepseek, &cacheable_request()), 0);
+    }
+
+    #[test]
+    fn tinyhumans_uses_the_per_request_model_override() {
+        let model = OpenAiModel::tinyhumans("k", "deepseek/deepseek-v4-flash");
+        let request = cacheable_request().with_model("anthropic/claude-sonnet-4-6");
+        assert_eq!(marker_count(&model, &request), 2);
+    }
+
+    #[test]
+    fn tinyhumans_anthropic_without_a_declared_prefix_is_unmarked() {
+        let model = OpenAiModel::tinyhumans("k", "anthropic/claude-sonnet-4-6");
+        let request = ModelRequest::new(vec![Message::system("rules"), Message::user("hi")]);
+        assert_eq!(marker_count(&model, &request), 0);
+    }
+
+    #[test]
+    fn any_compatible_gateway_marks_anthropic_ids_but_never_other_models() {
+        let gateway = |id: &str| {
+            OpenAiModel::compatible_provider("custom", "k", "https://example.com/v1", id)
+        };
+        assert_eq!(
+            marker_count(
+                &gateway("anthropic/claude-sonnet-4-6"),
+                &cacheable_request()
+            ),
+            2
+        );
+        assert_eq!(marker_count(&gateway("gpt-5"), &cacheable_request()), 0);
+        assert_eq!(
+            marker_count(
+                &OpenAiModel::new("k").with_model("gpt-5"),
+                &cacheable_request()
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn the_anthropic_compat_preset_never_marks() {
+        let compat = OpenAiModel::anthropic("k");
+        assert_eq!(marker_count(&compat, &cacheable_request()), 0);
+    }
+
+    #[test]
+    fn anthropic_markers_can_be_opted_out_and_local_runtimes_never_get_them() {
+        let model = OpenAiModel::compatible_provider(
+            "custom",
+            "k",
+            "https://example.com/v1",
+            "anthropic/claude-sonnet-4-6",
+        )
+        .with_anthropic_cache_control(false);
+        assert_eq!(marker_count(&model, &cacheable_request()), 0);
+        let local = OpenAiModel::ollama_at("http://127.0.0.1:11434", "claude-local").unwrap();
+        assert_eq!(marker_count(&local, &cacheable_request()), 0);
+    }
+
+    #[test]
+    fn anthropic_cache_control_is_opt_in_per_model_and_matches_routed_ids() {
+        let relay = |id: &str| {
+            OpenAiModel::compatible_provider("OpenHuman", "k", "https://example.com/v1", id)
+        };
+        assert_eq!(
+            marker_count(
+                &relay("openrouter/anthropic/claude-sonnet-4-6"),
+                &cacheable_request()
+            ),
+            2
+        );
+        assert_eq!(marker_count(&relay("hint:coding"), &cacheable_request()), 0);
+        assert_eq!(
+            marker_count(&relay("openai/gpt-5"), &cacheable_request()),
+            0
+        );
+        // "claudette" style vendor names must not match a path segment test.
+        assert_eq!(
+            marker_count(&relay("acme/anthropic-compatible-x"), &cacheable_request()),
+            0
+        );
+    }
+
     #[test]
     fn from_spec_enables_explicit_breakpoints_for_openrouter_only() {
         let spec = |kind| ProviderSpec {

@@ -125,6 +125,13 @@ pub struct OpenAiModel {
     /// default: hosted OpenAI rejects unknown part fields, and its own cache is
     /// automatic. See [`Self::with_explicit_cache_control`].
     pub(super) explicit_cache_control: bool,
+    /// Like `explicit_cache_control`, but applied only when the request's
+    /// effective model is Anthropic-family. On by default for every
+    /// OpenAI-compatible endpoint: it keys on the model id, not the host, so any
+    /// gateway relaying a Claude upstream (TinyHumans, OpenRouter, LiteLLM, a
+    /// self-hosted proxy) gets breakpoints, and no other model is affected. Off
+    /// for local runtimes. See [`Self::with_anthropic_cache_control`].
+    pub(super) anthropic_cache_control: bool,
     /// Host-supplied request hooks and HTTP client override. See
     /// [`crate::providers::ProviderRequestOptions`]. Currently applied to the
     /// Chat Completions transport path only ([`Self::post_json`]).
@@ -247,6 +254,16 @@ pub(super) fn merge_system_into_user(messages: &[Message]) -> Vec<Message> {
     merged
 }
 
+/// Returns `true` for a relay-style Anthropic model id (`anthropic/claude-...`,
+/// or a bare `claude-...`), whose prompt cache is opt-in: without explicit
+/// `cache_control` breakpoints it caches nothing, however stable the prefix.
+pub(super) fn is_anthropic_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    // Relay ids carry the vendor as a path segment, possibly behind a router
+    // prefix (`openrouter/anthropic/claude-...`); a bare id starts with `claude`.
+    lower.starts_with("claude") || lower.split('/').any(|seg| seg == "anthropic")
+}
+
 /// Returns `true` for OpenAI o-series reasoning models (`o1`/`o3`/`o4`), which
 /// reject `max_tokens` and require `max_completion_tokens` instead.
 pub(super) fn is_reasoning_model(model: &str) -> bool {
@@ -330,6 +347,7 @@ impl OpenAiModel {
             profile: derive_profile("openai", DEFAULT_MODEL),
             default_provider_options: Value::Null,
             explicit_cache_control: false,
+            anthropic_cache_control: true,
             responses_api_primary: false,
             responses_omit_max_output_tokens: false,
             extra_query_params: Vec::new(),
@@ -558,6 +576,39 @@ impl OpenAiModel {
         self
     }
 
+    /// Whether this request should carry explicit `cache_control` breakpoints.
+    ///
+    /// Always on when [`Self::with_explicit_cache_control`] is set (OpenRouter).
+    /// Otherwise (default, see [`Self::with_anthropic_cache_control`]) only for an
+    /// Anthropic-family model on any gateway, the one case where they are
+    /// needed; every other model caches a stable prefix on its own and keeps the
+    /// plain `prompt_cache_key` request.
+    fn wants_cache_breakpoints_for(&self, request: &ModelRequest) -> bool {
+        if !request.wants_prompt_cache_breakpoints() {
+            return false;
+        }
+        if self.explicit_cache_control {
+            return true;
+        }
+        let model = request.model.as_deref().unwrap_or(&self.model);
+        self.anthropic_cache_control && is_anthropic_model(model)
+    }
+
+    /// Emits explicit `cache_control` breakpoints, but only for requests whose
+    /// effective model is Anthropic-family (a `claude*` id, or one with an
+    /// `anthropic` path segment such as `openrouter/anthropic/claude-...`).
+    ///
+    /// Default on, for every OpenAI-compatible endpoint, because Anthropic's
+    /// cache is opt-in: a stable prefix caches nothing without markers, and a
+    /// relay cannot add them for the caller. Every other upstream caches
+    /// automatically and keeps the plain request. Pass `false` for an endpoint
+    /// that rejects unknown content-part fields while serving Claude ids.
+    /// [`Self::with_explicit_cache_control`] (always on) takes precedence.
+    pub fn with_anthropic_cache_control(mut self, enabled: bool) -> Self {
+        self.anthropic_cache_control = enabled;
+        self
+    }
+
     /// Bakes provider-specific options onto every request (e.g. a local model's
     /// `{"options": {"num_ctx": 8192}}`). These are merged **under** each
     /// request's own [`ModelRequest::provider_options`], so a per-call option of
@@ -777,6 +828,9 @@ impl OpenAiModel {
             "https://api.anthropic.com/v1",
             "claude-3-5-sonnet-latest",
         )
+        // The compatibility layer ignores `cache_control`; markers there cannot
+        // produce hits, so leave them off and point cache users at `AnthropicModel`.
+        .with_anthropic_cache_control(false)
     }
 
     /// Groq (`https://api.groq.com/openai/v1`), default model
@@ -826,7 +880,9 @@ impl OpenAiModel {
     ///
     /// The gateway accepts a caller-selected upstream model. It forwards the
     /// OpenAI-compatible `prompt_cache_key` to retain affinity for a stable
-    /// prompt prefix, without OpenRouter-specific `cache_control` markers.
+    /// prompt prefix. For an Anthropic-family model, whose cache is opt-in, the
+    /// request additionally carries `cache_control` breakpoints (the default for
+    /// every compatible endpoint, see [`Self::with_anthropic_cache_control`]).
     pub fn tinyhumans(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self::compatible_provider(
             "tinyhumans",
@@ -896,7 +952,8 @@ impl OpenAiModel {
             .with_auth_style(AuthStyle::None)
             .with_vision(false)
             .with_named_tool_choice(false)
-            .with_json_object_format(false);
+            .with_json_object_format(false)
+            .with_anthropic_cache_control(false);
         output.local_runtime = Some(kind);
         output.json_schema_strict.store(false, Ordering::Relaxed);
         output.profile.max_input_tokens = None;
@@ -1168,7 +1225,7 @@ impl OpenAiModel {
             .filter(|message| !matches!(message, Message::Custom(_)))
             .map(translate_message)
             .collect::<Result<Vec<_>>>()?;
-        if self.explicit_cache_control && request.wants_prompt_cache_breakpoints() {
+        if self.wants_cache_breakpoints_for(request) {
             apply_cache_breakpoints(&mut messages);
         }
 

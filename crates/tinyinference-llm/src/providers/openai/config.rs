@@ -101,13 +101,23 @@ pub fn endpoint_is_openrouter(endpoint: &str) -> bool {
 
 /// Builds an OpenAI-compatible chat model from fully resolved configuration.
 pub fn build_openai_model(config: OpenAiConfig<'_>) -> Arc<dyn ChatModel<()>> {
+    build_openai_model_with(config, true)
+}
+
+/// [`build_openai_model`] with the Anthropic-model `cache_control` default made
+/// explicit; a local runtime passes `false` so it never receives the markers.
+fn build_openai_model_with(
+    config: OpenAiConfig<'_>,
+    anthropic_cache_control: bool,
+) -> Arc<dyn ChatModel<()>> {
     let mut model = OpenAiModel::compatible_provider(
         config.provider_name,
         config.api_key,
         config.endpoint,
         config.model,
     )
-    .with_auth_style(config.auth_style);
+    .with_auth_style(config.auth_style)
+    .with_anthropic_cache_control(anthropic_cache_control);
 
     if !config.temperature_unsupported_models.is_empty() {
         model = model
@@ -200,23 +210,26 @@ pub fn build_local_runtime_chat_model(
             "options": { "num_ctx": value }
         })
     });
-    build_openai_model(OpenAiConfig {
-        provider_name,
-        endpoint,
-        api_key,
-        auth_style,
-        model,
-        temperature_unsupported_models,
-        temperature_override,
-        merge_system_into_user: false,
-        extra_headers: &[],
-        native_tool_calling: Some(false),
-        vision: Some(false),
-        default_provider_options,
-        responses_api_primary: false,
-        responses_omit_max_output_tokens: false,
-        extra_query_params: &[],
-        user_agent: None,
-        explicit_cache_control: false,
-    })
+    build_openai_model_with(
+        OpenAiConfig {
+            provider_name,
+            endpoint,
+            api_key,
+            auth_style,
+            model,
+            temperature_unsupported_models,
+            temperature_override,
+            merge_system_into_user: false,
+            extra_headers: &[],
+            native_tool_calling: Some(false),
+            vision: Some(false),
+            default_provider_options,
+            responses_api_primary: false,
+            responses_omit_max_output_tokens: false,
+            extra_query_params: &[],
+            user_agent: None,
+            explicit_cache_control: false,
+        },
+        false,
+    )
 }

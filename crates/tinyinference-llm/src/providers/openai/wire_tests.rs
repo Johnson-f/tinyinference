@@ -335,7 +335,7 @@ fn serve_error_once(status: u16, body: &'static str) -> String {
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     std::thread::spawn(move || {
         let (mut sock, _) = listener.accept().unwrap();
-        let buf = read_request(&mut sock);
+        read_request(&mut sock);
         let response = format!(
             "HTTP/1.1 {status} Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
             body.len()

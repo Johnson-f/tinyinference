@@ -413,6 +413,13 @@ impl AnthropicModel {
             .and_then(|error| error.get("type"))
             .and_then(Value::as_str)
             .map(str::to_string);
+        if crate::failure::is_context_window_exceeded_message(&message) {
+            crate::model::discover::record_overflow_error(
+                &self.base_url,
+                self.request_model(request),
+                &message,
+            );
+        }
         self.provider_error(
             request,
             format!("anthropic returned HTTP {status}: {message}"),

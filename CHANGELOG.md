@@ -24,6 +24,16 @@
   effort-only request. Fixed-budget thinking is used only when no effort is
   set. (Previously the budget won.)
 
+### Fixed
+
+- `scrub_credentials` no longer redacts ordinary source code. Keys must be whole
+  identifiers ending in a sensitive word, key/operator/value never span a
+  newline, `==` comparisons are ignored, and the value must look like a secret:
+  known provider prefixes (`sk-`, `ghp_`, `github_pat_`, `xox?-`, `AKIA`, JWT
+  `eyJ`) always redact, while placeholders (`"<eos>"`), whitespace, signed or
+  fractional numbers, digit-less identifiers (`None`, `self.vocab`) and values
+  followed by `(`, `[` or member access pass through.
+
 ## 0.3.0
 
 ### Breaking changes

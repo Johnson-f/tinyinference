@@ -14,6 +14,7 @@
 //! [`ModelStream`] back into a single [`ModelResponse`].
 
 mod decorators;
+pub mod discover;
 mod types;
 
 #[cfg(test)]
@@ -43,10 +44,11 @@ enum ContextPatternMatch {
 
 /// Generic context-window hints for common provider model families.
 ///
-/// These are deliberately provider-neutral fallbacks, not a pricing catalog.
-/// Hosts should prefer authoritative provider/catalog metadata when available
-/// and use this only when a raw model id needs a conservative pre-dispatch
-/// budget.
+/// These are deliberately provider-neutral fallbacks, not a pricing catalog,
+/// and they are **guesses**: a family pattern such as `deepseek` cannot know
+/// that `deepseek-v4.1-flash` serves ~1M tokens. They must never override a
+/// value the provider reports ([`discover`]); hosts consult them only after
+/// discovery and learned overflow limits came back empty.
 ///
 /// Order matters: lookup returns the first matching entry, so more-specific
 /// substrings such as `gpt-4.1` and `gpt-4-turbo` must stay before broader
@@ -119,7 +121,10 @@ pub fn block_delta_to_message_delta(
 ///
 /// Returns `None` for unknown ids rather than guessing. Hosts with product tier
 /// aliases, local runtime profiles, or authoritative provider catalogs should
-/// check those first and use this helper as a last generic fallback.
+/// check those first and use this helper as a last generic fallback. In
+/// particular a provider-reported window ([`discover::discover_model_limits`])
+/// or one learned from an overflow error ([`discover::record_overflow_error`])
+/// always wins over this static hint.
 pub fn context_window_for_model_id(model: &str) -> Option<u64> {
     let normalized = model.trim();
     if normalized.is_empty() {

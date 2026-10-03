@@ -1150,3 +1150,55 @@ async fn streamed_terminal_response_carries_origin() {
     assert_eq!(origin.api, "messages");
     assert_eq!(origin.model, "claude-opus-4-6");
 }
+
+#[tokio::test]
+async fn overflow_error_records_the_stated_window() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut tmp).unwrap();
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            let Some(split) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&buf[..split]).to_ascii_lowercase();
+            let len = head
+                .lines()
+                .find_map(|l| {
+                    l.strip_prefix("content-length:")?
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                })
+                .unwrap_or(0);
+            if buf.len() >= split + 4 + len {
+                break;
+            }
+        }
+        let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 250000 tokens > 200000 maximum"}}"#;
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = sock.write_all(response.as_bytes());
+    });
+
+    let model = AnthropicModel::with_base_url("k", &base)
+        .with_insecure_http(true)
+        .with_model("overflow-claude");
+    let request = ModelRequest::new(vec![Message::user("hi")]);
+    assert!(model.invoke(&(), request).await.is_err());
+    let learned = crate::model::discover::cached_model_limits(&base, "overflow-claude")
+        .expect("overflow window recorded");
+    assert_eq!(learned.context_window, Some(200_000));
+}

@@ -94,6 +94,9 @@ pub fn is_context_window_exceeded_message(body: &str) -> bool {
         // prefix; the remediation lives in the user's local server (reload with
         // a larger context), so this is expected user-state, not a product bug.
         "greater than the context length",
+        // Alibaba / DashScope (Qwen): `"Range of input length should be
+        // [1, 98304]"` — the window is the range's upper bound.
+        "range of input length should be",
     ];
     if CONTEXT_HINTS.iter().any(|hint| lower.contains(hint)) {
         return true;
@@ -461,8 +464,10 @@ pub fn parse_retry_after_ms(message: &str) -> Option<u64> {
     None
 }
 
+mod context_limit;
 mod text;
 
+pub use context_limit::parse_context_limit_from_error;
 pub use text::{
     extract_provider_error_detail, extract_provider_name, is_auth_error_text,
     is_codex_token_expired_text, is_connection_dropped_text, is_context_length_text,

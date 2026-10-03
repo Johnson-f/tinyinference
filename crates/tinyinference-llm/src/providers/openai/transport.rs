@@ -1633,6 +1633,33 @@ impl OpenAiModel {
         streaming: bool,
         what: &str,
     ) -> Result<reqwest::Response> {
+        let result = self
+            .post_chat_with_degrade_inner(request, streaming, what)
+            .await;
+        if let Err(Error::Provider(err)) = &result {
+            self.learn_context_limit(request, err);
+        }
+        result
+    }
+
+    /// Records the window a context-overflow error states, keyed by this
+    /// adapter's base URL and the model the request named, so the next
+    /// discovery for that model reports the corrected window
+    /// ([`crate::model::discover::record_overflow_error`]).
+    fn learn_context_limit(&self, request: &ModelRequest, err: &ProviderError) {
+        if err.code.as_deref() != Some(CONTEXT_OVERFLOW_CODE) {
+            return;
+        }
+        let model = request.model.as_deref().unwrap_or(&self.model);
+        crate::model::discover::record_overflow_error(&self.base_url, model, &err.message);
+    }
+
+    async fn post_chat_with_degrade_inner(
+        &self,
+        request: &ModelRequest,
+        streaming: bool,
+        what: &str,
+    ) -> Result<reqwest::Response> {
         let baseline = self.baseline_degrade();
         let body = self.build_chat_body(request, baseline, streaming)?;
         match self

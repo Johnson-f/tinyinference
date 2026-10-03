@@ -77,6 +77,54 @@ fn request_model_overrides_the_configured_default_model() {
     );
 }
 
+fn budgeted_request(effort: Option<crate::model::ReasoningEffort>) -> ModelRequest {
+    ModelRequest::new(vec![Message::user("hi")])
+        .with_model("deepseek/deepseek-v4")
+        .with_reasoning(crate::model::ReasoningConfig {
+            effort,
+            budget_tokens: Some(4505),
+            summary: None,
+        })
+}
+
+#[test]
+fn openrouter_receives_the_reasoning_budget_as_reasoning_max_tokens() {
+    let model = OpenAiModel::new("k").with_base_url("https://openrouter.ai/api/v1");
+    let body = body_for(
+        &model,
+        &budgeted_request(Some(crate::model::ReasoningEffort::High)),
+    );
+    assert_eq!(
+        body["reasoning"],
+        json!({ "max_tokens": 4505 }),
+        "body={body}"
+    );
+    // OpenRouter takes one of `effort` / `max_tokens`; the explicit budget wins.
+    assert!(body.get("reasoning_effort").is_none(), "body={body}");
+}
+
+#[test]
+fn non_openrouter_endpoints_never_receive_a_reasoning_object() {
+    for base in ["https://api.openai.com/v1", "https://api.deepseek.com/v1"] {
+        let model = OpenAiModel::new("k").with_base_url(base);
+        let body = body_for(
+            &model,
+            &budgeted_request(Some(crate::model::ReasoningEffort::High)),
+        );
+        assert!(body.get("reasoning").is_none(), "base={base} body={body}");
+        assert_eq!(body["reasoning_effort"], json!("high"), "base={base}");
+    }
+}
+
+#[test]
+fn explicit_reasoning_provider_option_wins_over_the_budget_on_openrouter() {
+    let model = OpenAiModel::new("k").with_base_url("https://openrouter.ai/api/v1");
+    let request =
+        budgeted_request(None).with_provider_options(json!({ "reasoning": { "effort": "low" } }));
+    let body = body_for(&model, &request);
+    assert_eq!(body["reasoning"], json!({ "effort": "low" }), "body={body}");
+}
+
 /// Serves one canned chat completion and returns the raw request it received.
 fn serve_once() -> (String, std::thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

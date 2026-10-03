@@ -14,6 +14,11 @@
   (`POST /videos`, `GET /videos/{id}`, `GET /videos/{id}/content`),
   `wait_for_job` (resume by job id), and `MockVideoGenerator`. A `completed`
   job with no outputs keeps polling instead of failing.
+- OpenAI-compatible chat: a `ReasoningConfig::budget_tokens` sent to an
+  OpenRouter endpoint is now emitted as `reasoning: {"max_tokens": N}` (and
+  `reasoning_effort` is omitted, since OpenRouter takes one or the other).
+  Other OpenAI-compatible endpoints still drop the budget, and an explicit
+  `reasoning` provider option still wins.
 
 ### Fixed
 

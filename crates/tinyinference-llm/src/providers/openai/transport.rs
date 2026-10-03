@@ -1304,9 +1304,12 @@ impl OpenAiModel {
         );
         let merged_provider_options =
             merge_provider_options(&self.default_provider_options, &request.provider_options);
-        let reasoning_effort = if merged_provider_options
-            .get("reasoning_effort")
-            .is_some_and(|value| !value.is_null())
+        let mut extra = provider_extra_options(&merged_provider_options)?;
+        let openrouter_budget = openrouter_reasoning_budget(&self.base_url, request, &extra);
+        let reasoning_effort = if openrouter_budget.is_some()
+            || merged_provider_options
+                .get("reasoning_effort")
+                .is_some_and(|value| !value.is_null())
         {
             None
         } else {
@@ -1315,6 +1318,14 @@ impl OpenAiModel {
                 .as_ref()
                 .and_then(|reasoning| reasoning.effort)
         };
+        if let Some(budget) = openrouter_budget {
+            tracing::debug!(
+                target: "tinyinference::openai",
+                budget_tokens = budget,
+                "[openai] openrouter reasoning budget sent as reasoning.max_tokens"
+            );
+            extra.insert("reasoning".to_string(), json!({ "max_tokens": budget }));
+        }
 
         Ok(ChatCompletionRequest {
             model: model.clone(),
@@ -1331,7 +1342,7 @@ impl OpenAiModel {
             seed: request.seed,
             stream: false,
             stream_options: None,
-            extra: provider_extra_options(&merged_provider_options)?,
+            extra,
         })
     }
 
@@ -1893,6 +1904,27 @@ pub(super) fn merge_provider_options(defaults: &Value, overrides: &Value) -> Val
 /// Core OpenAI-compatible fields are intentionally reserved so normalized
 /// TinyAgents fields remain the source of truth. Callers that need local-model
 /// controls should use distinct provider fields such as Ollama's `options`.
+/// The thinking-token budget to send as OpenRouter's `reasoning.max_tokens`.
+///
+/// OpenRouter is the one OpenAI-compatible route with a portable reasoning
+/// budget: `reasoning: {"max_tokens": N}` caps thinking on every model it
+/// fronts (and is translated to an effort level for effort-only models). Other
+/// OpenAI-compatible endpoints have no such field, so the budget is dropped
+/// there. OpenRouter accepts `effort` *or* `max_tokens`, so when a budget is
+/// sent the caller omits `reasoning_effort`. An explicit `reasoning` provider
+/// option always wins.
+fn openrouter_reasoning_budget(
+    base_url: &str,
+    request: &ModelRequest,
+    extra: &Map<String, Value>,
+) -> Option<u32> {
+    let budget = request.reasoning.as_ref()?.budget_tokens?;
+    if extra.contains_key("reasoning") || !endpoint_is_openrouter(base_url) {
+        return None;
+    }
+    Some(budget)
+}
+
 pub(super) fn provider_extra_options(options: &Value) -> Result<Map<String, Value>> {
     if options.is_null() {
         return Ok(Map::new());

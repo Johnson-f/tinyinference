@@ -1174,7 +1174,9 @@ async fn overflow_error_records_the_stated_window() {
         let _ = sock.write_all(response.as_bytes());
     });
 
-    let model = AnthropicModel::with_base_url("k", &base).with_model("overflow-claude");
+    let model = AnthropicModel::with_base_url("k", &base)
+        .with_insecure_http(true)
+        .with_model("overflow-claude");
     let request = ModelRequest::new(vec![Message::user("hi")]);
     assert!(model.invoke(&(), request).await.is_err());
     let learned = crate::model::discover::cached_model_limits(&base, "overflow-claude")

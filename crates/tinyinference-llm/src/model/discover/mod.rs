@@ -38,7 +38,9 @@ pub use parse::{
 pub use types::{DiscoveryRequest, LimitSource, ModelLimits};
 
 /// The provider-sourced limits already cached for `(endpoint, model)`, without
-/// any request: a fresh discovery, lowered by a learned overflow window.
+/// any request: a fresh default-variant discovery, lowered by a learned overflow
+/// window (discoveries made under a non-default listing URL or pinned-provider
+/// set are cached per request variant and read through `get_variant`).
 #[must_use]
 pub fn cached_model_limits(endpoint: &str, model: &str) -> Option<ModelLimits> {
     model_limits_cache().get(endpoint, model).effective()

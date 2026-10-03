@@ -242,7 +242,10 @@ fn known_secret_prefixes_are_always_redacted() {
     // Letters only: the digit heuristic alone would not catch it.
     let github_token = fixture("gh", "p_abcdefghijklmnopqrstuvwxyzABCD");
     let github = scrub_credentials(&format!(r#"token: "{github_token}""#));
-    assert!(!github.contains("abcdefghijklmnopqrstuvwxyzABCD"), "{github}");
+    assert!(
+        !github.contains("abcdefghijklmnopqrstuvwxyzABCD"),
+        "{github}"
+    );
     assert!(github.contains("*[REDACTED]"), "{github}");
 
     let slack_token = fixture("xo", "xb-abcdefghij-klmnopqrst");
@@ -258,7 +261,10 @@ fn known_secret_prefixes_are_always_redacted() {
 fn prefixed_keys_still_redact_secret_looking_values() {
     let github_token = fixture("gh", "p_abcdefghijklmnopqrstuvwxyz0123");
     let github = scrub_credentials(&format!("GITHUB_TOKEN={github_token}"));
-    assert!(!github.contains("abcdefghijklmnopqrstuvwxyz0123"), "{github}");
+    assert!(
+        !github.contains("abcdefghijklmnopqrstuvwxyz0123"),
+        "{github}"
+    );
 
     let access = scrub_credentials(r#"{"access_token": "a8f3k2m9q7x1z5"}"#);
     assert!(!access.contains("a8f3k2m9q7x1z5"), "{access}");

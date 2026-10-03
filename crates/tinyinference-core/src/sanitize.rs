@@ -129,8 +129,10 @@ const KNOWN_SECRET_PREFIXES: [&str; 9] = [
 /// Signed or fractional numbers (`-4.73`, `+12`, `0.7`, `1e-5`). Plain
 /// unsigned digit runs are not matched: they can be PINs or numeric keys.
 static NON_SECRET_NUMBER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:[+-]\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\d*\.\d+(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)$")
-        .unwrap()
+    Regex::new(
+        r"^(?:[+-]\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\d*\.\d+(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)$",
+    )
+    .unwrap()
 });
 
 /// Identifiers and dotted member paths with no digit (`None`, `self.vocab`,
@@ -155,7 +157,10 @@ fn looks_like_secret(value: &str, quoted: bool, rest: &str) -> bool {
         return true;
     }
     // `"<eos>"`, `"<your key here>"`: placeholders and markup.
-    if value.find('<').is_some_and(|open| value[open..].contains('>')) {
+    if value
+        .find('<')
+        .is_some_and(|open| value[open..].contains('>'))
+    {
         return false;
     }
     if value.chars().any(char::is_whitespace) {

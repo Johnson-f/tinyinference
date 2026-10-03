@@ -94,6 +94,9 @@ pub fn is_context_window_exceeded_message(body: &str) -> bool {
         // prefix; the remediation lives in the user's local server (reload with
         // a larger context), so this is expected user-state, not a product bug.
         "greater than the context length",
+        // Alibaba / DashScope (Qwen): `"Range of input length should be
+        // [1, 98304]"` — the window is the range's upper bound.
+        "range of input length should be",
     ];
     if CONTEXT_HINTS.iter().any(|hint| lower.contains(hint)) {
         return true;

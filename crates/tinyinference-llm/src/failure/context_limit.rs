@@ -11,6 +11,9 @@
 //! - Gemini: `"… exceeds the maximum number of tokens allowed (1048576)"`.
 //! - llama.cpp / LM Studio: `"(n_keep: 10978 >= n_ctx: 8192)"` and
 //!   `"exceeds the available context size (8192 tokens)"`.
+//! - Alibaba / DashScope (Qwen): `"Range of input length should be [1, 98304]"`;
+//!   the window is the upper bound of the range. DashScope endpoints can admit
+//!   less than their advertised window (Qwen3-8B lists 131072, accepts 98304).
 //!
 //! That number is the authoritative window for the endpoint that answered, so a
 //! host can record it as a correction (see
@@ -65,6 +68,21 @@ pub fn parse_context_limit_from_error(message: &str) -> Option<u64> {
         if let Some(limit) = tail
             .find('>')
             .and_then(|gt| first_number(&tail[gt + 1..], 24))
+        {
+            return plausible(limit);
+        }
+    }
+
+    // DashScope: "range of input length should be [1, 98304]". The first
+    // number is the range's lower bound; the window is the one after the comma.
+    if let Some(start) = lower.find("range of input length should be") {
+        let tail = &lower[start..];
+        if let Some(limit) = tail
+            .find('[')
+            .zip(tail.find(']'))
+            .and_then(|(open, close)| tail.get(open + 1..close))
+            .and_then(|range| range.rsplit(',').next())
+            .and_then(|upper| first_number(upper, 8))
         {
             return plausible(limit);
         }

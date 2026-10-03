@@ -87,3 +87,21 @@ fn rejects_implausible_limits() {
         None
     );
 }
+
+#[test]
+fn parses_dashscope_input_length_range() {
+    // Alibaba's Qwen3-8B endpoint (via OpenRouter) advertises 131072 but
+    // rejects anything over 98304 with this body.
+    let message = "Provider returned error: {\"error\":{\"code\":\"invalid_parameter_error\",\
+                   \"message\":\"Range of input length should be [1, 98304]\",\
+                   \"type\":\"invalid_request_error\"}}";
+    assert_eq!(parse_context_limit_from_error(message), Some(98_304));
+}
+
+#[test]
+fn dashscope_range_without_an_upper_bound_is_not_a_window() {
+    assert_eq!(
+        parse_context_limit_from_error("Range of input length should be [1, ]"),
+        None
+    );
+}

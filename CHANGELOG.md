@@ -19,6 +19,10 @@
   `reasoning_effort` is omitted, since OpenRouter takes one or the other).
   Other OpenAI-compatible endpoints still drop the budget, and an explicit
   `reasoning` provider option still wins.
+- Anthropic: a request carrying both a reasoning `effort` and `budget_tokens`
+  now keeps adaptive thinking with that effort, byte-identical to the
+  effort-only request. Fixed-budget thinking is used only when no effort is
+  set. (Previously the budget won.)
 
 ### Fixed
 

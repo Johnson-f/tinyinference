@@ -100,20 +100,19 @@ pub async fn discover_model_limits_with(
         return cached.effective();
     }
     let started = std::time::Instant::now();
-    let limits = match tokio::time::timeout(request.timeout, fetch_limits(fetcher, cache, request))
-        .await
-    {
-        Ok(limits) => limits,
-        Err(_) => {
-            tracing::warn!(
-                endpoint = %request.endpoint,
-                model = %request.model,
-                timeout_ms = request.timeout.as_millis() as u64,
-                "[model_limits] discovery timed out"
-            );
-            None
-        }
-    };
+    let limits =
+        match tokio::time::timeout(request.timeout, fetch_limits(fetcher, cache, request)).await {
+            Ok(limits) => limits,
+            Err(_) => {
+                tracing::warn!(
+                    endpoint = %request.endpoint,
+                    model = %request.model,
+                    timeout_ms = request.timeout.as_millis() as u64,
+                    "[model_limits] discovery timed out"
+                );
+                None
+            }
+        };
     tracing::info!(
         endpoint = %request.endpoint,
         model = %request.model,

@@ -159,11 +159,11 @@ fn model_info_from_catalog_item(item: &serde_json::Value) -> Option<ModelInfo> {
         .or_else(|| item.get("owned_by_organization"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let context_window = item
-        .get("context_length")
-        .or_else(|| item.get("context_window"))
-        .or_else(|| item.get("max_context_window"))
-        .and_then(|v| v.as_u64());
+    // Shared with model-limit discovery, so the picker and the context budget
+    // read the same keys (`context_length`, `context_window`, vLLM's
+    // `max_model_len`, OpenRouter's `top_provider.context_length`, ...).
+    let context_window =
+        crate::model::discover::limits_from_entry(item).and_then(|limits| limits.context_window);
     let display_name = item
         .get("display_name")
         .or_else(|| item.get("name"))

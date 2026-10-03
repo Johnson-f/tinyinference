@@ -32,7 +32,11 @@ fn record_overflow_error_ignores_messages_without_a_limit() {
 fn global_cache_round_trip() {
     let endpoint = "https://global-cache-test.example/v1";
     assert_eq!(cached_model_limits(endpoint, "m"), None);
-    record_overflow_error(endpoint, "m", "prompt is too long: 250000 tokens > 200000 maximum");
+    record_overflow_error(
+        endpoint,
+        "m",
+        "prompt is too long: 250000 tokens > 200000 maximum",
+    );
     assert_eq!(
         cached_model_limits(endpoint, "m").and_then(|limits| limits.context_window),
         Some(200_000)

@@ -38,8 +38,7 @@ fn parses_vllm_maximum_model_length() {
 
 #[test]
 fn parses_mistral_trailing_limit() {
-    let message =
-        "Prompt contains 40000 tokens and 0 draft tokens, too large for model with 32768 \
+    let message = "Prompt contains 40000 tokens and 0 draft tokens, too large for model with 32768 \
          maximum context length";
     assert_eq!(parse_context_limit_from_error(message), Some(32_768));
 }

@@ -35,8 +35,11 @@ fn parses_openrouter_listing_entry() {
 
 #[test]
 fn openrouter_listing_tolerates_route_prefix() {
-    let limits = parse_model_limits(&openrouter_listing(), "openrouter/deepseek/deepseek-v4.1-flash")
-        .expect("prefixed id matches");
+    let limits = parse_model_limits(
+        &openrouter_listing(),
+        "openrouter/deepseek/deepseek-v4.1-flash",
+    )
+    .expect("prefixed id matches");
     assert_eq!(limits.context_window, Some(1_048_576));
 }
 
@@ -55,7 +58,10 @@ fn falls_back_to_top_provider_context() {
 fn listing_skips_entries_without_limits() {
     let listed = parse_listing_limits(&openrouter_listing());
     let ids: Vec<&str> = listed.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(ids, ["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-chat"]);
+    assert_eq!(
+        ids,
+        ["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-chat"]
+    );
     assert!(parse_model_limits(&openrouter_listing(), "no-limits/model").is_none());
     assert!(parse_model_limits(&openrouter_listing(), "missing/model").is_none());
 }

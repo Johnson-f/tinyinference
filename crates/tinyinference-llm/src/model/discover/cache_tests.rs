@@ -57,7 +57,12 @@ fn negative_entry_uses_shorter_ttl() {
 fn keys_are_normalized() {
     let cache = cache();
     let t0 = Instant::now();
-    cache.insert_discovered_at("HTTPS://OpenRouter.ai/api/v1/", MODEL, Some(limits(5_000)), t0);
+    cache.insert_discovered_at(
+        "HTTPS://OpenRouter.ai/api/v1/",
+        MODEL,
+        Some(limits(5_000)),
+        t0,
+    );
     assert!(
         cache
             .get_at(ENDPOINT, &MODEL.to_uppercase(), t0)

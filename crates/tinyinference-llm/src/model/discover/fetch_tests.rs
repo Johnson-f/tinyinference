@@ -102,7 +102,11 @@ async fn cache_hit_skips_the_network_and_listing_serves_other_models() {
     .await
     .unwrap();
     assert_eq!(other.context_window, Some(202_752));
-    assert_eq!(fetcher.calls().len(), 1, "one listing fetch serves all three");
+    assert_eq!(
+        fetcher.calls().len(),
+        1,
+        "one listing fetch serves all three"
+    );
 }
 
 #[tokio::test]
@@ -167,7 +171,10 @@ async fn pinned_provider_reads_endpoint_limits() {
     assert_eq!(limits.context_window, Some(163_840));
     // The endpoint omitted its output cap, so the listing's is kept.
     assert_eq!(limits.max_output_tokens, Some(65_536));
-    assert!(matches!(limits.source, LimitSource::ProviderEndpoint { .. }));
+    assert!(matches!(
+        limits.source,
+        LimitSource::ProviderEndpoint { .. }
+    ));
 }
 
 #[tokio::test]
@@ -217,16 +224,18 @@ async fn learned_overflow_lowers_discovered_window() {
         MODEL,
         "This endpoint's maximum context length is 163840 tokens. However, you requested about 200000 tokens",
     );
-    let limits = discover_model_limits_with(&fetcher, &cache, &DiscoveryRequest::new(ENDPOINT, MODEL))
-        .await
-        .unwrap();
+    let limits =
+        discover_model_limits_with(&fetcher, &cache, &DiscoveryRequest::new(ENDPOINT, MODEL))
+            .await
+            .unwrap();
     assert_eq!(limits.context_window, Some(163_840));
     assert_eq!(limits.source, LimitSource::LearnedFromOverflow);
 }
 
 #[test]
 fn request_debug_redacts_header_values() {
-    let request = DiscoveryRequest::new(ENDPOINT, MODEL).with_header("Authorization", "Bearer sk-secret");
+    let request =
+        DiscoveryRequest::new(ENDPOINT, MODEL).with_header("Authorization", "Bearer sk-secret");
     let rendered = format!("{request:?}");
     assert!(rendered.contains("Authorization"));
     assert!(!rendered.contains("sk-secret"));

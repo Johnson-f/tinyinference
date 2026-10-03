@@ -47,7 +47,8 @@ fn positive_u64(value: &Value) -> Option<u64> {
 }
 
 fn first_key(item: &Value, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| item.get(*key).and_then(positive_u64))
+    keys.iter()
+        .find_map(|key| item.get(*key).and_then(positive_u64))
 }
 
 /// The id a listing entry advertises.
@@ -84,7 +85,9 @@ pub fn limits_from_entry(item: &Value) -> Option<ModelLimits> {
 
 /// Strips one leading routing segment (`openrouter/deepseek/x` → `deepseek/x`).
 fn without_route_prefix(id: &str) -> Option<&str> {
-    id.split_once('/').map(|(_, rest)| rest).filter(|rest| !rest.is_empty())
+    id.split_once('/')
+        .map(|(_, rest)| rest)
+        .filter(|rest| !rest.is_empty())
 }
 
 /// Whether a listed model id names the requested one.
@@ -137,9 +140,9 @@ pub fn parse_listing_limits(body: &Value) -> Vec<(String, ModelLimits)> {
 #[must_use]
 pub fn parse_model_limits(body: &Value, model: &str) -> Option<ModelLimits> {
     if let Some(entries) = listing_entries(body) {
-        let exact = entries.iter().find(|item| {
-            entry_id(item).is_some_and(|id| id.eq_ignore_ascii_case(model.trim()))
-        });
+        let exact = entries
+            .iter()
+            .find(|item| entry_id(item).is_some_and(|id| id.eq_ignore_ascii_case(model.trim())));
         let item = exact.or_else(|| {
             entries
                 .iter()
@@ -147,7 +150,10 @@ pub fn parse_model_limits(body: &Value, model: &str) -> Option<ModelLimits> {
         })?;
         return limits_from_entry(item);
     }
-    let item = body.get("data").filter(|data| data.is_object()).unwrap_or(body);
+    let item = body
+        .get("data")
+        .filter(|data| data.is_object())
+        .unwrap_or(body);
     if !item.is_object() {
         return None;
     }

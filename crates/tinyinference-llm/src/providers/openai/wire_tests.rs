@@ -289,3 +289,22 @@ async fn non_overflow_error_records_nothing() {
         None
     );
 }
+
+#[tokio::test]
+async fn overflow_without_stamped_code_still_records_the_window() {
+    // vLLM phrasing that `is_context_overflow` does not stamp with the code.
+    let base = serve_error_once(
+        400,
+        r#"{"error":{"message":"input is longer than the maximum model length of 32768"}}"#,
+    );
+    let model = OpenAiModel::new("k").with_base_url(&base);
+    assert!(
+        model
+            .invoke(&(), request("vllm-unstamped-model", 0.5))
+            .await
+            .is_err()
+    );
+    let learned = crate::model::discover::cached_model_limits(&base, "vllm-unstamped-model")
+        .expect("window learned from the message itself");
+    assert_eq!(learned.context_window, Some(32_768));
+}

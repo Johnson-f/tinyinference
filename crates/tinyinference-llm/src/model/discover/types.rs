@@ -151,11 +151,28 @@ impl DiscoveryRequest {
         providers.sort();
         providers.dedup();
         format!(
-            "{}|{}|{}",
+            "{}|{}|{}|{:016x}",
             self.effective_listing_url(),
             self.probe_single_model,
-            providers.join(",")
+            providers.join(","),
+            self.credential_scope()
         )
+    }
+
+    /// Non-reversible digest of the request headers, so a gateway that
+    /// answers differently per credential keeps its results (and negative
+    /// results) separate per tenant without the secret ever being stored.
+    fn credential_scope(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut headers: Vec<(String, &str)> = self
+            .headers
+            .iter()
+            .map(|(name, value)| (name.to_ascii_lowercase(), value.as_str()))
+            .collect();
+        headers.sort();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        headers.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// The listing URL this request reads.

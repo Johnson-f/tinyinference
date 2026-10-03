@@ -138,7 +138,9 @@ impl ModelLimitsCache {
         f(&mut guard)
     }
 
-    /// The fresh cached state for `(endpoint, model)`.
+    /// The fresh cached state for `(endpoint, model)` across every discovery
+    /// variant: the smallest fresh discovered window, lowered by any learned
+    /// overflow window. Use [`Self::get_variant`] for one request's slot.
     #[must_use]
     pub fn get(&self, endpoint: &str, model: &str) -> CachedLimits {
         self.get_at(endpoint, model, Instant::now())
@@ -148,7 +150,52 @@ impl ModelLimitsCache {
     /// sleeping).
     #[must_use]
     pub fn get_at(&self, endpoint: &str, model: &str, now: Instant) -> CachedLimits {
-        self.get_variant_at(endpoint, model, "", now)
+        let key = Self::key(endpoint, model);
+        self.with_entries(|entries| {
+            let Some(entry) = entries.get(&key) else {
+                return CachedLimits::default();
+            };
+            // Across variants: the smallest fresh found window (conservative),
+            // else a fresh negative, else nothing.
+            let mut best: Option<ModelLimits> = None;
+            let mut negative = false;
+            for discovered in entry.discovered.values() {
+                match self.fresh(discovered, now) {
+                    Some(Some(limits)) => {
+                        let smaller = best.as_ref().is_none_or(|current| {
+                            limits.context_window.unwrap_or(u64::MAX)
+                                < current.context_window.unwrap_or(u64::MAX)
+                        });
+                        if smaller {
+                            best = Some(limits);
+                        }
+                    }
+                    Some(None) => negative = true,
+                    None => {}
+                }
+            }
+            CachedLimits {
+                discovered: best.map(Some).or(negative.then_some(None)),
+                learned_context_window: self.fresh_learned(entry, now),
+            }
+        })
+    }
+
+    fn fresh(&self, discovered: &Discovered, now: Instant) -> Option<Option<ModelLimits>> {
+        let ttl = if discovered.limits.is_some() {
+            self.discovered_ttl
+        } else {
+            self.negative_ttl
+        };
+        (now.saturating_duration_since(discovered.at) < ttl).then(|| discovered.limits.clone())
+    }
+
+    fn fresh_learned(&self, entry: &Entry, now: Instant) -> Option<u64> {
+        entry
+            .learned
+            .as_ref()
+            .filter(|learned| now.saturating_duration_since(learned.at) < self.learned_ttl)
+            .map(|learned| learned.context_window)
     }
 
     /// [`Self::get`] for one discovery `variant`.
@@ -171,20 +218,11 @@ impl ModelLimitsCache {
             let Some(entry) = entries.get(&key) else {
                 return CachedLimits::default();
             };
-            let discovered = entry.discovered.get(variant).and_then(|discovered| {
-                let ttl = if discovered.limits.is_some() {
-                    self.discovered_ttl
-                } else {
-                    self.negative_ttl
-                };
-                (now.saturating_duration_since(discovered.at) < ttl)
-                    .then(|| discovered.limits.clone())
-            });
-            let learned_context_window = entry
-                .learned
-                .as_ref()
-                .filter(|learned| now.saturating_duration_since(learned.at) < self.learned_ttl)
-                .map(|learned| learned.context_window);
+            let discovered = entry
+                .discovered
+                .get(variant)
+                .and_then(|discovered| self.fresh(discovered, now));
+            let learned_context_window = self.fresh_learned(entry, now);
             CachedLimits {
                 discovered,
                 learned_context_window,

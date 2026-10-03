@@ -23,6 +23,24 @@ pub trait ModelListingFetcher: Send + Sync {
     async fn get_json(&self, url: &str, headers: &[(String, String)]) -> crate::Result<Value>;
 }
 
+/// `url` without userinfo, query and fragment, safe for errors and logs (a
+/// custom listing URL may carry an API key in either).
+fn redact_url(url: &str) -> String {
+    let without_tail = url.split(['?', '#']).next().unwrap_or(url);
+    match without_tail.split_once("://") {
+        Some((scheme, rest)) => {
+            let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+            let host = authority.rsplit('@').next().unwrap_or(authority);
+            if path.is_empty() {
+                format!("{scheme}://{host}")
+            } else {
+                format!("{scheme}://{host}/{path}")
+            }
+        }
+        None => without_tail.to_string(),
+    }
+}
+
 /// The default [`ModelListingFetcher`], over `reqwest`.
 #[derive(Clone, Debug)]
 pub struct ReqwestListingFetcher {
@@ -58,25 +76,25 @@ impl ModelListingFetcher for ReqwestListingFetcher {
                 "network-backed model calls are denied for this process".to_string(),
             ));
         }
+        let shown = redact_url(url);
         let mut builder = self.client.get(url);
         for (name, value) in headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        let response = builder
-            .send()
-            .await
-            .map_err(|error| crate::Error::Catalog(format!("GET {url} failed: {error}")))?;
+        let response = builder.send().await.map_err(|error| {
+            // reqwest errors embed the full URL; strip it, we add a redacted one.
+            crate::Error::Catalog(format!("GET {shown} failed: {}", error.without_url()))
+        })?;
         let status = response.status();
         if !status.is_success() {
             return Err(crate::Error::Catalog(format!(
-                "GET {url} returned {}",
+                "GET {shown} returned {}",
                 status.as_u16()
             )));
         }
-        response
-            .json::<Value>()
-            .await
-            .map_err(|error| crate::Error::Catalog(format!("GET {url} body: {error}")))
+        response.json::<Value>().await.map_err(|error| {
+            crate::Error::Catalog(format!("GET {shown} body: {}", error.without_url()))
+        })
     }
 }
 

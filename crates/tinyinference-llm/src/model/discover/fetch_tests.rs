@@ -325,3 +325,41 @@ fn default_fetcher_builds_without_following_redirects() {
     // headers are never replayed to a redirect target.
     let _ = ReqwestListingFetcher::default();
 }
+
+#[test]
+fn redact_url_strips_userinfo_query_and_fragment() {
+    assert_eq!(
+        redact_url("https://user:pw@api.example/v1/models?key=sk-secret#frag"),
+        "https://api.example/v1/models"
+    );
+    assert_eq!(redact_url("https://api.example"), "https://api.example");
+    assert_eq!(redact_url("not a url?x=1"), "not a url");
+}
+
+#[tokio::test]
+async fn different_credentials_do_not_share_cached_limits() {
+    let fetcher = FakeFetcher::default().with(&format!("{ENDPOINT}/models"), openrouter_listing());
+    let cache = cache();
+    let a = DiscoveryRequest::new(ENDPOINT, MODEL).with_header("Authorization", "Bearer a");
+    let b = DiscoveryRequest::new(ENDPOINT, MODEL).with_header("Authorization", "Bearer b");
+    assert_ne!(a.cache_variant(), b.cache_variant());
+    assert!(!a.cache_variant().contains("Bearer"));
+    discover_model_limits_with(&fetcher, &cache, &a).await;
+    discover_model_limits_with(&fetcher, &cache, &b).await;
+    assert_eq!(fetcher.calls().len(), 2, "each tenant probes for itself");
+}
+
+#[tokio::test]
+async fn cached_accessor_sees_a_default_discovery() {
+    let fetcher = FakeFetcher::default().with(&format!("{ENDPOINT}/models"), openrouter_listing());
+    let cache = cache();
+    discover_model_limits_with(&fetcher, &cache, &DiscoveryRequest::new(ENDPOINT, MODEL)).await;
+    assert_eq!(
+        cache
+            .get(ENDPOINT, MODEL)
+            .effective()
+            .unwrap()
+            .context_window,
+        Some(1_048_576)
+    );
+}

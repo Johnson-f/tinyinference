@@ -302,10 +302,10 @@ async fn pinned_lookup_failure_does_not_fall_back_to_model_level_limit() {
 
 #[test]
 fn cache_variant_is_order_and_case_insensitive_over_providers() {
-    let a = DiscoveryRequest::new(ENDPOINT, MODEL)
-        .with_pinned_providers(vec!["B".into(), "a".into()]);
-    let b = DiscoveryRequest::new(ENDPOINT, MODEL)
-        .with_pinned_providers(vec!["A".into(), "b".into()]);
+    let a =
+        DiscoveryRequest::new(ENDPOINT, MODEL).with_pinned_providers(vec!["B".into(), "a".into()]);
+    let b =
+        DiscoveryRequest::new(ENDPOINT, MODEL).with_pinned_providers(vec!["A".into(), "b".into()]);
     assert_eq!(a.cache_variant(), b.cache_variant());
     assert_ne!(
         a.cache_variant(),

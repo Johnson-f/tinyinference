@@ -270,3 +270,19 @@ fn plain_password_assignment_is_redacted() {
     let out = scrub_credentials("password=hunter2secret");
     assert_eq!(out, "password=hunt*[REDACTED]");
 }
+
+#[test]
+fn member_access_on_a_literal_is_code_but_a_full_stop_is_not() {
+    assert_unchanged(r#"token = "<pad>".strip()"#);
+    assert_unchanged(r#"secret = "abc123def".encode("utf-8")"#);
+
+    let prose = scrub_credentials(r#"Set password="hunter2secret". Then restart."#);
+    assert!(!prose.contains("hunter2secret"), "{prose}");
+}
+
+#[test]
+fn references_and_type_annotations_are_not_secrets() {
+    assert_unchanged("client = Client(api_key=api_key)");
+    assert_unchanged("    api_key: String,");
+    assert_unchanged(r#"token = os.environ["GITHUB_TOKEN"]"#);
+}

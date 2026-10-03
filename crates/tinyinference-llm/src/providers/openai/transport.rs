@@ -6,6 +6,7 @@
 
 use super::responses;
 use super::*;
+use crate::providers::omission;
 use crate::model::effective_temperature;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1624,30 +1625,66 @@ impl OpenAiModel {
         Ok(response)
     }
 
-    /// Issues an authenticated `POST {base_url}/chat/completions` with `body`,
-    /// applying the resolved per-request timeout, and returns the checked
-    /// response.
+    /// Issues an authenticated `POST {base_url}/chat/completions` with the
+    /// final wire `payload` (see [`Self::chat_payload`]), applying the resolved
+    /// per-request timeout, and returns the checked response.
     ///
     /// Shared by the unary ([`Self::invoke`]) and streaming ([`Self::stream`])
     /// paths so URL construction, auth, timeout selection, and transport/status
     /// handling live in exactly one place.
     async fn post_json(
         &self,
-        body: &ChatCompletionRequest,
+        payload: &Value,
         timeout_ms: Option<u64>,
         streaming: bool,
         what: &str,
     ) -> Result<reqwest::Response> {
         crate::network_guard::ensure_network_models_allowed()?;
         let url = format!("{}/chat/completions", self.base_url);
-        let mut payload = serde_json::to_value(body)?;
-        self.request_options.apply_payload(&mut payload);
         let client = self.request_options.http.as_ref().unwrap_or(&self.client);
-        let mut builder = self.authorized(client.post(&url)).json(&payload);
+        let mut builder = self.authorized(client.post(&url)).json(payload);
         if let Some(timeout) = request_timeout(timeout_ms, streaming) {
             builder = builder.timeout(timeout);
         }
         self.send_checked(builder, what, &url).await
+    }
+
+    /// Serializes `body` into the JSON actually sent: parameters this endpoint
+    /// already rejected for the body's model are left off (see
+    /// [`omission`](crate::providers::omission)), then the host's
+    /// [`on_payload`](crate::providers::ProviderRequestOptions::on_payload) hook
+    /// runs, so a field the host injects deliberately is never stripped.
+    fn chat_payload(&self, body: &ChatCompletionRequest) -> Result<Value> {
+        let mut payload = serde_json::to_value(body)?;
+        if let Some(object) = payload.as_object_mut() {
+            object.retain(|name, _| {
+                !(OMITTABLE_PARAMETERS.contains(&name.as_str())
+                    && omission::is_omitted(&self.base_url, &body.model, name))
+            });
+        }
+        self.request_options.apply_payload(&mut payload);
+        Ok(payload)
+    }
+
+    /// The [`OMITTABLE_PARAMETERS`] member a 400 blames, if any, chosen only
+    /// from those present in the `payload` that was sent.
+    ///
+    /// Matched against the provider's error *message*, not its code or raw
+    /// body: OpenAI-shaped errors type nearly every 400 `invalid_request_error`,
+    /// which would turn any message that merely names a sent field into a
+    /// rejection of it. A context-overflow error is never a rejection — those
+    /// routinely name `max_tokens`, and dropping (then remembering) the cap over
+    /// one would uncap every later request to that model.
+    fn rejected_parameter(&self, err: &ProviderError, payload: &Value) -> Option<String> {
+        if err.code.as_deref() == Some(CONTEXT_OVERFLOW_CODE) {
+            return None;
+        }
+        let sent: Vec<&str> = OMITTABLE_PARAMETERS
+            .iter()
+            .copied()
+            .filter(|name| payload.get(name).is_some_and(|value| !value.is_null()))
+            .collect();
+        omission::parameter_blamed_by(&err.message, &sent).map(str::to_string)
     }
 
     /// Builds the chat-completions wire body for `request` under the given
@@ -1716,8 +1753,9 @@ impl OpenAiModel {
     ) -> Result<reqwest::Response> {
         let baseline = self.baseline_degrade();
         let body = self.build_chat_body(request, baseline, streaming)?;
+        let payload = self.chat_payload(&body)?;
         match self
-            .post_json(&body, request.timeout_ms, streaming, what)
+            .post_json(&payload, request.timeout_ms, streaming, what)
             .await
         {
             Ok(response) => Ok(response),
@@ -1730,6 +1768,25 @@ impl OpenAiModel {
                         self.json_schema_strict.store(false, Ordering::Relaxed);
                     }
                     let retry = self.build_chat_body(request, degrade, streaming)?;
+                    let retry = self.chat_payload(&retry)?;
+                    self.post_json(&retry, request.timeout_ms, streaming, what)
+                        .await
+                } else if let Some(parameter) = self.rejected_parameter(&err, &payload) {
+                    // The model named a parameter we sent as one it does not
+                    // take. Drop that one parameter, remember it for this
+                    // endpoint and model, and try exactly once more — a 400 is
+                    // billed nothing, so being wrong costs one round-trip.
+                    tracing::debug!(
+                        target: "tinyinference::openai",
+                        model = %body.model,
+                        parameter = %parameter,
+                        "[openai] retrying without a parameter the endpoint rejected"
+                    );
+                    omission::remember_omit(&self.base_url, &body.model, &parameter);
+                    let mut retry = payload;
+                    if let Some(object) = retry.as_object_mut() {
+                        object.remove(&parameter);
+                    }
                     self.post_json(&retry, request.timeout_ms, streaming, what)
                         .await
                 } else {
@@ -1803,6 +1860,20 @@ impl OpenAiModel {
         self.provider_error(message, Some(status), code, raw, retry_after)
     }
 }
+
+/// Optional request fields a Chat Completions endpoint may reject by name and
+/// that can be dropped without changing what the request asks: sampling,
+/// output-cap and reasoning knobs. Messages, tools, `stop` and response format
+/// are never in this list — dropping one of those would answer a different
+/// question. See [`OpenAiModel::rejected_parameter`].
+const OMITTABLE_PARAMETERS: &[&str] = &[
+    "temperature",
+    "top_p",
+    "seed",
+    "max_tokens",
+    "max_completion_tokens",
+    "reasoning_effort",
+];
 
 /// Request-shape degradations to apply when building an OpenAI wire body.
 ///

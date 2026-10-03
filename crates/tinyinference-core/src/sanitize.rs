@@ -97,9 +97,87 @@ pub fn scrub_secret_patterns(input: &str) -> String {
 }
 
 /// Key/value credential shapes: `token: "…"`, `api_key=…`, `bearer: …`, etc.
+///
+/// The key is a whole identifier ending in a sensitive word (`token`,
+/// `access_token`, `GITHUB_TOKEN`), so `token_count` is never a key. Key,
+/// operator and value stay on one line (`[ \t]*`, not `\s*`). The operator is
+/// captured rather than excluded because the regex crate has no lookaround;
+/// [`scrub_credentials`] drops `==` comparisons and asks [`looks_like_secret`]
+/// whether the value is a credential or ordinary code.
+///
+/// Groups: 1 = operator, 2 = double-quoted value, 3 = single-quoted value,
+/// 4 = bare value.
 static SENSITIVE_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(token|api[_-]?key|password|secret|user[_-]?key|bearer|credential)["']?\s*[:=]\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([a-zA-Z0-9_+./=\-]+))"#).unwrap()
+    Regex::new(r#"(?i)\b[a-z0-9_\-]*(?:token|api[_-]?key|password|secret|user[_-]?key|bearer|credential)["']?[ \t]*(:=|==|[:=])[ \t]*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([a-zA-Z0-9_+./=\-]+))"#).unwrap()
 });
+
+/// Value prefixes issued by credential providers. A labelled value starting
+/// with one of these is redacted whatever else it looks like.
+const KNOWN_SECRET_PREFIXES: [&str; 9] = [
+    "sk-",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "github_pat_",
+    "AKIA",
+    "ASIA",
+    // JWT: base64url of `{"`.
+    "eyJ",
+    "xox",
+];
+
+/// Signed or fractional numbers (`-4.73`, `+12`, `0.7`, `1e-5`). Plain
+/// unsigned digit runs are not matched: they can be PINs or numeric keys.
+static NON_SECRET_NUMBER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:[+-]\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\d*\.\d+(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)$")
+        .unwrap()
+});
+
+/// Identifiers and dotted member paths with no digit (`None`, `self.vocab`,
+/// `os.environ`): references to a value in code, not the value itself.
+static DIGITLESS_IDENTIFIER_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z_][A-Za-z_]*(?:\.[A-Za-z_]+)*$").unwrap());
+
+fn has_known_secret_prefix(value: &str) -> bool {
+    KNOWN_SECRET_PREFIXES.iter().any(|prefix| {
+        value.starts_with(prefix)
+            // Slack tokens: `xoxb-`, `xoxp-`, `xoxa-`, … (`xox?-`).
+            && (*prefix != "xox" || value.as_bytes().get(4) == Some(&b'-'))
+    })
+}
+
+/// Decide whether a labelled value is a credential or ordinary source code.
+///
+/// `quoted` says whether the value was a string literal; `rest` is the text
+/// right after the whole match (closing quote included).
+fn looks_like_secret(value: &str, quoted: bool, rest: &str) -> bool {
+    if has_known_secret_prefix(value) {
+        return true;
+    }
+    // `"<eos>"`, `"<your key here>"`: placeholders and markup.
+    if value.find('<').is_some_and(|open| value[open..].contains('>')) {
+        return false;
+    }
+    if value.chars().any(char::is_whitespace) {
+        return false;
+    }
+    if NON_SECRET_NUMBER_REGEX.is_match(value) {
+        return false;
+    }
+    // Indexing, calls and member access: `self.vocab[i]`, `get_token()`,
+    // `"x".join(…)`. A bare `.` at the end of a sentence is not member access.
+    let mut after = rest.chars();
+    match after.next() {
+        Some('(' | '[') => return false,
+        Some('.') if after.next().is_some_and(|c| c.is_alphabetic() || c == '_') => {
+            return false;
+        }
+        _ => {}
+    }
+    // A string literal is data, so `"short"` stays redacted; a bare word with
+    // no digit is a reference (`None`, `self.vocab`, `api_key`).
+    quoted || !DIGITLESS_IDENTIFIER_REGEX.is_match(value)
+}
 
 /// Bare AWS access-key IDs — `AKIA…`/`ASIA…` followed by 16 base32 chars — which
 /// appear naked in env dumps and config reads with no surrounding key name.
@@ -172,14 +250,23 @@ fn redact_prefix(val: &str) -> &str {
 pub fn scrub_credentials(input: &str) -> String {
     let stage_kv = SENSITIVE_KV_REGEX.replace_all(input, |caps: &regex::Captures<'_>| {
         let full_match = &caps[0];
+        // `token == other` compares; it does not assign.
+        if &caps[1] == "==" {
+            return full_match.to_string();
+        }
+        let quoted = caps.get(4).is_none();
         let value = caps
             .get(2)
             .or(caps.get(3))
             .or(caps.get(4))
             .expect("sensitive key-value match has a value");
+        let rest = &input[caps.get(0).expect("full match").end()..];
+        if !looks_like_secret(value.as_str(), quoted, rest) {
+            return full_match.to_string();
+        }
         // Already redacted: an unquoted value stops at `*`, so a second pass
         // would match the kept prefix and stack another marker. Leave it.
-        if input[caps.get(0).expect("full match").end()..].starts_with("*[REDACTED]") {
+        if rest.starts_with("*[REDACTED]") {
             return full_match.to_string();
         }
         // Replace only the value span. Rebuilding the key from captures used

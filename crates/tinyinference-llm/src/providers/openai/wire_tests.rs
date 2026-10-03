@@ -413,3 +413,209 @@ async fn overflow_without_stamped_code_still_records_the_window() {
         .expect("window learned from the message itself");
     assert_eq!(learned.context_window, Some(32_768));
 }
+
+// ---------------------------------------------------------------------------
+// Adaptive parameter omission (a 400 that names a parameter we sent)
+// ---------------------------------------------------------------------------
+
+/// A canned chat completion body, shared by the multi-response server tests.
+fn completion_body() -> String {
+    json!({
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "model": "m",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "Hello!" },
+            "finish_reason": "stop"
+        }]
+    })
+    .to_string()
+}
+
+/// Serves `responses` in order, one connection each, and returns the raw
+/// requests received. The listener closes after the last one, so an extra
+/// attempt surfaces as a transport error rather than a canned answer.
+fn serve_sequence(responses: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let handle = std::thread::spawn(move || {
+        let mut received = Vec::new();
+        for (status, body) in responses {
+            let (mut sock, _) = listener.accept().unwrap();
+            received.push(String::from_utf8_lossy(&read_request(&mut sock)).into_owned());
+            let response = format!(
+                "HTTP/1.1 {status} Canned\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(response.as_bytes());
+        }
+        received
+    });
+    (base, handle)
+}
+
+fn request_body(raw: &str) -> Value {
+    serde_json::from_str(raw.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+}
+
+fn unsupported(parameter: &str) -> String {
+    json!({
+        "error": {
+            "message": format!("Unsupported parameter: '{parameter}' is not supported with this model."),
+            "type": "invalid_request_error",
+            "param": parameter,
+            "code": "unsupported_parameter"
+        }
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn a_rejected_parameter_is_dropped_and_the_request_retried_once() {
+    let (base, server) = serve_sequence(vec![
+        (400, unsupported("temperature")),
+        (200, completion_body()),
+    ]);
+    let model = OpenAiModel::new("k").with_base_url(&base);
+
+    let response = model
+        .invoke(&(), request("omission-retry-model", 0.7))
+        .await
+        .unwrap();
+    assert_eq!(response.text(), "Hello!");
+
+    let raw = server.join().unwrap();
+    assert_eq!(raw.len(), 2, "one rejection, one retry");
+    let first = request_body(&raw[0]);
+    let retry = request_body(&raw[1]);
+    assert_eq!(first["temperature"], json!(0.7));
+    assert!(retry.get("temperature").is_none(), "retry={retry}");
+    // Only the blamed parameter goes: the question asked is unchanged.
+    assert_eq!(retry["model"], first["model"]);
+    assert_eq!(retry["messages"], first["messages"]);
+    assert!(super::super::omission::is_omitted(
+        &base,
+        "omission-retry-model",
+        "temperature"
+    ));
+}
+
+#[tokio::test]
+async fn a_learned_omission_is_applied_up_front_on_the_next_request() {
+    let (base, server) = serve_sequence(vec![
+        (400, unsupported("max_tokens")),
+        (200, completion_body()),
+        (200, completion_body()),
+    ]);
+    let request = || request("omission-learned-model", 0.5).with_max_tokens(64);
+
+    let first = OpenAiModel::new("k").with_base_url(&base);
+    first.invoke(&(), request()).await.unwrap();
+    // A separate instance: what was learnt belongs to the endpoint and model,
+    // not to one adapter value.
+    let second = OpenAiModel::new("k").with_base_url(&base);
+    second.invoke(&(), request()).await.unwrap();
+
+    let raw = server.join().unwrap();
+    assert_eq!(raw.len(), 3, "no round-trip is spent re-learning");
+    let later = request_body(&raw[2]);
+    assert!(later.get("max_tokens").is_none(), "later={later}");
+    assert_eq!(later["temperature"], json!(0.5), "nothing else is dropped");
+}
+
+#[tokio::test]
+async fn only_one_omission_retry_is_spent() {
+    let (base, server) = serve_sequence(vec![
+        (400, unsupported("temperature")),
+        (400, unsupported("seed")),
+    ]);
+    let model = OpenAiModel::new("k").with_base_url(&base);
+    let error = model
+        .invoke(&(), request("omission-single-retry-model", 0.3).with_seed(7))
+        .await
+        .unwrap_err();
+
+    // The second rejection is what surfaces: had a third attempt been made it
+    // would have failed on the closed listener instead.
+    match error {
+        Error::Provider(error) => {
+            assert_eq!(error.status, Some(400));
+            assert!(error.message.contains("'seed'"), "{}", error.message);
+        }
+        other => panic!("expected a provider error, got {other:?}"),
+    }
+    assert_eq!(server.join().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_rejection_naming_nothing_we_sent_is_not_retried() {
+    let (base, server) = serve_sequence(vec![(400, unsupported("logit_bias"))]);
+    let model = OpenAiModel::new("k").with_base_url(&base);
+    assert!(
+        model
+            .invoke(&(), request("omission-unrelated-model", 0.3))
+            .await
+            .is_err()
+    );
+    assert_eq!(server.join().unwrap().len(), 1);
+    assert!(!super::super::omission::is_omitted(
+        &base,
+        "omission-unrelated-model",
+        "temperature"
+    ));
+}
+
+#[tokio::test]
+async fn a_context_overflow_never_drops_the_output_cap() {
+    // Overflow messages routinely name `max_tokens`; dropping (and
+    // remembering) the cap over one would uncap every later request.
+    let overflow = json!({
+        "error": {
+            "message": "This model's maximum context length is 4096 tokens. 'max_tokens' is unsupported at 9000.",
+            "type": "invalid_request_error"
+        }
+    })
+    .to_string();
+    let (base, server) = serve_sequence(vec![(400, overflow)]);
+    let model = OpenAiModel::new("k").with_base_url(&base);
+    assert!(
+        model
+            .invoke(
+                &(),
+                request("omission-overflow-model", 0.3).with_max_tokens(9000)
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(server.join().unwrap().len(), 1);
+    assert!(!super::super::omission::is_omitted(
+        &base,
+        "omission-overflow-model",
+        "max_tokens"
+    ));
+}
+
+#[tokio::test]
+async fn the_streaming_path_retries_a_rejected_parameter_too() {
+    let (base, server) = serve_sequence(vec![
+        (400, unsupported("top_p")),
+        (200, completion_body()),
+    ]);
+    let model = OpenAiModel::new("k").with_base_url(&base);
+    let mut stream = model
+        .stream(&(), request("omission-stream-model", 0.3).with_top_p(0.9))
+        .await
+        .unwrap();
+    let mut completed = None;
+    while let Some(item) = stream.next().await {
+        if let crate::model::ModelStreamItem::Completed(response) = item {
+            completed = Some(response);
+        }
+    }
+    assert_eq!(completed.unwrap().text(), "Hello!");
+
+    let raw = server.join().unwrap();
+    assert_eq!(raw.len(), 2);
+    assert!(request_body(&raw[1]).get("top_p").is_none());
+}

@@ -198,3 +198,51 @@ async fn no_auth_style_sends_no_credentials() {
     assert_eq!(header_value(&raw, "authorization"), None, "{raw}");
     assert_eq!(header_value(&raw, "x-api-key"), None, "{raw}");
 }
+
+fn transcript_with_record_only_patch() -> ModelRequest {
+    let patch = crate::message::SystemMessage {
+        content: Vec::new(),
+        sections: [("tool_changes".to_string(), Some("Tools now available: x.".to_string()))]
+            .into_iter()
+            .collect(),
+        tools_added: Vec::new(),
+        tools_removed: Vec::new(),
+    };
+    ModelRequest::new(vec![
+        Message::system("You are helpful."),
+        Message::user("hi"),
+        Message::System(patch),
+        Message::system("a real mid-turn instruction"),
+    ])
+}
+
+fn wire_roles(body: &Value) -> Vec<String> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["role"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn hoisting_model_drops_system_messages_that_render_no_text() {
+    // A record-only patch (sections / tool deltas, no content) renders as an
+    // empty `role: system` message. A route that hoists system content to the
+    // front of the prompt would still rewrite its cached prefix for it (#6962).
+    let model = OpenAiModel::new("k").with_model("deepseek/deepseek-v4.1-flash");
+    let body = body_for(&model, &transcript_with_record_only_patch());
+    assert_eq!(wire_roles(&body), ["system", "user", "system"], "body={body}");
+    assert_eq!(body["messages"][2]["content"], json!("a real mid-turn instruction"));
+}
+
+#[test]
+fn non_hoisting_model_keeps_every_system_message_in_place() {
+    let model = OpenAiModel::new("k").with_model("gpt-4.1-mini");
+    let body = body_for(&model, &transcript_with_record_only_patch());
+    assert_eq!(
+        wire_roles(&body),
+        ["system", "user", "system", "system"],
+        "body={body}"
+    );
+}

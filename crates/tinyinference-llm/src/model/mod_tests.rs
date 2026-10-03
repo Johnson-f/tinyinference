@@ -770,3 +770,20 @@ fn schema_transform_chain_applies_steps_in_order() {
     assert_eq!(chained["properties"]["a"]["type"], "string");
     assert_eq!(chained["additionalProperties"], false);
 }
+
+#[test]
+fn model_profile_hoists_system_messages_defaults_off_and_round_trips() {
+    assert!(!ModelProfile::default().hoists_system_messages);
+
+    // A profile serialized before the field existed still deserializes.
+    let legacy: ModelProfile = serde_json::from_str("{}").unwrap();
+    assert!(!legacy.hoists_system_messages);
+
+    let profile = ModelProfile {
+        hoists_system_messages: true,
+        ..ModelProfile::default()
+    };
+    let json = serde_json::to_string(&profile).unwrap();
+    let round_tripped: ModelProfile = serde_json::from_str(&json).unwrap();
+    assert!(round_tripped.hoists_system_messages);
+}

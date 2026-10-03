@@ -1753,6 +1753,29 @@ fn derive_profile_populates_known_context_windows() {
     );
 }
 
+#[test]
+fn derive_profile_flags_deepseek_ids_as_hoisting_system_messages() {
+    // DeepSeek's chat template moves every system message to the front of the
+    // prompt, so new mid-turn system text rewrites the cached prefix (#6962).
+    for id in [
+        "deepseek-chat",
+        "deepseek-reasoner",
+        "deepseek/deepseek-v4.1-flash",
+        "DeepSeek-V3",
+    ] {
+        assert!(
+            super::transport::derive_profile("openrouter", id).hoists_system_messages,
+            "{id} should hoist system messages"
+        );
+    }
+    for id in ["gpt-4o-mini", "qwen/qwen3-coder", "z-ai/glm-5.3-flash"] {
+        assert!(
+            !super::transport::derive_profile("openrouter", id).hoists_system_messages,
+            "{id} should not hoist system messages"
+        );
+    }
+}
+
 // ── Temperature suppression / override ────────────────────────────────
 
 #[test]

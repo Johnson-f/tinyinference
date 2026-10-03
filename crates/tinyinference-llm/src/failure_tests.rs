@@ -525,3 +525,10 @@ fn recoverable_failure_text_matches_transient_markers_only() {
     assert!(!is_recoverable_failure_text("permission denied"));
     assert!(!is_recoverable_failure_text("exit code 1"));
 }
+
+#[test]
+fn context_window_matches_dashscope_input_length_range() {
+    let body = "Provider returned error: {\"error\":{\"code\":\"invalid_parameter_error\",\
+                \"message\":\"Range of input length should be [1, 98304]\"}}";
+    assert!(is_context_window_exceeded_message(body));
+}

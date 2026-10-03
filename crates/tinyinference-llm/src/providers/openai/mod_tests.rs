@@ -1776,6 +1776,15 @@ fn derive_profile_flags_deepseek_ids_as_hoisting_system_messages() {
     }
 }
 
+#[test]
+fn responses_profile_advertises_system_hoisting_after_builder_overrides() {
+    let model = OpenAiModel::new("k")
+        .with_responses_api_primary()
+        .with_model("gpt-4.1-mini")
+        .with_provider("openai");
+    assert!(profile_of(&model).hoists_system_messages);
+}
+
 // ── Temperature suppression / override ────────────────────────────────
 
 #[test]

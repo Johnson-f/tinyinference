@@ -14,6 +14,21 @@
   (`POST /videos`, `GET /videos/{id}`, `GET /videos/{id}/content`),
   `wait_for_job` (resume by job id), and `MockVideoGenerator`. A `completed`
   job with no outputs keeps polling instead of failing.
+- OpenAI-compatible chat: a `ReasoningConfig::budget_tokens` sent to an
+  OpenRouter endpoint is now emitted as `reasoning: {"max_tokens": N}` (and
+  `reasoning_effort` is omitted, since OpenRouter takes one or the other).
+  Other OpenAI-compatible endpoints still drop the budget, and an explicit
+  `reasoning` provider option still wins.
+
+### Fixed
+
+- `scrub_credentials` no longer redacts ordinary source code. Keys must be whole
+  identifiers ending in a sensitive word, key/operator/value never span a
+  newline, `==` comparisons are ignored, and the value must look like a secret:
+  known provider prefixes (`sk-`, `ghp_`, `github_pat_`, `xox?-`, `AKIA`, JWT
+  `eyJ`) always redact, while placeholders (`"<eos>"`), whitespace, signed or
+  fractional numbers, digit-less identifiers (`None`, `self.vocab`) and values
+  followed by `(`, `[` or member access pass through.
 
 ## 0.3.0
 

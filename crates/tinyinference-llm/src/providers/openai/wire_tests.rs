@@ -532,7 +532,10 @@ async fn only_one_omission_retry_is_spent() {
     ]);
     let model = OpenAiModel::new("k").with_base_url(&base);
     let error = model
-        .invoke(&(), request("omission-single-retry-model", 0.3).with_seed(7))
+        .invoke(
+            &(),
+            request("omission-single-retry-model", 0.3).with_seed(7),
+        )
         .await
         .unwrap_err();
 
@@ -598,10 +601,8 @@ async fn a_context_overflow_never_drops_the_output_cap() {
 
 #[tokio::test]
 async fn the_streaming_path_retries_a_rejected_parameter_too() {
-    let (base, server) = serve_sequence(vec![
-        (400, unsupported("top_p")),
-        (200, completion_body()),
-    ]);
+    let (base, server) =
+        serve_sequence(vec![(400, unsupported("top_p")), (200, completion_body())]);
     let model = OpenAiModel::new("k").with_base_url(&base);
     let mut stream = model
         .stream(&(), request("omission-stream-model", 0.3).with_top_p(0.9))

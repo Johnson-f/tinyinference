@@ -6,8 +6,8 @@
 
 use super::responses;
 use super::*;
-use crate::providers::omission;
 use crate::model::effective_temperature;
+use crate::providers::omission;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How the provider expects the API credential to be sent on each request.

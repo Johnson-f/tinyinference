@@ -461,8 +461,10 @@ pub fn parse_retry_after_ms(message: &str) -> Option<u64> {
     None
 }
 
+mod context_limit;
 mod text;
 
+pub use context_limit::parse_context_limit_from_error;
 pub use text::{
     extract_provider_error_detail, extract_provider_name, is_auth_error_text,
     is_codex_token_expired_text, is_connection_dropped_text, is_context_length_text,

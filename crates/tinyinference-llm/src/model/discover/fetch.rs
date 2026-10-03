@@ -40,6 +40,11 @@ impl ReqwestListingFetcher {
 #[async_trait]
 impl ModelListingFetcher for ReqwestListingFetcher {
     async fn get_json(&self, url: &str, headers: &[(String, String)]) -> crate::Result<Value> {
+        if crate::network_models_denied() {
+            return Err(crate::Error::Catalog(
+                "network-backed model calls are denied for this process".to_string(),
+            ));
+        }
         let mut builder = self.client.get(url);
         for (name, value) in headers {
             builder = builder.header(name.as_str(), value.as_str());
@@ -74,8 +79,8 @@ impl ModelListingFetcher for ReqwestListingFetcher {
 ///   `{endpoint}/models/{id}/endpoints` narrows the window to those providers.
 /// - The whole probe is bounded by `request.timeout`; a timeout or any error
 ///   is cached as "nothing found" for the cache's negative TTL.
-/// - When network models are denied ([`crate::deny_network_models`]) nothing
-///   is fetched.
+/// - [`ReqwestListingFetcher`] fetches nothing while network models are denied
+///   ([`crate::deny_network_models`]).
 ///
 /// The result folds in any window learned from an overflow error
 /// ([`super::record_overflow_error`]): it is the smaller of the two.
@@ -94,15 +99,6 @@ pub async fn discover_model_limits_with(
         );
         return cached.effective();
     }
-    if crate::network_models_denied() {
-        tracing::debug!(
-            endpoint = %request.endpoint,
-            model = %request.model,
-            "[model_limits] network models denied; skipping discovery"
-        );
-        return cached.effective();
-    }
-
     let started = std::time::Instant::now();
     let limits = match tokio::time::timeout(request.timeout, fetch_limits(fetcher, cache, request))
         .await

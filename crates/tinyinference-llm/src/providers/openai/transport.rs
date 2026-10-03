@@ -1531,7 +1531,11 @@ impl OpenAiModel {
         if let Some(timeout) = request_timeout(timeout_ms, body.stream == Some(true)) {
             builder = builder.timeout(timeout);
         }
-        self.send_checked(builder, "responses request", url).await
+        let result = self.send_checked(builder, "responses request", url).await;
+        if let Err(Error::Provider(err)) = &result {
+            self.learn_context_limit(&body.model, err);
+        }
+        result
     }
 
     /// Sends `builder` and returns the checked (2xx) [`reqwest::Response`].
@@ -1637,7 +1641,8 @@ impl OpenAiModel {
             .post_chat_with_degrade_inner(request, streaming, what)
             .await;
         if let Err(Error::Provider(err)) = &result {
-            self.learn_context_limit(request, err);
+            let model = request.model.as_deref().unwrap_or(&self.model);
+            self.learn_context_limit(model, err);
         }
         result
     }
@@ -1646,11 +1651,10 @@ impl OpenAiModel {
     /// adapter's base URL and the model the request named, so the next
     /// discovery for that model reports the corrected window
     /// ([`crate::model::discover::record_overflow_error`]).
-    fn learn_context_limit(&self, request: &ModelRequest, err: &ProviderError) {
+    fn learn_context_limit(&self, model: &str, err: &ProviderError) {
         if err.code.as_deref() != Some(CONTEXT_OVERFLOW_CODE) {
             return;
         }
-        let model = request.model.as_deref().unwrap_or(&self.model);
         crate::model::discover::record_overflow_error(&self.base_url, model, &err.message);
     }
 

@@ -294,7 +294,7 @@ fn is_record_only_system(message: &Message) -> bool {
     });
     if empty {
         tracing::trace!(
-            "[tinyinference::openai] dropping a record-only system message for a route that hoists system content"
+            "[providers][openai] dropping a record-only system message for a route that hoists system content"
         );
     }
     empty

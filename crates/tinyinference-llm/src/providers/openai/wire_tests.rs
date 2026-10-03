@@ -198,3 +198,113 @@ async fn no_auth_style_sends_no_credentials() {
     assert_eq!(header_value(&raw, "authorization"), None, "{raw}");
     assert_eq!(header_value(&raw, "x-api-key"), None, "{raw}");
 }
+
+/// Serves one canned error response and returns the base URL (unique port, so
+/// the process-wide limits cache key never collides across tests).
+fn serve_error_once(status: u16, body: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let (mut sock, _) = listener.accept().unwrap();
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut tmp).unwrap();
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            let Some(split) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&buf[..split]).to_ascii_lowercase();
+            let len = head
+                .lines()
+                .find_map(|l| {
+                    l.strip_prefix("content-length:")?
+                        .trim()
+                        .parse::<usize>()
+                        .ok()
+                })
+                .unwrap_or(0);
+            if buf.len() >= split + 4 + len {
+                break;
+            }
+        }
+        let response = format!(
+            "HTTP/1.1 {status} Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = sock.write_all(response.as_bytes());
+    });
+    base
+}
+
+const OVERFLOW_BODY: &str = r#"{"error":{"message":"This model's maximum context length is 131072 tokens. However, you requested 200000 tokens.","type":"invalid_request_error"}}"#;
+
+#[tokio::test]
+async fn chat_overflow_error_records_the_stated_window() {
+    let base = serve_error_once(400, OVERFLOW_BODY);
+    let model = OpenAiModel::new("k").with_base_url(&base);
+    assert!(
+        model
+            .invoke(&(), request("overflow-chat-model", 0.5))
+            .await
+            .is_err()
+    );
+    let learned = crate::model::discover::cached_model_limits(&base, "overflow-chat-model")
+        .expect("overflow window recorded");
+    assert_eq!(learned.context_window, Some(131_072));
+}
+
+#[tokio::test]
+async fn responses_overflow_error_records_the_stated_window() {
+    let base = serve_error_once(400, OVERFLOW_BODY);
+    let model = OpenAiModel::new("k")
+        .with_base_url(&base)
+        .with_responses_api_primary();
+    assert!(
+        model
+            .invoke(&(), request("overflow-responses-model", 0.5))
+            .await
+            .is_err()
+    );
+    let learned = crate::model::discover::cached_model_limits(&base, "overflow-responses-model")
+        .expect("overflow window recorded on the Responses path");
+    assert_eq!(learned.context_window, Some(131_072));
+}
+
+#[tokio::test]
+async fn non_overflow_error_records_nothing() {
+    let base = serve_error_once(400, r#"{"error":{"message":"bad request"}}"#);
+    let model = OpenAiModel::new("k").with_base_url(&base);
+    assert!(
+        model
+            .invoke(&(), request("no-overflow-model", 0.5))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        crate::model::discover::cached_model_limits(&base, "no-overflow-model"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn overflow_without_stamped_code_still_records_the_window() {
+    // vLLM phrasing that `is_context_overflow` does not stamp with the code.
+    let base = serve_error_once(
+        400,
+        r#"{"error":{"message":"input is longer than the maximum model length of 32768"}}"#,
+    );
+    let model = OpenAiModel::new("k").with_base_url(&base);
+    assert!(
+        model
+            .invoke(&(), request("vllm-unstamped-model", 0.5))
+            .await
+            .is_err()
+    );
+    let learned = crate::model::discover::cached_model_limits(&base, "vllm-unstamped-model")
+        .expect("window learned from the message itself");
+    assert_eq!(learned.context_window, Some(32_768));
+}

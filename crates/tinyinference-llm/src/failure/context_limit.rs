@@ -46,7 +46,7 @@ const LIMIT_FOLLOWS: &[&str] = &[
 ];
 
 /// Phrases before which the stated limit is the last number that precedes.
-const LIMIT_PRECEDES: &[&str] = &["maximum context length", "maximum\""];
+const LIMIT_PRECEDES: &[&str] = &["maximum context length"];
 
 /// Extracts the context window a provider states in an overflow error body.
 ///
@@ -83,7 +83,7 @@ pub fn parse_context_limit_from_error(message: &str) -> Option<u64> {
     // window is the number right before the phrase.
     for anchor in LIMIT_PRECEDES {
         if let Some(end) = lower.find(anchor) {
-            if let Some(limit) = last_number(&lower[..end], 16) {
+            if let Some(limit) = trailing_number(&lower[..end]) {
                 if let Some(limit) = plausible(limit) {
                     return Some(limit);
                 }
@@ -111,19 +111,20 @@ fn first_number(text: &str, window: usize) -> Option<u64> {
     parse_grouped(&text[start..])
 }
 
-/// The last integer that ends within `window` bytes of the end of `text`.
-fn last_number(text: &str, window: usize) -> Option<u64> {
+/// The integer that `text` ends with, ignoring trailing whitespace. Returns
+/// `None` when anything other than whitespace follows the last digit, so a
+/// requested-size figure earlier in the sentence is never mistaken for the
+/// window.
+fn trailing_number(text: &str) -> Option<u64> {
     let trimmed = text.trim_end();
-    let tail_start = trimmed.len().saturating_sub(window);
-    let tail_start = (tail_start..=trimmed.len())
-        .find(|index| trimmed.is_char_boundary(*index))
-        .unwrap_or(trimmed.len());
-    let tail = &trimmed[tail_start..];
-    let end = tail.rfind(|character: char| character.is_ascii_digit())? + 1;
-    let begin = tail[..end]
+    let begin = trimmed
         .rfind(|character: char| !(character.is_ascii_digit() || character == ','))
         .map_or(0, |index| index + 1);
-    parse_grouped(&tail[begin..end])
+    let digits = trimmed[begin..].trim_start_matches(',');
+    if digits.is_empty() {
+        return None;
+    }
+    parse_grouped(digits)
 }
 
 /// Parses a leading integer, accepting `,` / `_` digit grouping.

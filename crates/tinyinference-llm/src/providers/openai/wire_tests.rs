@@ -202,9 +202,12 @@ async fn no_auth_style_sends_no_credentials() {
 fn transcript_with_record_only_patch() -> ModelRequest {
     let patch = crate::message::SystemMessage {
         content: Vec::new(),
-        sections: [("tool_changes".to_string(), Some("Tools now available: x.".to_string()))]
-            .into_iter()
-            .collect(),
+        sections: [(
+            "tool_changes".to_string(),
+            Some("Tools now available: x.".to_string()),
+        )]
+        .into_iter()
+        .collect(),
         tools_added: Vec::new(),
         tools_removed: Vec::new(),
     };
@@ -232,8 +235,15 @@ fn hoisting_model_drops_system_messages_that_render_no_text() {
     // front of the prompt would still rewrite its cached prefix for it (#6962).
     let model = OpenAiModel::new("k").with_model("deepseek/deepseek-v4.1-flash");
     let body = body_for(&model, &transcript_with_record_only_patch());
-    assert_eq!(wire_roles(&body), ["system", "user", "system"], "body={body}");
-    assert_eq!(body["messages"][2]["content"], json!("a real mid-turn instruction"));
+    assert_eq!(
+        wire_roles(&body),
+        ["system", "user", "system"],
+        "body={body}"
+    );
+    assert_eq!(
+        body["messages"][2]["content"],
+        json!("a real mid-turn instruction")
+    );
 }
 
 #[test]

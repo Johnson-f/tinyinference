@@ -432,6 +432,25 @@ fn normalized_reasoning_is_lowered_to_anthropic_thinking() {
 }
 
 #[test]
+fn an_effort_keeps_adaptive_thinking_even_with_a_budget() {
+    // A host may attach a thinking budget for routes that cap reasoning with it
+    // (OpenRouter's `reasoning.max_tokens`). On Anthropic the chosen effort
+    // still selects adaptive thinking, exactly as an effort-only request does;
+    // the budget applies here only when no effort is set.
+    let both = ModelRequest::new(vec![Message::user("hi")]).with_reasoning(ReasoningConfig {
+        effort: Some(ReasoningEffort::High),
+        budget_tokens: Some(9011),
+        summary: None,
+    });
+    let effort_only =
+        ModelRequest::new(vec![Message::user("hi")]).with_reasoning_effort(ReasoningEffort::High);
+    let body = request_body(&both, "m");
+    assert_eq!(body["thinking"], json!({ "type": "adaptive" }));
+    assert_eq!(body["output_config"]["effort"], "high");
+    assert_eq!(body, request_body(&effort_only, "m"));
+}
+
+#[test]
 fn provider_extension_blocks_round_trip_without_interpretation() {
     let extension = json!({
         "type": "server_tool_use",

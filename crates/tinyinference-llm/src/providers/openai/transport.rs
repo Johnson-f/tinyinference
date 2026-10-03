@@ -454,6 +454,11 @@ impl OpenAiModel {
         self
     }
 
+    /// Stub.
+    pub fn with_bearer_source(self, _source: std::sync::Arc<dyn crate::providers::BearerSource>) -> Self {
+        self
+    }
+
     /// Attaches a static header to every request (repeatable). Applied after the
     /// auth header — e.g. provider attribution headers.
     pub fn with_header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {

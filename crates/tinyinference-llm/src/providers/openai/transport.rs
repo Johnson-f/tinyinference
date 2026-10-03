@@ -276,6 +276,30 @@ pub(super) fn is_reasoning_model(model: &str) -> bool {
         || lower.contains("/gpt-5")
 }
 
+/// Whether `message` is a system message that renders no text on the Chat
+/// Completions wire — a transcript record such as a tool-change patch, whose
+/// sections and tool deltas `convert::translate_message` does not send.
+///
+/// A route that hoists system content to the prompt head would still rewrite
+/// its cached prefix for the empty `role: "system"` turn (#6962), so the
+/// request builder drops these for such a route. The transcript keeps them.
+fn is_record_only_system(message: &Message) -> bool {
+    let Message::System(system) = message else {
+        return false;
+    };
+    let empty = system.content.iter().all(|block| match block {
+        ContentBlock::Text(text) => text.is_empty(),
+        ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => true,
+        _ => false,
+    });
+    if empty {
+        tracing::trace!(
+            "[tinyinference::openai] dropping a record-only system message for a route that hoists system content"
+        );
+    }
+    empty
+}
+
 /// Derives a static [`ModelProfile`] for an OpenAI(-compatible) model id.
 ///
 /// All targets support tool calling, streaming (including tool-call chunks),
@@ -320,6 +344,10 @@ pub(super) fn derive_profile(provider: &str, model: &str) -> ModelProfile {
         // at that point there is no wire position for a mid-transcript patch
         // to occupy.
         mid_conversation_system_messages: true,
+        // DeepSeek's chat template hoists every system turn into the prompt
+        // head, so new mid-turn system text rewrites the cached prefix
+        // (#6962). Matches bare ids and routed ones (`deepseek/...`).
+        hoists_system_messages: lower.contains("deepseek"),
         ..ModelProfile::default()
     }
 }
@@ -1218,11 +1246,13 @@ impl OpenAiModel {
         } else {
             base_messages
         };
+        let hoists_system = self.profile.hoists_system_messages;
         let mut messages = source_messages
             .iter()
             // `Message::Custom` is a host-side out-of-band record; never sent
             // to the provider.
             .filter(|message| !matches!(message, Message::Custom(_)))
+            .filter(|message| !(hoists_system && is_record_only_system(message)))
             .map(translate_message)
             .collect::<Result<Vec<_>>>()?;
         if self.wants_cache_breakpoints_for(request) {

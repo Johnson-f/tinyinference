@@ -100,15 +100,20 @@ fn plausible(value: u64) -> Option<u64> {
         .then_some(value)
 }
 
-/// The first integer (digits, optionally grouped with `,` or `_`) that starts
-/// within `window` bytes of the start of `text`.
+/// The integer `text` starts with, after skipping at most `window` bytes of
+/// whitespace and punctuation. A letter before the first digit means the
+/// anchor was not followed by a number (`"context window of this model"`), so
+/// a figure later in the sentence is never mistaken for the window.
 fn first_number(text: &str, window: usize) -> Option<u64> {
-    let start = text
-        .char_indices()
-        .take_while(|(index, _)| *index <= window)
-        .find(|(_, character)| character.is_ascii_digit())
-        .map(|(index, _)| index)?;
-    parse_grouped(&text[start..])
+    for (index, character) in text.char_indices() {
+        if index > window || character.is_alphabetic() {
+            return None;
+        }
+        if character.is_ascii_digit() {
+            return parse_grouped(&text[index..]);
+        }
+    }
+    None
 }
 
 /// The integer that `text` ends with, ignoring trailing whitespace. Returns

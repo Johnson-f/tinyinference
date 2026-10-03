@@ -62,36 +62,28 @@ pub fn parse_context_limit_from_error(message: &str) -> Option<u64> {
     // window is the number after `>`.
     if let Some(start) = lower.find("prompt is too long") {
         let tail = &lower[start..];
-        if let Some(gt) = tail.find('>') {
-            if let Some(limit) = first_number(&tail[gt + 1..], 24) {
-                return plausible(limit);
-            }
+        if let Some(limit) = tail
+            .find('>')
+            .and_then(|gt| first_number(&tail[gt + 1..], 24))
+        {
+            return plausible(limit);
         }
     }
 
-    for anchor in LIMIT_FOLLOWS {
-        if let Some(start) = lower.find(anchor) {
-            if let Some(limit) = first_number(&lower[start + anchor.len()..], 24) {
-                if let Some(limit) = plausible(limit) {
-                    return Some(limit);
-                }
-            }
-        }
+    let following = LIMIT_FOLLOWS.iter().find_map(|anchor| {
+        let start = lower.find(anchor)?;
+        first_number(&lower[start + anchor.len()..], 24).and_then(plausible)
+    });
+    if following.is_some() {
+        return following;
     }
 
     // Mistral: "too large for model with 32768 maximum context length". The
     // window is the number right before the phrase.
-    for anchor in LIMIT_PRECEDES {
-        if let Some(end) = lower.find(anchor) {
-            if let Some(limit) = trailing_number(&lower[..end]) {
-                if let Some(limit) = plausible(limit) {
-                    return Some(limit);
-                }
-            }
-        }
-    }
-
-    None
+    LIMIT_PRECEDES.iter().find_map(|anchor| {
+        let end = lower.find(anchor)?;
+        trailing_number(&lower[..end]).and_then(plausible)
+    })
 }
 
 fn plausible(value: u64) -> Option<u64> {

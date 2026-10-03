@@ -94,7 +94,11 @@ fn openrouter_receives_the_reasoning_budget_as_reasoning_max_tokens() {
         &model,
         &budgeted_request(Some(crate::model::ReasoningEffort::High)),
     );
-    assert_eq!(body["reasoning"], json!({ "max_tokens": 4505 }), "body={body}");
+    assert_eq!(
+        body["reasoning"],
+        json!({ "max_tokens": 4505 }),
+        "body={body}"
+    );
     // OpenRouter takes one of `effort` / `max_tokens`; the explicit budget wins.
     assert!(body.get("reasoning_effort").is_none(), "body={body}");
 }

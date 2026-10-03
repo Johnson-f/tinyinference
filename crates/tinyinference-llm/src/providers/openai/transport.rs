@@ -1652,11 +1652,12 @@ impl OpenAiModel {
     /// discovery for that model reports the corrected window
     /// ([`crate::model::discover::record_overflow_error`]).
     fn learn_context_limit(&self, model: &str, err: &ProviderError) {
-        // The code is only stamped for some phrasings; the parser's own message
-        // classification covers the rest (vLLM, llama.cpp, DashScope, ...).
-        if err.code.as_deref() != Some(CONTEXT_OVERFLOW_CODE)
-            && !crate::failure::is_context_window_exceeded_message(&err.message)
-        {
+        // The code is only stamped for some phrasings, so also try every
+        // request-shaped rejection (the statuses `is_context_overflow` covers):
+        // the parser only accepts messages that state a limit after an
+        // anchored overflow phrase (vLLM, llama.cpp, DashScope, ...).
+        let overflow_status = matches!(err.status, Some(400 | 413 | 422 | 500));
+        if err.code.as_deref() != Some(CONTEXT_OVERFLOW_CODE) && !overflow_status {
             return;
         }
         crate::model::discover::record_overflow_error(&self.base_url, model, &err.message);

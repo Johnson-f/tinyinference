@@ -111,7 +111,9 @@ pub struct ReasoningConfig {
     /// Requested reasoning effort.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffort>,
-    /// Explicit thinking-token budget.
+    /// Explicit thinking-token budget. OpenRouter receives it as
+    /// `reasoning.max_tokens` (in place of the effort); Anthropic uses it only
+    /// when no `effort` is set; routes with no budget field drop it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u32>,
     /// Requested reasoning-summary verbosity.

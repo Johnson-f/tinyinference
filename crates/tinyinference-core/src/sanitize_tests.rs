@@ -155,3 +155,118 @@ fn scrub_credentials_short_values_are_redacted() {
     assert_eq!(output, r#"api_key="shor*[REDACTED]""#);
     assert!(!output.contains("short"));
 }
+
+// #6954: ordinary source code that mentions tokens must pass through intact.
+
+#[track_caller]
+fn assert_unchanged(input: &str) {
+    assert_eq!(scrub_credentials(input), input, "source code was redacted");
+}
+
+#[test]
+fn placeholder_values_in_angle_brackets_are_not_secrets() {
+    assert_unchanged(r#"self.eos_token = "<eos>""#);
+}
+
+#[test]
+fn values_followed_by_an_index_or_call_are_expressions() {
+    assert_unchanged("token = self.vocab[int(token_id)]");
+    assert_unchanged("token = yyToknames[0]");
+    assert_unchanged("token = get_token(request)");
+}
+
+#[test]
+fn equality_comparison_is_not_an_assignment() {
+    assert_unchanged("if token == self.unk_token:");
+    assert_unchanged("if (token === previous) {");
+}
+
+#[test]
+fn type_annotation_with_none_default_is_not_a_secret() {
+    assert_unchanged("previous_token: Optional[int] = None");
+}
+
+#[test]
+fn identifiers_that_merely_start_with_a_keyword_are_not_keys() {
+    assert_unchanged("return score / max(token_count, 1)");
+}
+
+#[test]
+fn signed_and_float_numbers_are_not_secrets() {
+    assert_unchanged(r#""mean_logprob_per_token": -4.73,"#);
+    assert_unchanged("temperature_token = 0.7");
+    assert_unchanged("token_bias = +12");
+}
+
+#[test]
+fn key_and_value_never_pair_across_a_newline() {
+    let source = "    if token == self.unk_token:\n        return score / max(token_count, 1)\n";
+    assert_unchanged(source);
+
+    let setext_heading = "Access Token\n============\n";
+    assert_unchanged(setext_heading);
+
+    let split_assignment = "total = token\n= 12345678";
+    assert_unchanged(split_assignment);
+}
+
+#[test]
+fn whole_source_snippet_from_the_issue_is_unchanged() {
+    let source = r#"class Tokenizer:
+    def __init__(self):
+        self.eos_token = "<eos>"
+        previous_token: Optional[int] = None
+
+    def decode(self, token_id):
+        token = self.vocab[int(token_id)]
+        if token == self.unk_token:
+            return score / max(token_count, 1)
+        return {"mean_logprob_per_token": -4.73}
+"#;
+    assert_unchanged(source);
+}
+
+/// Assemble a provider-style fixture at runtime so no credential-shaped
+/// literal sits in the source for secret scanners to flag.
+fn fixture(prefix: &str, body: &str) -> String {
+    format!("{prefix}{body}")
+}
+
+#[test]
+fn known_secret_prefixes_are_always_redacted() {
+    let openai_key = fixture("sk-", "abc123def456ghi789jkl");
+    let openai = scrub_credentials(&format!(r#"api_key = "{openai_key}""#));
+    assert!(!openai.contains("abc123def456ghi789jkl"), "{openai}");
+    assert!(openai.contains("*[REDACTED]"), "{openai}");
+
+    // Letters only: the digit heuristic alone would not catch it.
+    let github_token = fixture("gh", "p_abcdefghijklmnopqrstuvwxyzABCD");
+    let github = scrub_credentials(&format!(r#"token: "{github_token}""#));
+    assert!(!github.contains("abcdefghijklmnopqrstuvwxyzABCD"), "{github}");
+    assert!(github.contains("*[REDACTED]"), "{github}");
+
+    let slack_token = fixture("xo", "xb-abcdefghij-klmnopqrst");
+    let slack = scrub_credentials(&format!("SLACK_TOKEN={slack_token}"));
+    assert!(!slack.contains("abcdefghij-klmnopqrst"), "{slack}");
+
+    let jwt_token = fixture("ey", "JhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl");
+    let jwt = scrub_credentials(&format!("bearer: {jwt_token}"));
+    assert!(!jwt.contains("eyJzdWIiOiJ4In0"), "{jwt}");
+}
+
+#[test]
+fn prefixed_keys_still_redact_secret_looking_values() {
+    let github_token = fixture("gh", "p_abcdefghijklmnopqrstuvwxyz0123");
+    let github = scrub_credentials(&format!("GITHUB_TOKEN={github_token}"));
+    assert!(!github.contains("abcdefghijklmnopqrstuvwxyz0123"), "{github}");
+
+    let access = scrub_credentials(r#"{"access_token": "a8f3k2m9q7x1z5"}"#);
+    assert!(!access.contains("a8f3k2m9q7x1z5"), "{access}");
+    assert!(access.contains("*[REDACTED]"), "{access}");
+}
+
+#[test]
+fn plain_password_assignment_is_redacted() {
+    let out = scrub_credentials("password=hunter2secret");
+    assert_eq!(out, "password=hunt*[REDACTED]");
+}

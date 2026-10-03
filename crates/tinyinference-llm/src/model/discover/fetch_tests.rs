@@ -195,7 +195,9 @@ async fn failure_is_cached_as_not_found() {
     // Listing + single-model probe once; the second call is a negative hit.
     assert_eq!(fetcher.calls().len(), 2);
     assert_eq!(
-        cache.get("https://nowhere.example/v1", "m").discovered,
+        cache
+            .get_variant("https://nowhere.example/v1", "m", &request.cache_variant())
+            .discovered,
         Some(None)
     );
 }
@@ -239,4 +241,87 @@ fn request_debug_redacts_header_values() {
     let rendered = format!("{request:?}");
     assert!(rendered.contains("Authorization"));
     assert!(!rendered.contains("sk-secret"));
+}
+
+#[tokio::test]
+async fn pinned_and_unpinned_requests_do_not_share_cached_limits() {
+    let fetcher = FakeFetcher::default()
+        .with(&format!("{ENDPOINT}/models"), openrouter_listing())
+        .with(
+            &format!("{ENDPOINT}/models/{MODEL}/endpoints"),
+            json!({ "data": { "endpoints": [
+                { "provider_name": "DeepInfra", "context_length": 163_840 }
+            ]}}),
+        );
+    let cache = cache();
+    let unpinned = DiscoveryRequest::new(ENDPOINT, MODEL);
+    let pinned = unpinned
+        .clone()
+        .with_pinned_providers(vec!["DeepInfra".into()]);
+    let broad = discover_model_limits_with(&fetcher, &cache, &unpinned)
+        .await
+        .unwrap();
+    assert_eq!(broad.context_window, Some(1_048_576));
+    let narrow = discover_model_limits_with(&fetcher, &cache, &pinned)
+        .await
+        .unwrap();
+    assert_eq!(narrow.context_window, Some(163_840));
+    let again = discover_model_limits_with(&fetcher, &cache, &unpinned)
+        .await
+        .unwrap();
+    assert_eq!(again.context_window, Some(1_048_576));
+}
+
+#[tokio::test]
+async fn pinned_lookup_failure_does_not_fall_back_to_model_level_limit() {
+    // Endpoints route missing: the listing's 1M window must not be reported.
+    let fetcher = FakeFetcher::default().with(&format!("{ENDPOINT}/models"), openrouter_listing());
+    let request =
+        DiscoveryRequest::new(ENDPOINT, MODEL).with_pinned_providers(vec!["DeepInfra".into()]);
+    assert!(
+        discover_model_limits_with(&fetcher, &cache(), &request)
+            .await
+            .is_none()
+    );
+
+    // Endpoints present but no pinned provider matches.
+    let fetcher = FakeFetcher::default()
+        .with(&format!("{ENDPOINT}/models"), openrouter_listing())
+        .with(
+            &format!("{ENDPOINT}/models/{MODEL}/endpoints"),
+            json!({ "data": { "endpoints": [
+                { "provider_name": "Other", "context_length": 1_048_576 }
+            ]}}),
+        );
+    assert!(
+        discover_model_limits_with(&fetcher, &cache(), &request)
+            .await
+            .is_none()
+    );
+}
+
+#[test]
+fn cache_variant_is_order_and_case_insensitive_over_providers() {
+    let a = DiscoveryRequest::new(ENDPOINT, MODEL)
+        .with_pinned_providers(vec!["B".into(), "a".into()]);
+    let b = DiscoveryRequest::new(ENDPOINT, MODEL)
+        .with_pinned_providers(vec!["A".into(), "b".into()]);
+    assert_eq!(a.cache_variant(), b.cache_variant());
+    assert_ne!(
+        a.cache_variant(),
+        DiscoveryRequest::new(ENDPOINT, MODEL).cache_variant()
+    );
+    assert_ne!(
+        DiscoveryRequest::new(ENDPOINT, MODEL).cache_variant(),
+        DiscoveryRequest::new(ENDPOINT, MODEL)
+            .with_single_model_probe(false)
+            .cache_variant()
+    );
+}
+
+#[test]
+fn default_fetcher_builds_without_following_redirects() {
+    // Construction must not panic; redirects are disabled so credential
+    // headers are never replayed to a redirect target.
+    let _ = ReqwestListingFetcher::default();
 }

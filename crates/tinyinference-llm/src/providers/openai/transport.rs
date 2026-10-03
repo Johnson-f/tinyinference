@@ -8,6 +8,7 @@ use super::responses;
 use super::*;
 use crate::model::effective_temperature;
 use crate::providers::omission;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// How the provider expects the API credential to be sent on each request.
@@ -44,6 +45,9 @@ pub struct OpenAiModel {
     api_key: String,
     /// How `api_key` is attached to each request (default [`AuthStyle::Bearer`]).
     auth: AuthStyle,
+    /// When set, read per request in place of `api_key`. See
+    /// [`Self::with_bearer_source`].
+    bearer_source: Option<Arc<dyn crate::providers::BearerSource>>,
     /// Extra static headers attached to every request (e.g. provider
     /// attribution headers). Applied after the auth header.
     extra_headers: Vec<(String, String)>,
@@ -149,6 +153,7 @@ impl std::fmt::Debug for OpenAiModel {
         formatter
             .debug_struct("OpenAiModel")
             .field("auth", &self.auth)
+            .field("bearer_source", &self.bearer_source.is_some())
             .field("extra_header_names", &extra_header_names)
             .field("model", &self.model)
             .field("provider", &self.provider)
@@ -364,6 +369,7 @@ impl OpenAiModel {
                 .expect("default reqwest client builds"),
             api_key: api_key.into(),
             auth: AuthStyle::Bearer,
+            bearer_source: None,
             extra_headers: Vec::new(),
             temperature_unsupported: Vec::new(),
             temperature_override: None,
@@ -454,8 +460,19 @@ impl OpenAiModel {
         self
     }
 
-    /// Stub.
-    pub fn with_bearer_source(self, _source: std::sync::Arc<dyn crate::providers::BearerSource>) -> Self {
+    /// Reads the credential from `source` on every request instead of using the
+    /// static key passed to the constructor.
+    ///
+    /// For a token that rotates in place (a projected platform token, a session
+    /// JWT): the model is built once and keeps its connection pool and learned
+    /// state while the credential changes underneath it. The value is placed per
+    /// the configured [`AuthStyle`] exactly as the static key would be, static
+    /// [`with_header`](Self::with_header) headers are still attached, and a
+    /// source yielding `None` sends no credential header. A 401 response calls
+    /// [`BearerSource::invalidate`](crate::providers::BearerSource::invalidate)
+    /// so the next request re-reads rather than re-presents a refused token.
+    pub fn with_bearer_source(mut self, source: Arc<dyn crate::providers::BearerSource>) -> Self {
+        self.bearer_source = Some(source);
         self
     }
 
@@ -789,7 +806,11 @@ impl OpenAiModel {
         let url = format!("{}/models", self.base_url);
 
         let response = self
-            .send_checked(self.authorized(self.client.get(&url)), "request", &url)
+            .send_checked(
+                self.authorized(self.client.get(&url)).await?,
+                "request",
+                &url,
+            )
             .await?;
 
         let text = response
@@ -1032,12 +1053,13 @@ impl OpenAiModel {
                 let endpoint = format!("{root}/api/show");
                 let builder = self
                     .authorized(self.client.post(&endpoint))
+                    .await?
                     .json(&ollama_show_body(&self.model));
                 (endpoint, builder)
             }
             LocalRuntimeKind::LmStudio => {
                 let endpoint = format!("{root}/api/v0/models");
-                let builder = self.authorized(self.client.get(&endpoint));
+                let builder = self.authorized(self.client.get(&endpoint)).await?;
                 (endpoint, builder)
             }
             LocalRuntimeKind::LlamaCpp | LocalRuntimeKind::Vllm => return Ok(LocalProbe::default()),
@@ -1121,6 +1143,7 @@ impl OpenAiModel {
             self.keep_alive.as_deref(),
         );
         self.authorized(self.client.post(&url))
+            .await?
             .json(&body)
             .send()
             .await
@@ -1389,12 +1412,27 @@ impl OpenAiModel {
     /// Attaches the provider's credential (per [`Self::auth`]) plus any static
     /// [`Self::extra_headers`] to an outbound request.
     ///
-    /// The single place auth is applied, shared by the chat and model-listing
-    /// calls. The header mapping itself lives in the pure [`auth_headers`] helper
-    /// so it is unit-testable without a network round-trip.
-    fn authorized(&self, mut builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        for (name, value) in auth_headers(&self.auth, &self.api_key) {
-            builder = builder.header(name, value);
+    /// The single place auth is applied, shared by every call this adapter
+    /// makes. The credential is the [`Self::with_bearer_source`] value when one
+    /// is set — read here, per request — and the static key otherwise. The
+    /// header mapping itself lives in the pure [`auth_headers`] helper so it is
+    /// unit-testable without a network round-trip.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the bearer source returns when it cannot produce a credential.
+    async fn authorized(
+        &self,
+        mut builder: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder> {
+        let credential = match &self.bearer_source {
+            Some(source) => source.current().await?,
+            None => Some(self.api_key.clone()),
+        };
+        if let Some(credential) = credential {
+            for (name, value) in auth_headers(&self.auth, &credential) {
+                builder = builder.header(name, value);
+            }
         }
         for (name, value) in &self.extra_headers {
             builder = builder.header(name.as_str(), value.as_str());
@@ -1405,7 +1443,7 @@ impl OpenAiModel {
         if !self.extra_query_params.is_empty() {
             builder = builder.query(&self.extra_query_params);
         }
-        builder
+        Ok(builder)
     }
 
     /// The `/responses` endpoint URL — a sibling of `/chat/completions` under the
@@ -1578,7 +1616,7 @@ impl OpenAiModel {
         timeout_ms: Option<u64>,
         url: &str,
     ) -> Result<reqwest::Response> {
-        let mut builder = self.authorized(self.client.post(url)).json(body);
+        let mut builder = self.authorized(self.client.post(url)).await?.json(body);
         if let Some(timeout) = request_timeout(timeout_ms, body.stream == Some(true)) {
             builder = builder.timeout(timeout);
         }
@@ -1615,6 +1653,11 @@ impl OpenAiModel {
         })?;
 
         let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED
+            && let Some(source) = &self.bearer_source
+        {
+            source.invalidate();
+        }
         if !status.is_success() {
             // Read the header before `text()` consumes the response: a 429's
             // `Retry-After` is the one wait the retry layer cannot guess.
@@ -1647,7 +1690,7 @@ impl OpenAiModel {
         crate::network_guard::ensure_network_models_allowed()?;
         let url = format!("{}/chat/completions", self.base_url);
         let client = self.request_options.http.as_ref().unwrap_or(&self.client);
-        let mut builder = self.authorized(client.post(&url)).json(payload);
+        let mut builder = self.authorized(client.post(&url)).await?.json(payload);
         if let Some(timeout) = request_timeout(timeout_ms, streaming) {
             builder = builder.timeout(timeout);
         }

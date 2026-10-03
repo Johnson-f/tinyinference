@@ -748,10 +748,7 @@ async fn a_failing_bearer_source_fails_the_call() {
     let model = OpenAiModel::new("static-key")
         .with_base_url("http://127.0.0.1:9/v1")
         .with_bearer_source(std::sync::Arc::new(BrokenToken));
-    let error = model
-        .invoke(&(), request("gpt-4o", 0.2))
-        .await
-        .unwrap_err();
+    let error = model.invoke(&(), request("gpt-4o", 0.2)).await.unwrap_err();
     assert!(
         error.to_string().contains("token file unreadable"),
         "{error}"

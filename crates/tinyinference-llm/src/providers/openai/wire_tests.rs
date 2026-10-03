@@ -125,37 +125,43 @@ fn explicit_reasoning_provider_option_wins_over_the_budget_on_openrouter() {
     assert_eq!(body["reasoning"], json!({ "effort": "low" }), "body={body}");
 }
 
+/// Reads one HTTP/1.1 request (head plus a `content-length` body) off `sock`.
+fn read_request(sock: &mut std::net::TcpStream) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        let n = sock.read(&mut tmp).unwrap();
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        let Some(split) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+            continue;
+        };
+        let head = String::from_utf8_lossy(&buf[..split]).to_ascii_lowercase();
+        let len = head
+            .lines()
+            .find_map(|l| {
+                l.strip_prefix("content-length:")?
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+            })
+            .unwrap_or(0);
+        if buf.len() >= split + 4 + len {
+            break;
+        }
+    }
+    buf
+}
+
 /// Serves one canned chat completion and returns the raw request it received.
 fn serve_once() -> (String, std::thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let handle = std::thread::spawn(move || {
         let (mut sock, _) = listener.accept().unwrap();
-        let mut buf = Vec::new();
-        let mut tmp = [0u8; 4096];
-        loop {
-            let n = sock.read(&mut tmp).unwrap();
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&tmp[..n]);
-            let Some(split) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
-                continue;
-            };
-            let head = String::from_utf8_lossy(&buf[..split]).to_ascii_lowercase();
-            let len = head
-                .lines()
-                .find_map(|l| {
-                    l.strip_prefix("content-length:")?
-                        .trim()
-                        .parse::<usize>()
-                        .ok()
-                })
-                .unwrap_or(0);
-            if buf.len() >= split + 4 + len {
-                break;
-            }
-        }
+        let buf = read_request(&mut sock);
         let payload = json!({
             "id": "chatcmpl-test",
             "object": "chat.completion",
@@ -329,31 +335,7 @@ fn serve_error_once(status: u16, body: &'static str) -> String {
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     std::thread::spawn(move || {
         let (mut sock, _) = listener.accept().unwrap();
-        let mut buf = Vec::new();
-        let mut tmp = [0u8; 4096];
-        loop {
-            let n = sock.read(&mut tmp).unwrap();
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&tmp[..n]);
-            let Some(split) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
-                continue;
-            };
-            let head = String::from_utf8_lossy(&buf[..split]).to_ascii_lowercase();
-            let len = head
-                .lines()
-                .find_map(|l| {
-                    l.strip_prefix("content-length:")?
-                        .trim()
-                        .parse::<usize>()
-                        .ok()
-                })
-                .unwrap_or(0);
-            if buf.len() >= split + 4 + len {
-                break;
-            }
-        }
+        let buf = read_request(&mut sock);
         let response = format!(
             "HTTP/1.1 {status} Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
             body.len()

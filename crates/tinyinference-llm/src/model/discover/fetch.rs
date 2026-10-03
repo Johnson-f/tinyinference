@@ -24,9 +24,22 @@ pub trait ModelListingFetcher: Send + Sync {
 }
 
 /// The default [`ModelListingFetcher`], over `reqwest`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ReqwestListingFetcher {
     client: reqwest::Client,
+}
+
+impl Default for ReqwestListingFetcher {
+    /// A client that never follows redirects: `get_json` forwards credential
+    /// headers, which must not be replayed to a redirect target.
+    fn default() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_default(),
+        }
+    }
 }
 
 impl ReqwestListingFetcher {
@@ -89,7 +102,8 @@ pub async fn discover_model_limits_with(
     cache: &ModelLimitsCache,
     request: &DiscoveryRequest,
 ) -> Option<ModelLimits> {
-    let cached = cache.get(&request.endpoint, &request.model);
+    let variant = request.cache_variant();
+    let cached = cache.get_variant(&request.endpoint, &request.model, &variant);
     if cached.discovered.is_some() {
         tracing::debug!(
             endpoint = %request.endpoint,
@@ -122,8 +136,10 @@ pub async fn discover_model_limits_with(
         elapsed_ms = started.elapsed().as_millis() as u64,
         "[model_limits] discovery finished"
     );
-    cache.insert_discovered(&request.endpoint, &request.model, limits);
-    cache.get(&request.endpoint, &request.model).effective()
+    cache.insert_discovered_variant(&request.endpoint, &request.model, &variant, limits);
+    cache
+        .get_variant(&request.endpoint, &request.model, &variant)
+        .effective()
 }
 
 /// [`discover_model_limits_with`] through the process-wide cache.
@@ -148,9 +164,19 @@ async fn fetch_limits(
                 listed = listed.len(),
                 "[model_limits] read model listing"
             );
-            for (id, limits) in listed {
-                if !model_ids_match(&id, &request.model) {
-                    cache.insert_discovered(&request.endpoint, &id, Some(limits));
+            // Listing-level limits are the broad (unpinned) answer; never
+            // prime them for a pinned request, which needs endpoint limits.
+            if request.pinned_providers.is_empty() {
+                let variant = request.cache_variant();
+                for (id, limits) in listed {
+                    if !model_ids_match(&id, &request.model) {
+                        cache.insert_discovered_variant(
+                            &request.endpoint,
+                            &id,
+                            &variant,
+                            Some(limits),
+                        );
+                    }
                 }
             }
             parse_model_limits(&body, &request.model)
@@ -190,14 +216,26 @@ async fn fetch_limits(
                             found.as_ref().and_then(|limits| limits.max_output_tokens);
                     }
                     found = Some(pinned);
+                } else {
+                    // The model-level value may be the maximum across
+                    // providers; it does not describe the pinned route.
+                    tracing::debug!(
+                        endpoint = %request.endpoint,
+                        model = %request.model,
+                        "[model_limits] no pinned provider endpoint matched; dropping model-level limit"
+                    );
+                    found = None;
                 }
             }
-            Err(error) => tracing::debug!(
-                endpoint = %request.endpoint,
-                model = %request.model,
-                error = %error,
-                "[model_limits] pinned-provider endpoints unavailable"
-            ),
+            Err(error) => {
+                tracing::debug!(
+                    endpoint = %request.endpoint,
+                    model = %request.model,
+                    error = %error,
+                    "[model_limits] pinned-provider endpoints unavailable; dropping model-level limit"
+                );
+                found = None;
+            }
         }
     }
 

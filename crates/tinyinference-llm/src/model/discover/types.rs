@@ -135,6 +135,29 @@ impl DiscoveryRequest {
         self
     }
 
+    /// Identity of the inputs that change what discovery returns for the same
+    /// `(endpoint, model)`: the effective listing URL, the single-model probe
+    /// mode, and the sorted, lowercased pinned-provider set. Discovered
+    /// results are cached per variant so a pinned lookup never reuses an
+    /// unpinned (broader) window, or the reverse.
+    #[must_use]
+    pub fn cache_variant(&self) -> String {
+        let mut providers: Vec<String> = self
+            .pinned_providers
+            .iter()
+            .map(|provider| provider.trim().to_ascii_lowercase())
+            .filter(|provider| !provider.is_empty())
+            .collect();
+        providers.sort();
+        providers.dedup();
+        format!(
+            "{}|{}|{}",
+            self.effective_listing_url(),
+            self.probe_single_model,
+            providers.join(",")
+        )
+    }
+
     /// The listing URL this request reads.
     #[must_use]
     pub fn effective_listing_url(&self) -> String {

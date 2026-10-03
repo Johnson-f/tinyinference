@@ -40,7 +40,12 @@ struct Learned {
 
 #[derive(Clone, Debug, Default)]
 struct Entry {
-    discovered: Option<Discovered>,
+    /// Discovered facts keyed by request variant (see
+    /// [`DiscoveryRequest::cache_variant`](super::DiscoveryRequest::cache_variant)):
+    /// the same model resolves differently under a different listing URL or
+    /// pinned-provider set, so those must not share a slot. The learned
+    /// overflow window below is shared by every variant.
+    discovered: HashMap<String, Discovered>,
     learned: Option<Learned>,
 }
 
@@ -143,12 +148,30 @@ impl ModelLimitsCache {
     /// sleeping).
     #[must_use]
     pub fn get_at(&self, endpoint: &str, model: &str, now: Instant) -> CachedLimits {
+        self.get_variant_at(endpoint, model, "", now)
+    }
+
+    /// [`Self::get`] for one discovery `variant`.
+    #[must_use]
+    pub fn get_variant(&self, endpoint: &str, model: &str, variant: &str) -> CachedLimits {
+        self.get_variant_at(endpoint, model, variant, Instant::now())
+    }
+
+    /// [`Self::get_variant`] evaluated at `now`.
+    #[must_use]
+    pub fn get_variant_at(
+        &self,
+        endpoint: &str,
+        model: &str,
+        variant: &str,
+        now: Instant,
+    ) -> CachedLimits {
         let key = Self::key(endpoint, model);
         self.with_entries(|entries| {
             let Some(entry) = entries.get(&key) else {
                 return CachedLimits::default();
             };
-            let discovered = entry.discovered.as_ref().and_then(|discovered| {
+            let discovered = entry.discovered.get(variant).and_then(|discovered| {
                 let ttl = if discovered.limits.is_some() {
                     self.discovered_ttl
                 } else {
@@ -182,9 +205,36 @@ impl ModelLimitsCache {
         limits: Option<ModelLimits>,
         at: Instant,
     ) {
+        self.insert_discovered_variant_at(endpoint, model, "", limits, at);
+    }
+
+    /// Records a discovery result for one discovery `variant`.
+    pub fn insert_discovered_variant(
+        &self,
+        endpoint: &str,
+        model: &str,
+        variant: &str,
+        limits: Option<ModelLimits>,
+    ) {
+        self.insert_discovered_variant_at(endpoint, model, variant, limits, Instant::now());
+    }
+
+    /// [`Self::insert_discovered_variant`] stamped at `at`.
+    pub fn insert_discovered_variant_at(
+        &self,
+        endpoint: &str,
+        model: &str,
+        variant: &str,
+        limits: Option<ModelLimits>,
+        at: Instant,
+    ) {
         let key = Self::key(endpoint, model);
         self.with_entries(|entries| {
-            entries.entry(key).or_default().discovered = Some(Discovered { limits, at });
+            entries
+                .entry(key)
+                .or_default()
+                .discovered
+                .insert(variant.to_string(), Discovered { limits, at });
         });
     }
 

@@ -620,3 +620,149 @@ async fn the_streaming_path_retries_a_rejected_parameter_too() {
     assert_eq!(raw.len(), 2);
     assert!(request_body(&raw[1]).get("top_p").is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Per-request credentials (BearerSource)
+// ---------------------------------------------------------------------------
+
+/// A rotating credential: yields `token-1`, `token-2`, ... and counts how
+/// often it was told its value was rejected.
+#[derive(Default)]
+struct RotatingToken {
+    reads: std::sync::atomic::AtomicUsize,
+    invalidations: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl crate::providers::BearerSource for RotatingToken {
+    async fn current(&self) -> crate::Result<Option<String>> {
+        let n = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        Ok(Some(format!("token-{n}")))
+    }
+
+    fn invalidate(&self) {
+        self.invalidations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A source that has nothing to present (a keyless endpoint).
+struct NoToken;
+
+#[async_trait::async_trait]
+impl crate::providers::BearerSource for NoToken {
+    async fn current(&self) -> crate::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+/// A source that cannot produce a credential at all.
+struct BrokenToken;
+
+#[async_trait::async_trait]
+impl crate::providers::BearerSource for BrokenToken {
+    async fn current(&self) -> crate::Result<Option<String>> {
+        Err(Error::Model("token file unreadable".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn a_bearer_source_is_read_on_every_request() {
+    let (base, server) = serve_sequence(vec![(200, completion_body()), (200, completion_body())]);
+    let model = OpenAiModel::new("static-key")
+        .with_base_url(&base)
+        .with_bearer_source(std::sync::Arc::new(RotatingToken::default()));
+
+    model.invoke(&(), request("gpt-4o", 0.2)).await.unwrap();
+    model.invoke(&(), request("gpt-4o", 0.2)).await.unwrap();
+
+    let raw = server.join().unwrap();
+    assert_eq!(
+        header_value(&raw[0], "authorization").as_deref(),
+        Some("Bearer token-1")
+    );
+    assert_eq!(
+        header_value(&raw[1], "authorization").as_deref(),
+        Some("Bearer token-2"),
+        "a rotated credential is picked up without rebuilding the model"
+    );
+}
+
+#[tokio::test]
+async fn a_bearer_source_is_sent_in_the_configured_auth_style() {
+    let (base, server) = serve_sequence(vec![(200, completion_body())]);
+    let model = OpenAiModel::new("static-key")
+        .with_base_url(&base)
+        .with_auth_style(AuthStyle::XApiKey)
+        .with_header("x-extra", "kept")
+        .with_bearer_source(std::sync::Arc::new(RotatingToken::default()));
+
+    model.invoke(&(), request("gpt-4o", 0.2)).await.unwrap();
+
+    let raw = server.join().unwrap();
+    assert_eq!(
+        header_value(&raw[0], "x-api-key").as_deref(),
+        Some("token-1")
+    );
+    assert_eq!(header_value(&raw[0], "authorization"), None);
+    assert_eq!(header_value(&raw[0], "x-extra").as_deref(), Some("kept"));
+}
+
+#[tokio::test]
+async fn a_bearer_source_with_nothing_to_present_sends_no_credentials() {
+    let (base, server) = serve_sequence(vec![(200, completion_body())]);
+    let model = OpenAiModel::new("static-key")
+        .with_base_url(&base)
+        .with_bearer_source(std::sync::Arc::new(NoToken));
+
+    model.invoke(&(), request("llama3", 0.2)).await.unwrap();
+
+    let raw = server.join().unwrap();
+    assert_eq!(header_value(&raw[0], "authorization"), None, "{}", raw[0]);
+}
+
+#[tokio::test]
+async fn a_rejected_bearer_is_invalidated_at_its_source() {
+    let (base, server) = serve_sequence(vec![(
+        401,
+        r#"{"error":{"message":"invalid token"}}"#.to_string(),
+    )]);
+    let source = std::sync::Arc::new(RotatingToken::default());
+    let model = OpenAiModel::new("")
+        .with_base_url(&base)
+        .with_bearer_source(source.clone());
+
+    assert!(model.invoke(&(), request("gpt-4o", 0.2)).await.is_err());
+    server.join().unwrap();
+    assert_eq!(
+        source
+            .invalidations
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the next request must re-read rather than re-present a refused token"
+    );
+}
+
+#[tokio::test]
+async fn a_failing_bearer_source_fails_the_call() {
+    let model = OpenAiModel::new("static-key")
+        .with_base_url("http://127.0.0.1:9/v1")
+        .with_bearer_source(std::sync::Arc::new(BrokenToken));
+    let error = model
+        .invoke(&(), request("gpt-4o", 0.2))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("token file unreadable"),
+        "{error}"
+    );
+}
+
+#[test]
+fn debug_output_reports_a_bearer_source_without_reading_it() {
+    let model = OpenAiModel::new("static-key")
+        .with_bearer_source(std::sync::Arc::new(RotatingToken::default()));
+    let debug = format!("{model:?}");
+    assert!(debug.contains("bearer_source: true"), "{debug}");
+    assert!(!debug.contains("static-key"), "{debug}");
+}

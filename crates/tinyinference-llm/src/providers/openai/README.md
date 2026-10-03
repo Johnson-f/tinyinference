@@ -44,6 +44,14 @@ of the rest of TinyInference.
   Anthropic API), `groq`, `xai`, `openrouter`, `together`, `mistral`, `ollama`.
   Override the preset's default model with `.with_model(..)`.
 
+**Rotating credentials.** `.with_bearer_source(Arc<dyn providers::BearerSource>)`
+replaces the constructor's static key with a value read on **every** request
+(a projected platform token, a session JWT), so a rotation never needs a
+rebuild and the connection pool and learned state survive it. The value is sent
+per the configured `AuthStyle` exactly as the static key would be, `with_header`
+headers are still attached, a source yielding `None` sends no credential header,
+and a 401 calls `BearerSource::invalidate` so the next request re-reads.
+
 Accessors: `.model()`, `.provider()`, `.base_url()`.
 
 ## Model discovery

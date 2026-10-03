@@ -1285,6 +1285,8 @@ name = "tinyinference-embeddings"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "futures",
+ "http",
  "once_cell",
  "regex",
  "reqwest",

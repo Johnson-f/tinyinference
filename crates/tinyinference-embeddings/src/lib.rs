@@ -55,10 +55,15 @@ pub mod catalog;
 mod error;
 pub mod factory;
 pub mod probe;
+pub mod rerank;
 pub mod served_models;
 mod types;
 
 pub use error::{Error, Result};
+pub use rerank::{
+    RerankCancellation, RerankError, RerankRequest, RerankResponse, RerankResult, RerankUsage,
+    Reranker, VoyageRerankConfig, VoyageReranker,
+};
 pub use types::*;
 
 use async_trait::async_trait;

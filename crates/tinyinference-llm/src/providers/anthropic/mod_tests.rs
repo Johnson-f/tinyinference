@@ -524,6 +524,7 @@ fn profile_advertises_tools_streaming_and_vision() {
     assert!(profile.streaming);
     assert!(profile.streaming_tool_chunks);
     assert!(profile.modalities.image_in);
+    assert!(profile.hoists_system_messages);
 }
 
 #[test]

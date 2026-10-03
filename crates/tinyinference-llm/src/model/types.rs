@@ -275,6 +275,19 @@ pub struct ModelProfile {
     /// in place.
     #[serde(default)]
     pub mid_conversation_system_messages: bool,
+    /// Whether this model moves every system message to the front of the
+    /// prompt, wherever it sits in the transcript.
+    ///
+    /// DeepSeek's chat template concatenates all `system` turns into the
+    /// prompt head. On such a route a system message added partway through
+    /// a turn is not a cheap tail addition: it rewrites the cached prefix, and
+    /// the provider's prompt cache falls back to the static head (#6962). This
+    /// is independent of [`mid_conversation_system_messages`](Self::mid_conversation_system_messages),
+    /// which says whether the wire *accepts* a mid-transcript system message.
+    /// A caller that wants to add per-call guidance to a hoisting model should
+    /// put it in the conversation tail (a tool result or a user turn) instead.
+    #[serde(default)]
+    pub hoists_system_messages: bool,
     /// JSON-schema transform this model's adapter must apply before sending a
     /// schema to the provider (for example stripping `$defs` a provider
     /// rejects, or forcing `additionalProperties: false`).

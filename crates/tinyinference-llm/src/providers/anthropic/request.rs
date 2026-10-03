@@ -139,7 +139,11 @@ pub(crate) fn request_body(request: &ModelRequest, default_model: &str) -> Value
         }
     }
     if let Some(reasoning) = &request.reasoning {
-        if let Some(budget_tokens) = reasoning.budget_tokens {
+        // A chosen effort selects adaptive thinking; an explicit budget only
+        // switches to fixed-budget thinking when no effort is set. Hosts
+        // attach a budget for routes that read it as a cap (OpenRouter's
+        // `reasoning.max_tokens`), and that must not change this route.
+        if let (Some(budget_tokens), None) = (reasoning.budget_tokens, reasoning.effort) {
             body["thinking"] = json!({
                 "type": "enabled",
                 "budget_tokens": budget_tokens,

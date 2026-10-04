@@ -529,3 +529,10 @@ fn transport_support_defaults_closed_and_all_decorators_forward() {
         InputSource::Base64
     ));
 }
+
+#[test]
+fn input_capability_types_are_available_from_crate_root() {
+    use crate::{InputModality, InputSource};
+    assert_eq!(InputModality::Image, crate::model::InputModality::Image);
+    assert_eq!(InputSource::Base64, crate::model::InputSource::Base64);
+}

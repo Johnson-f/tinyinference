@@ -826,3 +826,54 @@ async fn responses_http_sends_native_image_and_opted_in_pdf_in_order() {
         ])
     );
 }
+
+#[test]
+fn valid_native_image_audio_and_assistant_history_serialize_without_io() {
+    use crate::message::{ContentBlock, ImageRef, MediaRef, UserMessage};
+    use crate::tool::ToolCall;
+    let model = OpenAiModel::new("k").with_model("gpt-4.1");
+    let user = Message::User(UserMessage {
+        content: vec![
+            ContentBlock::Image(ImageRef {
+                url: "data:image/png;base64,QQ==".into(),
+                mime_type: None,
+            }),
+            ContentBlock::Audio(MediaRef::base64("QQ==", "audio/wav")),
+        ],
+    });
+    let mut text = Message::assistant("visible text");
+    let mut tools = Message::assistant("");
+    if let Message::Assistant(assistant) = &mut text {
+        assistant
+            .content
+            .push(ContentBlock::thinking("private reasoning"));
+        assistant.content.push(ContentBlock::RedactedThinking {
+            data: "opaque".into(),
+        });
+    }
+    if let Message::Assistant(assistant) = &mut tools {
+        assistant
+            .tool_calls
+            .push(ToolCall::new("call-1", "lookup", json!({"key":"value"})));
+    }
+    let body = body_for(&model, &ModelRequest::new(vec![user, text, tools]));
+    assert_eq!(
+        body["messages"][0]["content"][0]["image_url"]["url"],
+        "data:image/png;base64,QQ=="
+    );
+    assert_eq!(
+        body["messages"][0]["content"][1]["input_audio"]["data"],
+        "QQ=="
+    );
+    assert_eq!(body["messages"][1]["content"], "visible text");
+    assert!(body["messages"][2]["content"].is_null());
+    assert_eq!(body["messages"][2]["tool_calls"][0]["id"], "call-1");
+    assert_eq!(
+        body["messages"][2]["tool_calls"][0]["function"]["name"],
+        "lookup"
+    );
+    assert_eq!(
+        body["messages"][2]["tool_calls"][0]["function"]["arguments"],
+        r#"{"key":"value"}"#
+    );
+}

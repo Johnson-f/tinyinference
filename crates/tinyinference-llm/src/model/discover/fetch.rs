@@ -104,8 +104,9 @@ impl ModelListingFetcher for ReqwestListingFetcher {
 /// - A fresh cache entry (found or not found) answers without any request.
 /// - Otherwise the listing is read (`{endpoint}/models` or
 ///   `request.listing_url`); every entry it lists is cached, so one fetch
-///   serves every model on the endpoint. When the model is missing and
-///   `probe_single_model` is set, `{endpoint}/models/{id}` is tried. When
+///   serves every model on the endpoint. When the model or either token limit
+///   is missing and `probe_single_model` is set, `{endpoint}/models/{id}` is
+///   tried; missing fields are filled without discarding listing modalities. When
 ///   `pinned_providers` is non-empty, OpenRouter's
 ///   `{endpoint}/models/{id}/endpoints` narrows the window to those providers.
 /// - The whole probe is bounded by `request.timeout`; a timeout or any error
@@ -209,10 +210,27 @@ async fn fetch_limits(
         }
     };
 
-    if found.is_none() && request.probe_single_model {
+    if found
+        .as_ref()
+        .is_none_or(|limits| limits.context_window.is_none() || limits.max_output_tokens.is_none())
+        && request.probe_single_model
+    {
         let url = format!("{}/models/{}", request.endpoint, request.model);
         match fetcher.get_json(&url, &request.headers).await {
-            Ok(body) => found = parse_model_limits(&body, &request.model),
+            Ok(body) => {
+                if let Some(record) = parse_model_limits(&body, &request.model) {
+                    if let Some(listed) = &mut found {
+                        listed.context_window = listed.context_window.or(record.context_window);
+                        listed.max_output_tokens =
+                            listed.max_output_tokens.or(record.max_output_tokens);
+                        if listed.input_modalities.is_none() {
+                            listed.input_modalities = record.input_modalities;
+                        }
+                    } else {
+                        found = Some(record);
+                    }
+                }
+            }
             Err(error) => tracing::debug!(
                 endpoint = %request.endpoint,
                 model = %request.model,

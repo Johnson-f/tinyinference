@@ -74,7 +74,7 @@ pub struct DiscoveryRequest {
     /// provider publishes its catalogue elsewhere.
     pub listing_url: Option<String>,
     /// Whether to fall back to `GET {endpoint}/models/{id}` when the listing
-    /// does not contain the model.
+    /// does not contain the model or either token limit is missing.
     pub probe_single_model: bool,
     /// Headers to send (for example `Authorization`). Never logged.
     pub headers: Vec<(String, String)>,

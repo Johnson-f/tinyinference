@@ -7,6 +7,7 @@ fn limits(window: u64) -> ModelLimits {
     ModelLimits {
         context_window: Some(window),
         max_output_tokens: Some(8_192),
+        input_modalities: None,
         source: LimitSource::ProviderListing,
     }
 }

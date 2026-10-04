@@ -3242,3 +3242,88 @@ async fn streamed_terminal_response_carries_origin() {
     assert_eq!(origin.api, "chat_completions");
     assert_eq!(origin.model, "gpt-4.1-mini");
 }
+
+#[test]
+fn input_audio_normalizes_mpeg_and_rejects_unknown_mime() {
+    use crate::message::{ContentBlock, MediaRef};
+    let content = super::convert::translate_user_content(&[ContentBlock::Audio(MediaRef::base64(
+        "QQ==",
+        "audio/mpeg",
+    ))])
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(content).unwrap()[0]["input_audio"]["format"],
+        "mp3"
+    );
+    assert!(
+        super::convert::translate_user_content(&[ContentBlock::Audio(MediaRef::base64(
+            "QQ==",
+            "audio/flac"
+        ))])
+        .is_err()
+    );
+}
+
+#[test]
+fn native_transport_support_tracks_selected_wire_and_reference_source() {
+    use crate::model::{ChatModel, InputModality as M, InputSource as S};
+    let chat = OpenAiModel::new("key")
+        .with_base_url("http://localhost/v1")
+        .with_model("test");
+    assert!(<OpenAiModel as ChatModel<()>>::supports_input(
+        &chat,
+        M::Image,
+        "image/png",
+        S::Base64
+    ));
+    assert!(<OpenAiModel as ChatModel<()>>::supports_input(
+        &chat,
+        M::Audio,
+        "audio/mpeg",
+        S::Base64
+    ));
+    assert!(!<OpenAiModel as ChatModel<()>>::supports_input(
+        &chat,
+        M::Audio,
+        "audio/wav",
+        S::Url
+    ));
+    assert!(!<OpenAiModel as ChatModel<()>>::supports_input(
+        &chat,
+        M::Audio,
+        "audio/flac",
+        S::Base64
+    ));
+    assert!(!<OpenAiModel as ChatModel<()>>::supports_input(
+        &chat,
+        M::Document,
+        "application/pdf",
+        S::Base64
+    ));
+    let responses = chat.with_responses_api_primary();
+    assert!(!<OpenAiModel as ChatModel<()>>::supports_input(
+        &responses,
+        M::Audio,
+        "audio/wav",
+        S::Base64
+    ));
+    assert!(!<OpenAiModel as ChatModel<()>>::supports_input(
+        &responses,
+        M::Document,
+        "application/pdf",
+        S::Base64
+    ));
+    let responses = responses.with_responses_document_input(true);
+    assert!(<OpenAiModel as ChatModel<()>>::supports_input(
+        &responses,
+        M::Document,
+        "application/pdf",
+        S::Base64
+    ));
+    assert!(!<OpenAiModel as ChatModel<()>>::supports_input(
+        &responses,
+        M::Document,
+        "application/pdf",
+        S::Path
+    ));
+}

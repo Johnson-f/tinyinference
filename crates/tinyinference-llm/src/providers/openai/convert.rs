@@ -151,11 +151,14 @@ pub(super) fn translate_user_content(blocks: &[ContentBlock]) -> Result<MessageC
                 text: value.to_string(),
                 cache_control: None,
             }),
-            ContentBlock::Image(image) => parts.push(ContentPartWire::ImageUrl {
-                image_url: ImageUrlWire {
-                    url: image.url.clone(),
-                },
-            }),
+            ContentBlock::Image(image) => {
+                validate_image_ref(image)?;
+                parts.push(ContentPartWire::ImageUrl {
+                    image_url: ImageUrlWire {
+                        url: image.url.clone(),
+                    },
+                });
+            }
             ContentBlock::Audio(media) => parts.push(input_audio_part(media)?),
             // See the string-rendering arm above: reasoning blocks have no
             // OpenAI representation and are dropped, not failed.
@@ -211,8 +214,8 @@ fn mark_last_text_part(message: &mut ChatMessageWire) {
 /// request. Failing closed keeps the block from being silently dropped.
 pub(super) fn unrepresentable_block_error() -> Error {
     Error::Validation(
-        "OpenAI request cannot represent a provider-extension content block; \
-         remove it or target the originating provider"
+        "OpenAI Chat Completions cannot represent document, video, or provider-extension content blocks; \
+         remove the block or target a transport that supports it"
             .to_string(),
     )
 }
@@ -230,7 +233,7 @@ fn input_audio_part(media: &crate::message::MediaRef) -> Result<ContentPartWire>
         MediaRef::Base64 { data, media_type } => Ok(ContentPartWire::InputAudio {
             input_audio: InputAudioWire {
                 data: data.clone(),
-                format: audio_format_from_media_type(media_type),
+                format: audio_format_from_media_type(media_type)?,
             },
         }),
         MediaRef::Url { .. } | MediaRef::Path { .. } => Err(Error::Validation(
@@ -241,15 +244,16 @@ fn input_audio_part(media: &crate::message::MediaRef) -> Result<ContentPartWire>
     }
 }
 
-/// Derives the OpenAI `input_audio.format` token (`"wav"`, `"mp3"`, …) from a
-/// MIME type such as `audio/wav`, defaulting to `"wav"` when unrecognized.
-fn audio_format_from_media_type(media_type: &str) -> String {
-    media_type
-        .rsplit('/')
-        .next()
-        .filter(|format| !format.is_empty())
-        .unwrap_or("wav")
-        .to_string()
+/// Maps supported WAV and MP3 MIME types onto OpenAI audio format tokens.
+/// Unrecognized MIME types fail instead of emitting a malformed request.
+fn audio_format_from_media_type(media_type: &str) -> Result<String> {
+    match media_type.trim().to_ascii_lowercase().as_str() {
+        "audio/wav" | "audio/x-wav" => Ok("wav".into()),
+        "audio/mpeg" | "audio/mp3" => Ok("mp3".into()),
+        _ => Err(Error::Validation(
+            "OpenAI input_audio supports only WAV or MP3 MIME types".into(),
+        )),
+    }
 }
 
 /// Translates a [`ToolChoice`] into the OpenAI `tool_choice` JSON value.
@@ -591,4 +595,29 @@ pub(super) fn delta_reasoning_text(delta: &mut ChunkDeltaWire) -> String {
         }
     }
     text
+}
+
+/// Whether a URL names a remote HTTP(S) resource, never a local file.
+pub(super) fn is_remote_url(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .is_ok_and(|url| matches!(url.scheme(), "https" | "http") && url.host_str().is_some())
+}
+
+/// Checks image source and MIME without fetching any bytes.
+pub(super) fn validate_image_ref(image: &crate::message::ImageRef) -> Result<()> {
+    let data_mime = image
+        .url
+        .strip_prefix("data:")
+        .and_then(|rest| rest.split_once(";base64,").map(|(mime, _)| mime));
+    let mime = data_mime.or(image.mime_type.as_deref());
+    if mime.is_some_and(|mime| {
+        !matches!(
+            mime.to_ascii_lowercase().as_str(),
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        )
+    }) || (data_mime.is_none() && !is_remote_url(&image.url))
+    {
+        return Err(Error::Validation("Image input requires PNG/JPEG/WebP/GIF inline base64 or a remote HTTP(S) URL; resolve local paths in the host".into()));
+    }
+    Ok(())
 }

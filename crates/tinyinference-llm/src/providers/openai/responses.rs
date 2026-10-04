@@ -182,7 +182,10 @@ pub(super) struct ResponsesInput {
 pub(super) struct ResponsesContentPart {
     #[serde(rename = "type")]
     pub(super) kind: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub(super) text: String,
+    #[serde(flatten)]
+    pub(super) extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -309,53 +312,127 @@ fn normalize_role(message: &Message) -> &'static str {
 /// the content-part `kind` tracks the *normalized* role (`output_text` for
 /// assistant/tool, `input_text` otherwise) — the API rejects `input_text` on an
 /// assistant item.
-pub(super) fn build_responses_input(messages: &[Message]) -> (Option<String>, Vec<ResponsesInput>) {
+pub(super) fn build_responses_input(
+    messages: &[Message],
+    allow_documents: bool,
+) -> crate::Result<(Option<String>, Vec<ResponsesInput>)> {
+    use crate::message::MediaRef;
     let mut instructions_parts = Vec::new();
     let mut input = Vec::new();
-
     for message in messages {
-        let text = match message {
+        let blocks = match message {
             Message::System(m) => {
-                let t = message_text(&m.content);
-                if !t.trim().is_empty() {
-                    instructions_parts.push(t);
+                if m.content.iter().any(|b| {
+                    matches!(
+                        b,
+                        ContentBlock::Image(_)
+                            | ContentBlock::Audio(_)
+                            | ContentBlock::Video(_)
+                            | ContentBlock::Document(_)
+                    )
+                }) {
+                    return Err(crate::Error::Validation(
+                        "Responses instructions cannot contain media".into(),
+                    ));
+                }
+                let text = message_text(&m.content);
+                if !text.trim().is_empty() {
+                    instructions_parts.push(text);
                 }
                 continue;
             }
-            Message::User(m) => message_text(&m.content),
-            Message::Assistant(m) => message_text(&m.content),
-            // Keep the call id visible so the model can tell *which* call this
-            // answers. Folding it into an anonymous assistant turn lost that.
-            Message::Tool(m) => {
-                let body = message_text(&m.content);
-                if body.trim().is_empty() {
-                    String::new()
-                } else {
-                    format!("[tool_result id={} ]\n{body}", m.tool_call_id)
-                }
-            }
-            // Host-side out-of-band record; never sent to the provider.
+            Message::User(m) => &m.content,
+            Message::Assistant(m) => &m.content,
+            Message::Tool(m) => &m.content,
             Message::Custom(_) => continue,
         };
-        if text.trim().is_empty() {
-            continue;
-        }
         let role = normalize_role(message);
-        input.push(ResponsesInput {
-            role: role.to_string(),
-            content: vec![ResponsesContentPart {
-                kind: if role == "assistant" {
-                    "output_text".to_string()
-                } else {
-                    "input_text".to_string()
-                },
+        let mut content = Vec::new();
+        for block in blocks {
+            let mut extra = serde_json::Map::new();
+            let (kind, text) = match block {
+                ContentBlock::Text(t) => (
+                    if role == "assistant" {
+                        "output_text"
+                    } else {
+                        "input_text"
+                    },
+                    t.clone(),
+                ),
+                ContentBlock::Json(v) => (
+                    if role == "assistant" {
+                        "output_text"
+                    } else {
+                        "input_text"
+                    },
+                    v.to_string(),
+                ),
+                ContentBlock::Image(image) if matches!(message, Message::User(_)) => {
+                    super::convert::validate_image_ref(image)?;
+                    extra.insert("image_url".into(), Value::String(image.url.clone()));
+                    ("input_image", String::new())
+                }
+                ContentBlock::Document(media)
+                    if matches!(message, Message::User(_)) && allow_documents =>
+                {
+                    if media
+                        .media_type()
+                        .is_none_or(|mime| !mime.eq_ignore_ascii_case("application/pdf"))
+                    {
+                        return Err(crate::Error::Validation(
+                            "Responses document input requires application/pdf MIME type".into(),
+                        ));
+                    }
+                    match media {
+                        MediaRef::Base64 { data, .. } => {
+                            extra.insert("filename".into(), Value::String("document.pdf".into()));
+                            extra.insert("file_data".into(), Value::String(format!("data:application/pdf;base64,{data}")));
+                        }
+                        MediaRef::Url { url, .. } if super::convert::is_remote_url(url) => {
+                            extra.insert("file_url".into(), Value::String(url.clone()));
+                        }
+                        _ => return Err(crate::Error::Validation("Responses document requires inline base64 or a remote HTTPS URL; resolve local paths in the host".into())),
+                    }
+                    ("input_file", String::new())
+                }
+                ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. } => continue,
+                _ => {
+                    return Err(crate::Error::Validation(
+                        "Responses endpoint cannot represent this content block or source".into(),
+                    ));
+                }
+            };
+            if text.trim().is_empty() && extra.is_empty() {
+                continue;
+            }
+            content.push(ResponsesContentPart {
+                kind: kind.into(),
                 text,
-            }],
-        });
+                extra,
+            });
+        }
+        if let Message::Tool(m) = message {
+            // Preserve the historical causal tool-result marker and merged text.
+            let body = content.iter().map(|p| p.text.as_str()).collect::<String>();
+            content = if body.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![ResponsesContentPart {
+                    kind: "input_text".into(),
+                    text: format!("[tool_result id={} ]\n{body}", m.tool_call_id),
+                    extra: serde_json::Map::new(),
+                }]
+            };
+        }
+        if !content.is_empty() {
+            input.push(ResponsesInput {
+                role: role.into(),
+                content,
+            });
+        }
     }
-
     let instructions = (!instructions_parts.is_empty()).then(|| instructions_parts.join("\n\n"));
-    (instructions, input)
+    Ok((instructions, input))
 }
 
 /// Extracts the assistant text from a Responses body: the convenience

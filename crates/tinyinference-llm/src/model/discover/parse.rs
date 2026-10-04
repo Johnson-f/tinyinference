@@ -60,6 +60,21 @@ fn entry_id(item: &Value) -> Option<&str> {
         .find(|id| !id.is_empty())
 }
 
+/// Reads advertised input modalities from OpenRouter, models.dev, or managed catalogs.
+/// Missing or malformed metadata remains unknown rather than asserting support.
+#[must_use]
+pub fn input_modalities_from_entry(item: &Value) -> Option<Vec<String>> {
+    let values = item
+        .get("input_modalities")
+        .or_else(|| item.pointer("/architecture/input_modalities"))
+        .or_else(|| item.pointer("/modalities/input"))?
+        .as_array()?;
+    values
+        .iter()
+        .map(|value| value.as_str().map(|s| s.trim().to_ascii_lowercase()))
+        .collect()
+}
+
 /// Limits one listing entry advertises, or `None` when it advertises neither a
 /// window nor an output cap.
 ///
@@ -69,15 +84,19 @@ fn entry_id(item: &Value) -> Option<&str> {
 #[must_use]
 pub fn limits_from_entry(item: &Value) -> Option<ModelLimits> {
     let top_provider = item.get("top_provider");
-    let context_window = first_key(item, CONTEXT_KEYS).or_else(|| {
-        top_provider.and_then(|top| first_key(top, &["context_length", "context_window"]))
-    });
+    let context_window = first_key(item, CONTEXT_KEYS)
+        .or_else(|| item.pointer("/limit/context").and_then(positive_u64))
+        .or_else(|| {
+            top_provider.and_then(|top| first_key(top, &["context_length", "context_window"]))
+        });
     let max_output_tokens = top_provider
         .and_then(|top| first_key(top, OUTPUT_KEYS))
-        .or_else(|| first_key(item, OUTPUT_KEYS));
+        .or_else(|| first_key(item, OUTPUT_KEYS))
+        .or_else(|| item.pointer("/limit/output").and_then(positive_u64));
     let limits = ModelLimits {
         context_window,
         max_output_tokens,
+        input_modalities: input_modalities_from_entry(item),
         source: LimitSource::ProviderListing,
     };
     (!limits.is_empty()).then_some(limits)
@@ -228,6 +247,19 @@ pub fn parse_openrouter_endpoint_limits(body: &Value, providers: &[String]) -> O
     let limits = ModelLimits {
         context_window,
         max_output_tokens,
+        input_modalities: matched
+            .iter()
+            .try_fold(None::<Vec<String>>, |common, endpoint| {
+                let reported = input_modalities_from_entry(endpoint)?;
+                Some(Some(match common {
+                    None => reported,
+                    Some(mut values) => {
+                        values.retain(|m| reported.contains(m));
+                        values
+                    }
+                }))
+            })
+            .flatten(),
         source: LimitSource::ProviderEndpoint { provider },
     };
     (!limits.is_empty()).then_some(limits)

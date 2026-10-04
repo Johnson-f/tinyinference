@@ -1254,6 +1254,32 @@ impl Stream for ModelStream {
     }
 }
 
+/// Native input modality, independent of a model's advertised capabilities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputModality {
+    /// Still images.
+    Image,
+    /// Audio recordings.
+    Audio,
+    /// Video recordings.
+    Video,
+    /// Documents such as PDFs.
+    Document,
+}
+
+/// Reference representation accepted by an inference transport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputSource {
+    /// Remote HTTP(S) URL.
+    Url,
+    /// Inline base64 bytes (including image data URIs).
+    Base64,
+    /// Unresolved local path; providers never read these.
+    Path,
+}
+
 /// A provider-neutral chat model.
 ///
 /// Generic over the application `State`.
@@ -1267,6 +1293,20 @@ pub trait ChatModel<State: Send + Sync>: Send + Sync {
     /// [`ModelRequest::required_capabilities`].
     fn profile(&self) -> Option<&ModelProfile> {
         None
+    }
+
+    /// Whether this transport can serialize this modality, MIME type, and source.
+    ///
+    /// This does not assert that the selected model understands the input:
+    /// hosts must also check effective model capabilities. Unknown transports
+    /// decline by default, keeping existing implementations source-compatible.
+    fn supports_input(
+        &self,
+        _modality: InputModality,
+        _mime_type: &str,
+        _source: InputSource,
+    ) -> bool {
+        false
     }
 
     /// Returns a stable, credential-safe identity for response-cache scoping.

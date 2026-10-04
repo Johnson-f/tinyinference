@@ -351,3 +351,62 @@ fn unsupported_media_placeholder(kind: &str, media: &crate::message::MediaRef) -
         "text": format!("[{kind} attachment omitted: {descriptor}]"),
     })
 }
+
+/// Rejects media the native endpoint cannot carry before performing any I/O.
+pub(super) fn validate_media(request: &ModelRequest) -> crate::Result<()> {
+    use crate::message::MediaRef;
+    for message in &request.messages {
+        let blocks = match message {
+            Message::User(m) => &m.content,
+            Message::Tool(m) => &m.content,
+            Message::Assistant(m) => &m.content,
+            Message::System(m) => &m.content,
+            Message::Custom(_) => continue,
+        };
+        for block in blocks {
+            let valid = match block {
+                ContentBlock::Image(image) => {
+                    let remote = reqwest::Url::parse(&image.url).is_ok_and(|url| {
+                        matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+                    });
+                    let inline_mime = image
+                        .url
+                        .strip_prefix("data:")
+                        .and_then(|rest| rest.split_once(";base64,").map(|(mime, _)| mime));
+                    let mime_valid =
+                        inline_mime
+                            .or(image.mime_type.as_deref())
+                            .is_none_or(|mime| {
+                                matches!(
+                                    mime.to_ascii_lowercase().as_str(),
+                                    "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+                                )
+                            });
+                    (remote || inline_mime.is_some())
+                        && mime_valid
+                        && !matches!(message, Message::System(_) | Message::Assistant(_))
+                }
+                ContentBlock::Document(media) => {
+                    let source_valid = match media {
+                        MediaRef::Base64 { .. } => true,
+                        MediaRef::Url { url, .. } => reqwest::Url::parse(url).is_ok_and(|url| {
+                            matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+                        }),
+                        MediaRef::Path { .. } => false,
+                    };
+                    source_valid
+                        && media
+                            .media_type()
+                            .is_none_or(|mime| mime.eq_ignore_ascii_case("application/pdf"))
+                        && !matches!(message, Message::System(_) | Message::Assistant(_))
+                }
+                ContentBlock::Audio(_) | ContentBlock::Video(_) => false,
+                _ => true,
+            };
+            if !valid {
+                return Err(crate::Error::Validation("Anthropic endpoint cannot represent this media type or source; resolve local paths in the host".into()));
+            }
+        }
+    }
+    Ok(())
+}

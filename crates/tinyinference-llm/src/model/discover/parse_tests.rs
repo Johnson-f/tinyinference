@@ -205,3 +205,54 @@ fn pinned_providers_from_routing_options() {
     assert!(pinned_openrouter_providers(&json!({ "provider": { "sort": "price" } })).is_empty());
     assert!(pinned_openrouter_providers(&json!({})).is_empty());
 }
+
+#[test]
+fn discovery_retains_known_modalities_without_inventing_unknown_support() {
+    assert_eq!(limits_from_entry(&serde_json::json!({"context_length":1024,"architecture":{"input_modalities":["text","image"]}})).unwrap().input_modalities, Some(vec!["text".into(), "image".into()]));
+    assert_eq!(
+        limits_from_entry(
+            &serde_json::json!({"limit":{"context":1024},"modalities":{"input":["text","audio"]}})
+        )
+        .unwrap()
+        .input_modalities,
+        Some(vec!["text".into(), "audio".into()])
+    );
+    assert_eq!(
+        limits_from_entry(&serde_json::json!({"context_length":1024}))
+            .unwrap()
+            .input_modalities,
+        None
+    );
+}
+
+#[test]
+fn pinned_endpoint_modalities_are_intersected_and_unknown_remains_unknown() {
+    let body = serde_json::json!({"data":{"endpoints":[
+        {"provider_name":"a","context_length":1024,"input_modalities":["text","image"]},
+        {"provider_name":"b","context_length":1024,"input_modalities":["text"]}
+    ]}});
+    let providers = vec!["a".into(), "b".into()];
+    assert_eq!(
+        parse_openrouter_endpoint_limits(&body, &providers)
+            .unwrap()
+            .input_modalities,
+        Some(vec!["text".into()])
+    );
+    let mut unknown = body;
+    unknown["data"]["endpoints"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("input_modalities");
+    assert_eq!(
+        parse_openrouter_endpoint_limits(&unknown, &providers)
+            .unwrap()
+            .input_modalities,
+        None
+    );
+}
+
+#[test]
+fn legacy_discovery_metadata_deserializes_without_modality_assumptions() {
+    let limits: ModelLimits = serde_json::from_value(serde_json::json!({"context_window":1024,"max_output_tokens":128,"source":{"kind":"provider_listing"}})).unwrap();
+    assert_eq!(limits.input_modalities, None);
+}

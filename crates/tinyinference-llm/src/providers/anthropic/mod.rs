@@ -295,6 +295,7 @@ impl AnthropicModel {
     }
 
     async fn post(&self, request: &ModelRequest, streaming: bool) -> Result<reqwest::Response> {
+        request::validate_media(request)?;
         crate::network_guard::ensure_network_models_allowed()?;
         let endpoint = reqwest::Url::parse(&self.endpoint())
             .map_err(|error| Error::Validation(format!("invalid Anthropic base URL: {error}")))?;
@@ -436,6 +437,26 @@ impl AnthropicModel {
 impl<State: Send + Sync> ChatModel<State> for AnthropicModel {
     fn profile(&self) -> Option<&ModelProfile> {
         Some(&self.profile)
+    }
+
+    fn supports_input(
+        &self,
+        modality: crate::model::InputModality,
+        mime_type: &str,
+        source: crate::model::InputSource,
+    ) -> bool {
+        use crate::model::{InputModality, InputSource};
+        if source == InputSource::Path {
+            return false;
+        }
+        match modality {
+            InputModality::Image => matches!(
+                mime_type.trim().to_ascii_lowercase().as_str(),
+                "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+            ),
+            InputModality::Document => mime_type.eq_ignore_ascii_case("application/pdf"),
+            InputModality::Audio | InputModality::Video => false,
+        }
     }
 
     fn cache_identity(&self) -> Option<String> {

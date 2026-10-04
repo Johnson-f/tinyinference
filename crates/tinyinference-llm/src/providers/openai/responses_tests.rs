@@ -11,7 +11,7 @@ fn build_input_folds_system_into_instructions_and_keys_roles() {
         Message::assistant("hello"),
         Message::user("  "), // empty → skipped
     ];
-    let (instructions, input) = build_responses_input(&messages);
+    let (instructions, input) = build_responses_input(&messages, false).unwrap();
     assert_eq!(instructions.as_deref(), Some("be terse\n\nand correct"));
     assert_eq!(input.len(), 2);
     assert_eq!(input[0].role, "user");
@@ -34,7 +34,7 @@ fn build_input_skips_custom_messages() {
         }),
         Message::assistant("hello"),
     ];
-    let (_, input) = build_responses_input(&messages);
+    let (_, input) = build_responses_input(&messages, false).unwrap();
     assert_eq!(input.len(), 2);
     assert_eq!(input[0].content[0].text, "hi");
     assert_eq!(input[1].content[0].text, "hello");
@@ -205,4 +205,76 @@ async fn responses_invoke_avoids_codex_stream_required_400() {
         .expect("codex-shaped mock must succeed when stream is true");
     assert_eq!(response.text(), "ok");
     server.join().unwrap();
+}
+
+#[test]
+fn native_inputs_preserve_order_and_emit_responses_wire_shapes() {
+    use crate::message::{ContentBlock, ImageRef, MediaRef, UserMessage};
+    let messages = vec![Message::User(UserMessage {
+        content: vec![
+            ContentBlock::Text("before".into()),
+            ContentBlock::Image(ImageRef {
+                url: "data:image/png;base64,QQ==".into(),
+                mime_type: Some("image/png".into()),
+            }),
+            ContentBlock::Text("after".into()),
+            ContentBlock::Document(MediaRef::base64("QQ==", "application/pdf")),
+        ],
+    })];
+    let (_, input) = build_responses_input(&messages, true).unwrap();
+    assert_eq!(
+        serde_json::to_value(&input).unwrap(),
+        json!([{"role":"user","content":[
+            {"type":"input_text","text":"before"},
+            {"type":"input_image","image_url":"data:image/png;base64,QQ=="},
+            {"type":"input_text","text":"after"},
+            {"type":"input_file","filename":"document.pdf","file_data":"data:application/pdf;base64,QQ=="}
+        ]}])
+    );
+}
+
+#[test]
+fn responses_native_inputs_reject_unsupported_sources_and_modalities() {
+    use crate::message::{ContentBlock, ImageRef, MediaRef, UserMessage};
+    for block in [
+        ContentBlock::Audio(MediaRef::base64("QQ==", "audio/wav")),
+        ContentBlock::Video(MediaRef::base64("QQ==", "video/mp4")),
+        ContentBlock::Document(MediaRef::path("/secret.pdf")),
+        ContentBlock::Document(MediaRef::base64("QQ==", "application/msword")),
+        ContentBlock::Image(ImageRef {
+            url: "file:///secret.png".into(),
+            mime_type: Some("image/png".into()),
+        }),
+    ] {
+        let messages = [Message::User(UserMessage {
+            content: vec![block],
+        })];
+        assert!(build_responses_input(&messages, true).is_err());
+    }
+    let pdf = [Message::User(UserMessage {
+        content: vec![ContentBlock::Document(MediaRef::base64(
+            "QQ==",
+            "application/pdf",
+        ))],
+    })];
+    assert!(
+        build_responses_input(&pdf, false).is_err(),
+        "Codex endpoint must decline files"
+    );
+}
+
+#[test]
+fn responses_pdf_url_uses_file_url() {
+    use crate::message::{ContentBlock, MediaRef, UserMessage};
+    let messages = [Message::User(UserMessage {
+        content: vec![ContentBlock::Document(MediaRef::Url {
+            url: "https://example.com/a.pdf".into(),
+            media_type: Some("application/pdf".into()),
+        })],
+    })];
+    let (_, input) = build_responses_input(&messages, true).unwrap();
+    assert_eq!(
+        serde_json::to_value(input).unwrap()[0]["content"][0],
+        json!({"type":"input_file","file_url":"https://example.com/a.pdf"})
+    );
 }

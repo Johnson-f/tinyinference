@@ -74,6 +74,7 @@ impl CachedLimits {
                 Some(ModelLimits {
                     context_window: Some(learned),
                     max_output_tokens: limits.max_output_tokens,
+                    input_modalities: limits.input_modalities,
                     source: LimitSource::LearnedFromOverflow,
                 })
             }
@@ -81,6 +82,7 @@ impl CachedLimits {
             (None, Some(learned)) => Some(ModelLimits {
                 context_window: Some(learned),
                 max_output_tokens: None,
+                input_modalities: None,
                 source: LimitSource::LearnedFromOverflow,
             }),
             (None, None) => None,

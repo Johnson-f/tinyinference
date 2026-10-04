@@ -93,6 +93,15 @@ impl<State: Send + Sync> ChatModel<State> for ProfileOverrideModel<State> {
         Some(&self.profile)
     }
 
+    fn supports_input(
+        &self,
+        modality: super::InputModality,
+        mime_type: &str,
+        source: super::InputSource,
+    ) -> bool {
+        self.inner.supports_input(modality, mime_type, source)
+    }
+
     fn cache_identity(&self) -> Option<String> {
         self.inner.cache_identity()
     }
@@ -142,6 +151,15 @@ impl<State: Send + Sync> MaxTokensModel<State> {
 impl<State: Send + Sync> ChatModel<State> for MaxTokensModel<State> {
     fn profile(&self) -> Option<&ModelProfile> {
         self.inner.profile()
+    }
+
+    fn supports_input(
+        &self,
+        modality: super::InputModality,
+        mime_type: &str,
+        source: super::InputSource,
+    ) -> bool {
+        self.inner.supports_input(modality, mime_type, source)
     }
 
     fn cache_identity(&self) -> Option<String> {
@@ -199,6 +217,15 @@ impl<State: Send + Sync> RouteRecordingModel<State> {
 impl<State: Send + Sync> ChatModel<State> for RouteRecordingModel<State> {
     fn profile(&self) -> Option<&ModelProfile> {
         self.inner.profile()
+    }
+
+    fn supports_input(
+        &self,
+        modality: super::InputModality,
+        mime_type: &str,
+        source: super::InputSource,
+    ) -> bool {
+        self.inner.supports_input(modality, mime_type, source)
     }
 
     fn cache_identity(&self) -> Option<String> {
@@ -360,6 +387,15 @@ fn observation_for_response(
 impl<State: Send + Sync> ChatModel<State> for ObservingModel<State> {
     fn profile(&self) -> Option<&ModelProfile> {
         self.inner.profile()
+    }
+
+    fn supports_input(
+        &self,
+        modality: super::InputModality,
+        mime_type: &str,
+        source: super::InputSource,
+    ) -> bool {
+        self.inner.supports_input(modality, mime_type, source)
     }
 
     fn cache_identity(&self) -> Option<String> {

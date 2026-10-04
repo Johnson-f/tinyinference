@@ -74,6 +74,7 @@ impl CachedLimits {
                 Some(ModelLimits {
                     context_window: Some(learned),
                     max_output_tokens: limits.max_output_tokens,
+                    input_modalities: limits.input_modalities,
                     source: LimitSource::LearnedFromOverflow,
                 })
             }
@@ -81,6 +82,7 @@ impl CachedLimits {
             (None, Some(learned)) => Some(ModelLimits {
                 context_window: Some(learned),
                 max_output_tokens: None,
+                input_modalities: None,
                 source: LimitSource::LearnedFromOverflow,
             }),
             (None, None) => None,
@@ -140,7 +142,9 @@ impl ModelLimitsCache {
 
     /// The fresh cached state for `(endpoint, model)` across every discovery
     /// variant: the smallest fresh discovered window, lowered by any learned
-    /// overflow window. Use [`Self::get_variant`] for one request's slot.
+    /// overflow window. Input modalities intersect fresh variant facts; any
+    /// unknown variant makes the aggregate unknown. Use [`Self::get_variant`]
+    /// for one request's slot.
     #[must_use]
     pub fn get(&self, endpoint: &str, model: &str) -> CachedLimits {
         self.get_at(endpoint, model, Instant::now())
@@ -159,9 +163,24 @@ impl ModelLimitsCache {
             // else a fresh negative, else nothing.
             let mut best: Option<ModelLimits> = None;
             let mut negative = false;
+            let mut modalities: Option<Vec<String>> = None;
+            let mut saw_modalities = false;
+            let mut unknown_modalities = false;
             for discovered in entry.discovered.values() {
                 match self.fresh(discovered, now) {
                     Some(Some(limits)) => {
+                        if let Some(values) = &limits.input_modalities {
+                            if saw_modalities {
+                                if let Some(common) = &mut modalities {
+                                    common.retain(|value| values.contains(value));
+                                }
+                            } else {
+                                modalities = Some(values.clone());
+                                saw_modalities = true;
+                            }
+                        } else {
+                            unknown_modalities = true;
+                        }
                         let smaller = best.as_ref().is_none_or(|current| {
                             limits.context_window.unwrap_or(u64::MAX)
                                 < current.context_window.unwrap_or(u64::MAX)
@@ -170,9 +189,23 @@ impl ModelLimitsCache {
                             best = Some(limits);
                         }
                     }
-                    Some(None) => negative = true,
+                    Some(None) => {
+                        negative = true;
+                        unknown_modalities = true;
+                    }
                     None => {}
                 }
+            }
+            if let Some(best) = &mut best {
+                best.input_modalities = if unknown_modalities {
+                    None
+                } else {
+                    modalities.map(|mut values| {
+                        values.sort();
+                        values.dedup();
+                        values
+                    })
+                };
             }
             CachedLimits {
                 discovered: best.map(Some).or(negative.then_some(None)),

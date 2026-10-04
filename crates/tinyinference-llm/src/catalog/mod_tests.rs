@@ -87,6 +87,7 @@ fn null_is_empty_only_for_success_envelopes() {
 #[test]
 fn codex_hints_are_merged_without_duplicates() {
     let mut models = vec![ModelInfo {
+        input_modalities: None,
         id: "gpt-5.4".into(),
         owned_by: None,
         context_window: None,
@@ -116,4 +117,18 @@ fn blank_preferred_identifier_falls_back_to_the_next_usable_field() {
     let models = parse_models_response(&body).expect("catalog");
     assert_eq!(models[0].id, "usable-slug");
     assert_eq!(models[1].id, "usable-name");
+}
+
+#[test]
+fn catalog_preserves_advertised_input_modalities() {
+    let models = parse_models_response(&serde_json::json!({"data":[
+        {"id":"vision","architecture":{"input_modalities":["text","image"]}},
+        {"id":"unknown"}
+    ]}))
+    .unwrap();
+    assert_eq!(
+        models[0].input_modalities,
+        Some(vec!["text".into(), "image".into()])
+    );
+    assert_eq!(models[1].input_modalities, None);
 }

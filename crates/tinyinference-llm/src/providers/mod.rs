@@ -34,6 +34,7 @@
 //! // #[cfg(feature = "ollama")]    pub mod ollama;
 //! ```
 
+mod media;
 mod types;
 
 // --- real provider integrations ---
@@ -64,3 +65,7 @@ mod mock;
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod test;
+
+#[cfg(test)]
+#[path = "media_tests.rs"]
+mod media_tests;

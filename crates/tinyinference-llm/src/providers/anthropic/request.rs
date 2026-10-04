@@ -224,7 +224,7 @@ fn text_only_blocks(content: &[ContentBlock]) -> Vec<Value> {
 
 /// User-side content: text, images, and documents (Anthropic's native
 /// `document` block). Audio and video have no Messages API representation
-/// and are rendered as placeholder text rather than silently dropped.
+/// and are rejected by public invoke/stream validation before conversion.
 /// Thinking blocks never appear in user content; provider extensions have no
 /// faithful representation and are dropped.
 fn content_blocks(content: &[ContentBlock]) -> Vec<Value> {
@@ -316,8 +316,8 @@ fn image_block(image: &ImageRef) -> Value {
 
 /// Renders a document reference as Anthropic's `document` content block.
 /// `MediaRef::Path` has no wire representation (the harness never reads
-/// local files) and falls back to a placeholder text block instead of being
-/// silently dropped.
+/// local files) and is rejected by public invoke/stream validation. The
+/// internal renderer retains a diagnostic fallback for unchecked conversion.
 fn document_block(media: &crate::message::MediaRef) -> Value {
     use crate::message::MediaRef;
     match media {
@@ -350,4 +350,69 @@ fn unsupported_media_placeholder(kind: &str, media: &crate::message::MediaRef) -
         "type": "text",
         "text": format!("[{kind} attachment omitted: {descriptor}]"),
     })
+}
+
+/// Rejects media the native endpoint cannot carry before performing any I/O.
+pub(super) fn validate_media(request: &ModelRequest) -> crate::Result<()> {
+    use crate::message::MediaRef;
+    for message in &request.messages {
+        let blocks = match message {
+            Message::User(m) => &m.content,
+            Message::Tool(m) => &m.content,
+            Message::Assistant(m) => &m.content,
+            Message::System(m) => &m.content,
+            Message::Custom(_) => continue,
+        };
+        for block in blocks {
+            let valid = match block {
+                ContentBlock::Image(image) => {
+                    let remote = reqwest::Url::parse(&image.url).is_ok_and(|url| {
+                        matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+                    });
+                    let inline_mime = image
+                        .url
+                        .strip_prefix("data:")
+                        .and_then(|rest| rest.split_once(";base64,"));
+                    if let Some((_, data)) = inline_mime {
+                        crate::providers::media::validate_base64(data)?;
+                    }
+                    let mime_valid = inline_mime
+                        .map(|(mime, _)| mime)
+                        .or(image.mime_type.as_deref())
+                        .is_none_or(|mime| {
+                            matches!(
+                                mime.to_ascii_lowercase().as_str(),
+                                "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+                            )
+                        });
+                    (remote || inline_mime.is_some())
+                        && mime_valid
+                        && !matches!(message, Message::System(_) | Message::Assistant(_))
+                }
+                ContentBlock::Document(media) => {
+                    let source_valid = match media {
+                        MediaRef::Base64 { data, .. } => {
+                            crate::providers::media::validate_base64(data)?;
+                            true
+                        }
+                        MediaRef::Url { url, .. } => reqwest::Url::parse(url).is_ok_and(|url| {
+                            matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+                        }),
+                        MediaRef::Path { .. } => false,
+                    };
+                    source_valid
+                        && media
+                            .media_type()
+                            .is_none_or(|mime| mime.eq_ignore_ascii_case("application/pdf"))
+                        && !matches!(message, Message::System(_) | Message::Assistant(_))
+                }
+                ContentBlock::Audio(_) | ContentBlock::Video(_) => false,
+                _ => true,
+            };
+            if !valid {
+                return Err(crate::Error::Validation("Anthropic endpoint cannot represent this media type or source; resolve local paths in the host".into()));
+            }
+        }
+    }
+    Ok(())
 }

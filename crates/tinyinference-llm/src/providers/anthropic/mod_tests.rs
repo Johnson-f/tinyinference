@@ -1203,3 +1203,61 @@ async fn overflow_error_records_the_stated_window() {
         .expect("overflow window recorded");
     assert_eq!(learned.context_window, Some(200_000));
 }
+
+#[test]
+fn anthropic_transport_media_support_and_validation_match_native_wire() {
+    use crate::message::MediaRef;
+    use crate::model::{ChatModel, InputModality as M, InputSource as S};
+    let model = AnthropicModel::new("key");
+    assert!(<AnthropicModel as ChatModel<()>>::supports_input(
+        &model,
+        M::Image,
+        "image/jpeg",
+        S::Url
+    ));
+    assert!(<AnthropicModel as ChatModel<()>>::supports_input(
+        &model,
+        M::Document,
+        "application/pdf",
+        S::Base64
+    ));
+    for (modality, mime, source) in [
+        (M::Video, "video/mp4", S::Base64),
+        (M::Audio, "audio/wav", S::Base64),
+        (M::Document, "application/msword", S::Base64),
+        (M::Document, "application/pdf", S::Path),
+    ] {
+        assert!(!<AnthropicModel as ChatModel<()>>::supports_input(
+            &model, modality, mime, source
+        ));
+    }
+    for block in [
+        ContentBlock::Audio(MediaRef::base64("QQ==", "audio/wav")),
+        ContentBlock::Document(MediaRef::path("/private.pdf")),
+        ContentBlock::Document(MediaRef::base64("QQ==", "application/msword")),
+    ] {
+        let request = ModelRequest::new(vec![Message::User(crate::message::UserMessage {
+            content: vec![block],
+        })]);
+        assert!(super::request::validate_media(&request).is_err());
+    }
+}
+
+#[tokio::test]
+async fn unsupported_anthropic_media_fails_before_invoke_or_stream_network_io() {
+    let model = AnthropicModel::with_base_url("key", "http://127.0.0.1:1");
+    let request = ModelRequest::new(vec![Message::User(crate::message::UserMessage {
+        content: vec![ContentBlock::Video(crate::message::MediaRef::base64(
+            "QQ==",
+            "video/mp4",
+        ))],
+    })]);
+    assert!(matches!(
+        model.invoke(&(), request.clone()).await,
+        Err(crate::Error::Validation(_))
+    ));
+    assert!(matches!(
+        model.stream(&(), request).await,
+        Err(crate::Error::Validation(_))
+    ));
+}

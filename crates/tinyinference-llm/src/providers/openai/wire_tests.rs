@@ -794,3 +794,86 @@ fn debug_output_reports_a_bearer_source_without_reading_it() {
     assert!(debug.contains("bearer_source: true"), "{debug}");
     assert!(!debug.contains("static-key"), "{debug}");
 }
+
+#[tokio::test]
+async fn responses_http_sends_native_image_and_opted_in_pdf_in_order() {
+    use crate::message::{ContentBlock, ImageRef, MediaRef, UserMessage};
+    let (base, server) = serve_sequence(vec![(200, json!({"output_text":"accepted"}).to_string())]);
+    let model = OpenAiModel::new("k")
+        .with_base_url(&base)
+        .with_responses_api_primary()
+        .with_responses_document_input(true);
+    let request = ModelRequest::new(vec![Message::User(UserMessage {
+        content: vec![
+            ContentBlock::Text("inspect".into()),
+            ContentBlock::Image(ImageRef {
+                url: "data:image/png;base64,QQ==".into(),
+                mime_type: Some("image/png".into()),
+            }),
+            ContentBlock::Document(MediaRef::base64("QQ==", "application/pdf")),
+        ],
+    })]);
+    assert_eq!(model.invoke(&(), request).await.unwrap().text(), "accepted");
+    let requests = server.join().unwrap();
+    assert!(requests[0].starts_with("POST /v1/responses "));
+    let body = request_body(&requests[0]);
+    assert_eq!(
+        body["input"][0]["content"],
+        json!([
+            {"type":"input_text","text":"inspect"},
+            {"type":"input_image","image_url":"data:image/png;base64,QQ=="},
+            {"type":"input_file","filename":"document.pdf","file_data":"data:application/pdf;base64,QQ=="}
+        ])
+    );
+}
+
+#[test]
+fn valid_native_image_audio_and_assistant_history_serialize_without_io() {
+    use crate::message::{ContentBlock, ImageRef, MediaRef, UserMessage};
+    use crate::tool::ToolCall;
+    let model = OpenAiModel::new("k").with_model("gpt-4.1");
+    let user = Message::User(UserMessage {
+        content: vec![
+            ContentBlock::Image(ImageRef {
+                url: "data:image/png;base64,QQ==".into(),
+                mime_type: None,
+            }),
+            ContentBlock::Audio(MediaRef::base64("QQ==", "audio/wav")),
+        ],
+    });
+    let mut text = Message::assistant("visible text");
+    let mut tools = Message::assistant("");
+    if let Message::Assistant(assistant) = &mut text {
+        assistant
+            .content
+            .push(ContentBlock::thinking("private reasoning"));
+        assistant.content.push(ContentBlock::RedactedThinking {
+            data: "opaque".into(),
+        });
+    }
+    if let Message::Assistant(assistant) = &mut tools {
+        assistant
+            .tool_calls
+            .push(ToolCall::new("call-1", "lookup", json!({"key":"value"})));
+    }
+    let body = body_for(&model, &ModelRequest::new(vec![user, text, tools]));
+    assert_eq!(
+        body["messages"][0]["content"][0]["image_url"]["url"],
+        "data:image/png;base64,QQ=="
+    );
+    assert_eq!(
+        body["messages"][0]["content"][1]["input_audio"]["data"],
+        "QQ=="
+    );
+    assert_eq!(body["messages"][1]["content"], "visible text");
+    assert!(body["messages"][2]["content"].is_null());
+    assert_eq!(body["messages"][2]["tool_calls"][0]["id"], "call-1");
+    assert_eq!(
+        body["messages"][2]["tool_calls"][0]["function"]["name"],
+        "lookup"
+    );
+    assert_eq!(
+        body["messages"][2]["tool_calls"][0]["function"]["arguments"],
+        r#"{"key":"value"}"#
+    );
+}

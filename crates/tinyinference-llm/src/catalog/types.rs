@@ -1,8 +1,8 @@
 //! `ModelInfo`: the typed representation of one `/models` catalog entry.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// Normalized metadata for one model advertised by a provider catalog.
 pub struct ModelInfo {
     /// Provider model identifier used in inference requests.
@@ -10,6 +10,9 @@ pub struct ModelInfo {
     /// Provider or organization that owns the model, when advertised.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owned_by: Option<String>,
+    /// Advertised input modalities; `None` means unknown, never assumed vision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<Vec<String>>,
     /// Maximum context length in tokens, when advertised.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,

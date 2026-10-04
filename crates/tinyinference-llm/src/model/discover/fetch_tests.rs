@@ -363,3 +363,76 @@ async fn cached_accessor_sees_a_default_discovery() {
         Some(1_048_576)
     );
 }
+
+#[tokio::test]
+async fn modality_only_listing_merges_single_model_token_limits() {
+    let fetcher = FakeFetcher::default()
+        .with(
+            &format!("{ENDPOINT}/models"),
+            json!({"data":[{"id":MODEL,"input_modalities":["text","image"]}]}),
+        )
+        .with(
+            &format!("{ENDPOINT}/models/{MODEL}"),
+            json!({"id":MODEL,"context_window":64000,"max_output_tokens":8192}),
+        );
+    let cache = cache();
+    let request = DiscoveryRequest::new(ENDPOINT, MODEL);
+    let result = discover_model_limits_with(&fetcher, &cache, &request)
+        .await
+        .unwrap();
+    assert_eq!(result.context_window, Some(64000));
+    assert_eq!(result.max_output_tokens, Some(8192));
+    assert_eq!(
+        result.input_modalities,
+        Some(vec!["text".into(), "image".into()])
+    );
+    assert_eq!(fetcher.calls().len(), 2);
+    assert_eq!(
+        discover_model_limits_with(&fetcher, &cache, &request).await,
+        Some(result)
+    );
+    assert_eq!(fetcher.calls().len(), 2);
+}
+
+#[tokio::test]
+async fn partial_listing_fills_missing_limits_and_retains_facts_if_probe_unavailable() {
+    for probe in [
+        None,
+        Some(json!({"id":MODEL,"context_window":96000,"max_output_tokens":4096})),
+    ] {
+        let mut fetcher = FakeFetcher::default().with(
+            &format!("{ENDPOINT}/models"),
+            json!({"data":[{"id":MODEL,"context_window":32000,"input_modalities":[]}]}),
+        );
+        if let Some(record) = probe {
+            fetcher = fetcher.with(&format!("{ENDPOINT}/models/{MODEL}"), record);
+        }
+        let result =
+            discover_model_limits_with(&fetcher, &cache(), &DiscoveryRequest::new(ENDPOINT, MODEL))
+                .await
+                .unwrap();
+        assert_eq!(result.context_window, Some(32000));
+        assert_eq!(result.input_modalities, Some(vec![]));
+        assert_eq!(
+            result.max_output_tokens,
+            fetcher
+                .routes
+                .get(&format!("{ENDPOINT}/models/{MODEL}"))
+                .map(|_| 4096)
+        );
+        assert_eq!(fetcher.calls().len(), 2);
+    }
+    let fetcher = FakeFetcher::default().with(
+        &format!("{ENDPOINT}/models"),
+        json!({"data":[{"id":MODEL,"input_modalities":["text"]}]}),
+    );
+    let result = discover_model_limits_with(
+        &fetcher,
+        &cache(),
+        &DiscoveryRequest::new(ENDPOINT, MODEL).with_single_model_probe(false),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.input_modalities, Some(vec!["text".into()]));
+    assert_eq!(fetcher.calls().len(), 1);
+}

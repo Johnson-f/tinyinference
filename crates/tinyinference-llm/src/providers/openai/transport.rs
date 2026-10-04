@@ -90,6 +90,7 @@ pub struct OpenAiModel {
     /// When `true`, calls go to the OpenAI **Responses API** (`/v1/responses`)
     /// instead of Chat Completions. See [`Self::with_responses_api_primary`].
     responses_api_primary: bool,
+    responses_document_input: bool,
     /// When `true` (Responses path only), omit `max_output_tokens` from the wire
     /// body — the OpenAI Codex OAuth backend rejects it. See
     /// [`Self::with_responses_omit_max_output_tokens`].
@@ -384,6 +385,7 @@ impl OpenAiModel {
             explicit_cache_control: false,
             anthropic_cache_control: true,
             responses_api_primary: false,
+            responses_document_input: false,
             responses_omit_max_output_tokens: false,
             extra_query_params: Vec::new(),
             user_agent: None,
@@ -1458,13 +1460,24 @@ impl OpenAiModel {
         }
     }
 
+    /// Enables PDF inputs for a Responses endpoint known to accept `input_file`.
+    ///
+    /// Disabled by default because compatible gateways (including Codex OAuth)
+    /// do not all accept document inputs. This never changes model capability.
+    #[must_use]
+    pub fn with_responses_document_input(mut self, enabled: bool) -> Self {
+        self.responses_document_input = enabled;
+        self
+    }
+
     /// Builds the `/v1/responses` request body from a provider-neutral request.
     pub(super) fn translate_responses_request(
         &self,
         request: &ModelRequest,
     ) -> Result<responses::ResponsesRequest> {
         let model = request.model.clone().unwrap_or_else(|| self.model.clone());
-        let (instructions, input) = responses::build_responses_input(&request.messages);
+        let (instructions, input) =
+            responses::build_responses_input(&request.messages, self.responses_document_input)?;
         let max_output_tokens = if self.responses_omit_max_output_tokens {
             None
         } else {
@@ -2115,6 +2128,39 @@ impl<State: Send + Sync> ChatModel<State> for OpenAiModel {
     /// Returns the capability profile derived from the configured model id.
     fn profile(&self) -> Option<&ModelProfile> {
         Some(&self.profile)
+    }
+
+    fn supports_input(
+        &self,
+        modality: crate::model::InputModality,
+        mime_type: &str,
+        source: crate::model::InputSource,
+    ) -> bool {
+        use crate::model::{InputModality, InputSource};
+        if source == InputSource::Path {
+            return false;
+        }
+        let mime = mime_type.trim().to_ascii_lowercase();
+        match modality {
+            InputModality::Image => matches!(
+                mime.as_str(),
+                "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+            ),
+            InputModality::Audio => {
+                !self.responses_api_primary
+                    && source == InputSource::Base64
+                    && matches!(
+                        mime.as_str(),
+                        "audio/wav" | "audio/x-wav" | "audio/mpeg" | "audio/mp3"
+                    )
+            }
+            InputModality::Document => {
+                self.responses_api_primary
+                    && self.responses_document_input
+                    && mime == "application/pdf"
+            }
+            InputModality::Video => false,
+        }
     }
 
     /// Invokes the OpenAI Chat Completions endpoint and maps the response into a

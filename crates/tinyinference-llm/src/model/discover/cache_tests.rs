@@ -7,6 +7,7 @@ fn limits(window: u64) -> ModelLimits {
     ModelLimits {
         context_window: Some(window),
         max_output_tokens: Some(8_192),
+        input_modalities: None,
         source: LimitSource::ProviderListing,
     }
 }
@@ -145,4 +146,105 @@ fn clear_drops_everything() {
     cache.insert_discovered(ENDPOINT, MODEL, Some(limits(1)));
     cache.clear();
     assert_eq!(cache.get(ENDPOINT, MODEL), CachedLimits::default());
+}
+
+fn variant(window: u64, modalities: Option<&[&str]>) -> ModelLimits {
+    ModelLimits {
+        input_modalities: modalities
+            .map(|values| values.iter().map(|value| (*value).to_owned()).collect()),
+        ..limits(window)
+    }
+}
+
+#[test]
+fn aggregate_modalities_intersect_independently_of_window_and_ties() {
+    for windows in [(32_000, 64_000), (64_000, 32_000), (32_000, 32_000)] {
+        let cache = cache();
+        let now = Instant::now();
+        cache.insert_discovered_variant_at(
+            ENDPOINT,
+            MODEL,
+            "image",
+            Some(variant(windows.0, Some(&["text", "image"]))),
+            now,
+        );
+        cache.insert_discovered_variant_at(
+            ENDPOINT,
+            MODEL,
+            "text",
+            Some(variant(windows.1, Some(&["text"]))),
+            now,
+        );
+        let aggregate = cache.get_at(ENDPOINT, MODEL, now).effective().unwrap();
+        assert_eq!(aggregate.context_window, Some(windows.0.min(windows.1)));
+        assert_eq!(aggregate.input_modalities, Some(vec!["text".into()]));
+        assert_eq!(
+            cache
+                .get_variant_at(ENDPOINT, MODEL, "image", now)
+                .effective()
+                .unwrap()
+                .input_modalities,
+            Some(vec!["text".into(), "image".into()])
+        );
+    }
+}
+
+#[test]
+fn aggregate_modalities_preserve_unknown_negative_empty_and_expiration() {
+    let cache = cache();
+    let now = Instant::now();
+    cache.insert_discovered_variant_at(
+        ENDPOINT,
+        MODEL,
+        "image",
+        Some(variant(32_000, Some(&["image", "text"]))),
+        now,
+    );
+    cache.insert_discovered_variant_at(
+        ENDPOINT,
+        MODEL,
+        "unknown",
+        Some(variant(64_000, None)),
+        now,
+    );
+    assert_eq!(
+        cache
+            .get_at(ENDPOINT, MODEL, now)
+            .effective()
+            .unwrap()
+            .input_modalities,
+        None
+    );
+    cache.insert_discovered_variant_at(
+        ENDPOINT,
+        MODEL,
+        "unknown",
+        Some(variant(64_000, Some(&[]))),
+        now,
+    );
+    assert_eq!(
+        cache
+            .get_at(ENDPOINT, MODEL, now)
+            .effective()
+            .unwrap()
+            .input_modalities,
+        Some(vec![])
+    );
+    cache.insert_discovered_variant_at(ENDPOINT, MODEL, "unknown", None, now);
+    assert_eq!(
+        cache
+            .get_at(ENDPOINT, MODEL, now)
+            .effective()
+            .unwrap()
+            .input_modalities,
+        None
+    );
+    assert_eq!(
+        cache
+            .get_at(ENDPOINT, MODEL, now + Duration::from_secs(10))
+            .effective()
+            .unwrap()
+            .input_modalities,
+        Some(vec!["image".into(), "text".into()])
+    );
 }

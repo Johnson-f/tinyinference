@@ -24,6 +24,17 @@ impl RecordingModel {
 
 #[async_trait]
 impl ChatModel<()> for RecordingModel {
+    fn supports_input(
+        &self,
+        modality: InputModality,
+        mime_type: &str,
+        source: InputSource,
+    ) -> bool {
+        modality == InputModality::Image
+            && mime_type == "image/png"
+            && source == InputSource::Base64
+    }
+
     async fn invoke(&self, _state: &(), request: ModelRequest) -> crate::Result<ModelResponse> {
         self.requests.lock().unwrap().push(request);
         Ok(self.response.clone())
@@ -495,4 +506,33 @@ async fn observer_streams_report_one_terminal_outcome_with_stream_metadata() {
         ModelCallObservation::Failed { correlation: observed, message }
             if observed.as_ref() == Some(&correlation) && message == "mock returned: provider failed"
     ));
+}
+
+#[test]
+fn transport_support_defaults_closed_and_all_decorators_forward() {
+    assert!(!FailingModel.supports_input(InputModality::Image, "image/png", InputSource::Base64));
+    let inner: Arc<dyn ChatModel<()>> =
+        Arc::new(RecordingModel::new(ModelResponse::assistant("ok")));
+    let inner: Arc<dyn ChatModel<()>> =
+        Arc::new(ProfileOverrideModel::new(inner, ModelProfile::default()));
+    let inner: Arc<dyn ChatModel<()>> = Arc::new(MaxTokensModel::new(inner, 10));
+    let inner: Arc<dyn ChatModel<()>> = Arc::new(RouteRecordingModel::new(
+        inner,
+        ResolvedModelRoute::new("test", "model", "route"),
+    ));
+    let model = ObservingModel::new(inner, Arc::new(RecordingObserver::default()));
+    assert!(model.supports_input(InputModality::Image, "image/png", InputSource::Base64));
+    assert!(!model.supports_input(InputModality::Image, "image/png", InputSource::Path));
+    assert!(!model.supports_input(
+        InputModality::Document,
+        "application/pdf",
+        InputSource::Base64
+    ));
+}
+
+#[test]
+fn input_capability_types_are_available_from_crate_root() {
+    use crate::{InputModality, InputSource};
+    assert_eq!(InputModality::Image, crate::model::InputModality::Image);
+    assert_eq!(InputSource::Base64, crate::model::InputSource::Base64);
 }

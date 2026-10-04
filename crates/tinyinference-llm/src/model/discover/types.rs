@@ -2,10 +2,10 @@
 
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Where a [`ModelLimits`] value came from.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LimitSource {
     /// The model's entry in the provider's `/models` listing (or its
@@ -34,21 +34,26 @@ impl LimitSource {
 }
 
 /// The token limits a provider reports for one model.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelLimits {
     /// Maximum context window (prompt plus completion) in tokens.
     pub context_window: Option<u64>,
     /// Maximum completion tokens the provider allows per response.
     pub max_output_tokens: Option<u64>,
+    /// Advertised input modalities; `None` means unknown, never assumed vision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_modalities: Option<Vec<String>>,
     /// Where the values came from.
     pub source: LimitSource,
 }
 
 impl ModelLimits {
-    /// Whether the record carries no usable limit at all.
+    /// Whether the record carries neither usable limits nor modality metadata.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.context_window.is_none() && self.max_output_tokens.is_none()
+        self.context_window.is_none()
+            && self.max_output_tokens.is_none()
+            && self.input_modalities.is_none()
     }
 }
 
@@ -69,7 +74,7 @@ pub struct DiscoveryRequest {
     /// provider publishes its catalogue elsewhere.
     pub listing_url: Option<String>,
     /// Whether to fall back to `GET {endpoint}/models/{id}` when the listing
-    /// does not contain the model.
+    /// does not contain the model or either token limit is missing.
     pub probe_single_model: bool,
     /// Headers to send (for example `Authorization`). Never logged.
     pub headers: Vec<(String, String)>,

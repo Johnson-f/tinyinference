@@ -1831,10 +1831,9 @@ impl OpenAiModel {
                         "[openai] retrying without a parameter the endpoint rejected"
                     );
                     omission::remember_omit(&self.base_url, &body.model, &parameter);
-                    let mut retry = payload;
-                    if let Some(object) = retry.as_object_mut() {
-                        object.remove(&parameter);
-                    }
+                    // Rebuild so learned omissions are applied before the
+                    // host hook, which must retain ownership of injected fields.
+                    let retry = self.chat_payload(&body)?;
                     self.post_json(&retry, request.timeout_ms, streaming, what)
                         .await
                 } else {

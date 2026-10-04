@@ -7,6 +7,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 
@@ -499,6 +500,36 @@ async fn a_rejected_parameter_is_dropped_and_the_request_retried_once() {
         "omission-retry-model",
         "temperature"
     ));
+}
+
+#[tokio::test]
+async fn omission_retry_preserves_host_injected_parameters() {
+    let (base, server) = serve_sequence(vec![
+        (400, unsupported("temperature")),
+        (200, completion_body()),
+    ]);
+    let options = crate::providers::ProviderRequestOptions {
+        on_payload: Some(Arc::new(|payload| {
+            payload["temperature"] = json!(0.25);
+        })),
+        ..Default::default()
+    };
+    let model = OpenAiModel::new("k")
+        .with_base_url(&base)
+        .with_request_options(options);
+
+    model
+        .invoke(
+            &(),
+            ModelRequest::new(vec![Message::user("hi")]).with_model("hook-retry-model"),
+        )
+        .await
+        .unwrap();
+
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(request_body(&requests[0])["temperature"], json!(0.25));
+    assert_eq!(request_body(&requests[1])["temperature"], json!(0.25));
 }
 
 #[tokio::test]

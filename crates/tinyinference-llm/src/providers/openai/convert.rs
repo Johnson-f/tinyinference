@@ -30,6 +30,20 @@ pub(super) fn translate_message(message: &Message) -> Result<ChatMessageWire> {
             tool_call_id: None,
         },
         Message::Assistant(assistant) => {
+            if assistant.content.iter().any(|block| {
+                matches!(
+                    block,
+                    ContentBlock::Image(_)
+                        | ContentBlock::Audio(_)
+                        | ContentBlock::Video(_)
+                        | ContentBlock::Document(_)
+                )
+            }) {
+                return Err(Error::Validation(
+                    "OpenAI Chat Completions cannot represent media content in assistant messages"
+                        .into(),
+                ));
+            }
             let text = message.text();
             // OpenAI accepts a null content for tool-call-only assistant turns.
             let content = if text.is_empty() && !assistant.tool_calls.is_empty() {
@@ -230,12 +244,15 @@ pub(super) fn unrepresentable_block_error() -> Error {
 fn input_audio_part(media: &crate::message::MediaRef) -> Result<ContentPartWire> {
     use crate::message::MediaRef;
     match media {
-        MediaRef::Base64 { data, media_type } => Ok(ContentPartWire::InputAudio {
-            input_audio: InputAudioWire {
-                data: data.clone(),
-                format: audio_format_from_media_type(media_type)?,
-            },
-        }),
+        MediaRef::Base64 { data, media_type } => {
+            crate::providers::media::validate_base64(data)?;
+            Ok(ContentPartWire::InputAudio {
+                input_audio: InputAudioWire {
+                    data: data.clone(),
+                    format: audio_format_from_media_type(media_type)?,
+                },
+            })
+        }
         MediaRef::Url { .. } | MediaRef::Path { .. } => Err(Error::Validation(
             "OpenAI input_audio requires inline base64 data; resolve the \
              audio reference to bytes before sending it"
@@ -608,8 +625,13 @@ pub(super) fn validate_image_ref(image: &crate::message::ImageRef) -> Result<()>
     let data_mime = image
         .url
         .strip_prefix("data:")
-        .and_then(|rest| rest.split_once(";base64,").map(|(mime, _)| mime));
-    let mime = data_mime.or(image.mime_type.as_deref());
+        .and_then(|rest| rest.split_once(";base64,"));
+    if let Some((_, data)) = data_mime {
+        crate::providers::media::validate_base64(data)?;
+    }
+    let mime = data_mime
+        .map(|(mime, _)| mime)
+        .or(image.mime_type.as_deref());
     if mime.is_some_and(|mime| {
         !matches!(
             mime.to_ascii_lowercase().as_str(),

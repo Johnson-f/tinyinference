@@ -385,6 +385,7 @@ pub(super) fn build_responses_input(
                     }
                     match media {
                         MediaRef::Base64 { data, .. } => {
+                            crate::providers::media::validate_base64(data)?;
                             extra.insert("filename".into(), Value::String("document.pdf".into()));
                             extra.insert("file_data".into(), Value::String(format!("data:application/pdf;base64,{data}")));
                         }

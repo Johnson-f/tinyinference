@@ -1,6 +1,6 @@
 //! Local-LLM transcription cleanup.
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use tinyinference_local::service::{LocalAiService, RuntimeConfig};
 
@@ -36,6 +36,14 @@ pub async fn cleanup_transcription(
         );
     let inference =
         service.inference_interactive(runtime, CLEANUP_SYSTEM_PROMPT, &prompt, Some(512), true);
+    cleanup_or_original(inference, raw_text, timeout).await
+}
+
+async fn cleanup_or_original(
+    inference: impl Future<Output = Result<String, String>>,
+    raw_text: &str,
+    timeout: Duration,
+) -> String {
     match tokio::time::timeout(timeout, inference).await {
         Ok(Ok(cleaned)) if !cleaned.trim().is_empty() => cleaned.trim().to_string(),
         _ => raw_text.to_string(),

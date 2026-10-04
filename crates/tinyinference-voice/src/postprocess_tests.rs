@@ -1,7 +1,7 @@
+use super::*;
+
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
-
-use super::*;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -127,35 +127,49 @@ async fn llm_error_response_falls_back_to_raw_text() {
 
 #[tokio::test(start_paused = true)]
 async fn slow_llm_times_out_and_falls_back_to_raw_text() {
-    let started = std::sync::Arc::new(tokio::sync::Notify::new());
-    let handler_started = started.clone();
-    let app = Router::new().route(
-        "/v1/chat/completions",
-        post(move || {
-            let handler_started = handler_started.clone();
-            async move {
-                handler_started.notify_one();
-                std::future::pending::<Json<Value>>().await
-            }
-        }),
-    );
-    let base = spawn_mock(app).await;
-    let (runtime, service) = runtime_and_service(&base, "ready");
-    let cleanup = tokio::spawn(async move {
-        cleanup_transcription(
-            &service,
-            &runtime,
-            "raw text",
-            None,
-            Duration::from_millis(100),
-        )
-        .await
-    });
-    started.notified().await;
-    tokio::time::advance(Duration::from_millis(101)).await;
-    let result = cleanup.await.unwrap();
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::task::Poll;
+
+    struct DropSignal(Arc<AtomicBool>);
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let dropped = Arc::new(AtomicBool::new(false));
+    let signal = DropSignal(dropped.clone());
+    let inference = async move {
+        let _signal = signal;
+        std::future::pending::<Result<String, String>>().await
+    };
+    let cleanup = cleanup_or_original(inference, "raw text", Duration::from_millis(100));
+    tokio::pin!(cleanup);
+
+    std::future::poll_fn(|cx| {
+        assert!(cleanup.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    tokio::time::advance(Duration::from_millis(99)).await;
+    std::future::poll_fn(|cx| {
+        assert!(cleanup.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert!(!dropped.load(Ordering::SeqCst));
+    tokio::time::advance(Duration::from_millis(2)).await;
+    let result = std::future::poll_fn(|cx| match cleanup.as_mut().poll(cx) {
+        Poll::Ready(result) => Poll::Ready(result),
+        Poll::Pending => panic!("cleanup did not finish at its deadline"),
+    })
+    .await;
 
     assert_eq!(result, "raw text");
+    assert!(dropped.load(Ordering::SeqCst));
 }
 
 /// Captures the user prompt the model receives, echoing it back.

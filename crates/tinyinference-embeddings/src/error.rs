@@ -20,4 +20,7 @@ pub enum Error {
     /// The caller cancelled an embedding request.
     #[error("embedding request cancelled")]
     Cancelled,
+    /// Reranking failed at the provider boundary.
+    #[error(transparent)]
+    Rerank(#[from] crate::rerank::RerankError),
 }

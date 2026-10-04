@@ -14,6 +14,8 @@ The workspace provides:
   and Mistral;
 - OpenAI, Cohere, Ollama, Voyage, cloud, no-op, and deterministic mock
   embeddings;
+- standalone document reranking through Voyage, with original-position results,
+  cancellation, bounded retries, and provider-reported usage;
 - request caching, stream accumulation, normalized provider failures,
   provider-neutral retry classification and `Retry-After` parsing;
 - conservative context-window and vision-capability hints for raw model ids
@@ -52,7 +54,7 @@ assert_eq!(response.text(), "hello");
 TinyAgents vendors this repository at `vendor/tinyinference` and re-exports the
 public modules through its historical `tinyagents::harness::*` paths. New code
 can depend on `tinyinference-llm` for language models,
-`tinyinference-embeddings` for vector generation and retrieval,
+`tinyinference-embeddings` for vector generation, retrieval, and reranking,
 `tinyinference-local` for endpoint-only local inference,
 `tinyinference-providers` for provider authentication and routing primitives,
 `tinyinference-voice` for speech inference and streaming-audio mechanics,
@@ -61,6 +63,54 @@ standards and OpenRouter media transport,
 `tinyinference-video` for asynchronous video generation (submit, poll,
 download, resume), `tinyinference-decisions` for typed Jev and Sage decisions,
 and `tinyinference-core` only for shared infrastructure.
+
+### Voyage reranking
+
+`tinyinference-embeddings` exports `Reranker`, `RerankRequest`,
+`VoyageReranker`, and `VoyageRerankConfig`. Supply your Voyage API key explicitly:
+
+```rust,no_run
+use tinyinference_embeddings::{Reranker, RerankRequest, VoyageReranker};
+
+# async fn example(api_key: String) -> tinyinference_embeddings::Result<()> {
+let model = VoyageReranker::new(api_key)?;
+let documents = vec!["Reset your password in Settings.".into(), "Shipping takes two days.".into()];
+let mut request = RerankRequest::new("How do I reset my password?", documents);
+request.top_k = Some(1);
+let response = model.rerank(request).await?;
+for result in response.results {
+    println!("original position: {}, score: {}", result.index, result.relevance_score);
+}
+# Ok(())
+# }
+```
+
+Use candidate texts from any search system. Our `Retriever` does not preserve
+source text: resolve its returned IDs against your own document storage first.
+Missing text should fail before the request rather than silently removing a
+candidate. Returned indices address the exact submitted list. Keep reranking
+scores separate from `ScoredDoc.score`, which remains vector similarity.
+The `rerank` module's compiled rustdoc shows this mapping and caller-owned fallback.
+
+Defaults are `rerank-3`, a 30-second total deadline, up to three retries of
+429/500/502/503/504 responses, 8 MiB serialized requests, and 2 MiB responses.
+`VoyageRerankConfig` makes these configurable. Requests accept up to 1,000
+documents; zero results or empty candidates require no provider call.
+Blank queries/documents are rejected for nonempty requests. Provider token
+limits still apply. Text shortening is disabled unless `request.truncate` is
+explicitly enabled; large batches are never silently split or dropped.
+
+Clone `request.cancellation` to cancel while waiting for pacing, a response,
+or a retry. The deadline covers all attempts. Transport interruptions are not
+replayed; the provider may still finish and bill an interrupted request.
+Explicit status retries can repeat billable work; set `max_retries` to zero to
+disable them. Missing usage is unknown, and reported usage covers only the
+successful response. Decide in your app whether provider failure preserves
+original search order; propagate cancellation rather than treating it as fallback.
+
+Errors use `Error::Rerank(RerankError)` for provider, timeout, and response
+failures; `Validation` and `Cancelled` retain their existing roles. Downstream
+exhaustive matches on the crate's `Error` must add the new `Rerank` arm.
 
 ### Levanto Sage
 
@@ -114,7 +164,7 @@ crates/tinyinference-llm/
     ├── tool.rs     model-visible tool schemas and call/delta shapes
     └── usage/      normalized token accounting
 crates/tinyinference-embeddings/
-└── src/            embedding clients, vector store, and retriever
+└── src/            embedding clients, rerank/, vector store, and retriever
 crates/tinyinference-local/
 └── src/            local endpoint probing, model selection, and inference
 crates/tinyinference-providers/

@@ -131,6 +131,26 @@ async fn total_deadline_covers_header_and_body_waits() {
     assert_eq!(scripted.requests.lock().unwrap().len(), 1);
 }
 
+#[tokio::test(start_paused = true)]
+async fn total_deadline_cancels_a_pending_transport_send() {
+    struct DelayedTransport;
+    #[async_trait]
+    impl transport::HttpTransport for DelayedTransport {
+        async fn send(&self, _request: reqwest::Request) -> crate::Result<reqwest::Response> {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            json_reply(200, complete())
+        }
+    }
+    let (mut model, _) = fixture(vec![]);
+    Arc::get_mut(&mut model.inner).unwrap().sender = Arc::new(DelayedTransport);
+    let mut request = ModelRequest::new(vec![Message::user("question")]);
+    request.timeout_ms = Some(10);
+    let start = tokio::time::Instant::now();
+    assert!(matches!(model.invoke(&(), request).await,
+        Err(Error::Provider(error)) if error.code.as_deref() == Some("timeout")));
+    assert_eq!(start.elapsed(), std::time::Duration::from_millis(10));
+}
+
 #[tokio::test]
 async fn aliases_and_payload_hooks_are_validated_before_sending() {
     let (mut model, scripted) = fixture(vec![json_reply(200, complete())]);

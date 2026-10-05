@@ -40,3 +40,42 @@ fn deferred_cancellation_serializes_with_or_without_a_snapshot() {
         ));
     }
 }
+
+#[test]
+fn reconstruction_preserves_progress_supplied_in_execution_snapshots() {
+    use crate::model::{ModelStreamItem, StreamAccumulator};
+    let reported = ModelProgress::ReasoningPhase { active: true };
+    let later = ModelProgress::ReasoningText {
+        text: "working".into(),
+    };
+    for snapshot_progress in [vec![reported.clone()], Vec::new()] {
+        for separate_progress in [vec![later.clone()], Vec::new()] {
+            let execution = ModelExecution {
+                id: "resp_1".into(),
+                model: "provider/model".into(),
+                status: ExecutionStatus::InProgress,
+                incomplete_reason: None,
+                sequence_number: Some(3),
+                cost: None,
+                tool_usage: Default::default(),
+                progress: snapshot_progress.clone(),
+            };
+            let mut accumulator = StreamAccumulator::new();
+            accumulator.push(&ModelStreamItem::OutputEvent(ModelOutputEvent::Execution(
+                Box::new(execution),
+            )));
+            for progress in &separate_progress {
+                accumulator.push(&ModelStreamItem::OutputEvent(ModelOutputEvent::Progress(
+                    progress.clone(),
+                )));
+            }
+            let response = accumulator.finish().unwrap();
+            let expected = if snapshot_progress.is_empty() {
+                separate_progress
+            } else {
+                snapshot_progress.clone()
+            };
+            assert_eq!(response.execution.unwrap().progress, expected);
+        }
+    }
+}

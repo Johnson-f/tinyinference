@@ -8,18 +8,22 @@ use crate::{
 use serde_json::json;
 
 #[tokio::test]
-async fn durable_run_is_submitted_once_then_polled_and_cancelled_by_id() {
+async fn responses_alias_submits_once_and_uses_canonical_agent_recovery_routes() {
     let mut queued = complete();
     queued["status"] = json!("queued");
     queued["output"] = json!([]);
     let mut cancelled = queued.clone();
     cancelled["status"] = json!("cancelled");
-    let (model, scripted) = fixture(vec![
+    let (mut model, scripted) = fixture(vec![
         json_reply(200, queued.clone()),
         json_reply(200, queued),
         json_reply(200, json!({"response_id":"resp_1","status":"cancelling"})),
         json_reply(200, cancelled),
     ]);
+    Arc::get_mut(&mut model.inner)
+        .unwrap()
+        .config
+        .responses_alias = true;
     let handle = model
         .submit_background(ModelRequest::new(vec![Message::user("question")]))
         .await
@@ -45,10 +49,12 @@ async fn durable_run_is_submitted_once_then_polled_and_cancelled_by_id() {
     assert_eq!(
         requests
             .iter()
-            .filter(|r| r.method() == reqwest::Method::POST && r.url().path() == "/v1/agent")
+            .filter(|r| r.method() == reqwest::Method::POST && r.url().path() == "/v1/responses")
             .count(),
         1
     );
+    assert_eq!(requests[0].url().path(), "/v1/responses");
+    assert_eq!(requests[1].url().path(), "/v1/agent/resp_1");
     assert_eq!(requests[2].url().path(), "/v1/agent/resp_1/cancel");
 }
 

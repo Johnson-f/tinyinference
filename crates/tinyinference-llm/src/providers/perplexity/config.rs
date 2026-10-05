@@ -270,7 +270,8 @@ impl PerplexityOptions {
     /// Sets the provider options on a common model request.
     ///
     /// # Errors
-    /// Returns a serialization error if options cannot be encoded.
+    /// Returns validation errors for invalid hosted tools, or a serialization
+    /// error if options cannot be encoded. Leaves the request unchanged on error.
     pub fn apply_to(&self, request: &mut ModelRequest) -> Result<()> {
         super::request::validate_options_before_serialization(self)?;
         request.provider_options = serde_json::json!({"perplexity": serde_json::to_value(self)?});

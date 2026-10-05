@@ -267,8 +267,8 @@ pub(super) fn build(
             if !functions.contains_key(name) {
                 return Err(invalid("selected function is not declared"));
             }
-        } else if let Some(kind) = choice.get("type").and_then(Value::as_str)
-            && ![
+        } else if let Some(kind) = choice.get("type").and_then(Value::as_str) {
+            if ![
                 "web_search",
                 "image_search",
                 "fetch_url",
@@ -277,8 +277,21 @@ pub(super) fn build(
                 "sandbox",
             ]
             .contains(&kind)
-        {
-            return Err(invalid("unsupported forced hosted tool"));
+            {
+                return Err(invalid("unsupported forced hosted tool"));
+            }
+            if !matches!(selection, PerplexitySelection::Preset { .. })
+                && !body
+                    .get("tools")
+                    .and_then(Value::as_array)
+                    .is_some_and(|tools| {
+                        tools
+                            .iter()
+                            .any(|tool| tool.get("type").and_then(Value::as_str) == Some(kind))
+                    })
+            {
+                return Err(invalid("selected hosted tool is not declared"));
+            }
         }
         body.insert("tool_choice".into(), choice);
     }
@@ -621,11 +634,7 @@ fn invalid(message: &str) -> Error {
 
 pub(super) fn validate_options_before_serialization(options: &PerplexityOptions) -> Result<()> {
     if let Some(tools) = &options.tools {
-        for tool in tools {
-            if let PerplexityTool::WebSearch { options } = tool {
-                validate_web_search(options)?;
-            }
-        }
+        encode_hosted_tools(tools, &BTreeMap::new())?;
     }
     Ok(())
 }

@@ -900,7 +900,9 @@ impl StreamAccumulator {
         Ok(ModelResponse {
             output: self.output.into_values().collect(),
             execution: self.execution.map(|mut execution| {
-                execution.progress = self.progress;
+                if execution.progress.is_empty() {
+                    execution.progress = self.progress;
+                }
                 execution
             }),
             message,

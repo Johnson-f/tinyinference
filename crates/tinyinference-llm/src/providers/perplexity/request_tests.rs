@@ -27,6 +27,59 @@ fn preset_request_preserves_server_defaults() {
 }
 
 #[test]
+fn invalid_hosted_options_are_rejected_without_mutating_the_request() {
+    for tool in [
+        PerplexityTool::ImageSearch {
+            max_results: Some(0),
+            filters: None,
+        },
+        PerplexityTool::ImageSearch {
+            max_results: Some(31),
+            filters: None,
+        },
+        PerplexityTool::FetchUrl { max_urls: Some(0) },
+        PerplexityTool::FetchUrl { max_urls: Some(11) },
+    ] {
+        let mut request = ModelRequest::new(vec![Message::user("question")]);
+        request.provider_options = json!({"perplexity":{"max_steps":2}});
+        let original = request.provider_options.clone();
+        let options = PerplexityOptions {
+            tools: Some(vec![tool]),
+            ..Default::default()
+        };
+        assert!(options.apply_to(&mut request).is_err());
+        assert_eq!(request.provider_options, original);
+    }
+}
+
+#[test]
+fn forced_hosted_tools_require_a_declaration_unless_a_preset_can_supply_it() {
+    let tool = PerplexityTool::web_search(PerplexityWebSearch::default());
+    for selection in [
+        PerplexitySelection::Model("openai/test".into()),
+        PerplexitySelection::Models(vec!["openai/test".into()]),
+        PerplexitySelection::preset("low"),
+    ] {
+        for declared in [false, true] {
+            let mut config = PerplexityConfig::new(selection.clone());
+            config.options.tool_choice = Some(super::super::PerplexityToolChoice::Hosted(
+                "web_search".into(),
+            ));
+            if declared {
+                config.options.tools = Some(vec![tool.clone()]);
+            }
+            let request = ModelRequest::new(vec![Message::user("question")]);
+            let result = build(&config, &request, false, false);
+            if declared || matches!(selection, PerplexitySelection::Preset { .. }) {
+                assert_eq!(result.unwrap()["tool_choice"], json!({"type":"web_search"}));
+            } else {
+                assert!(matches!(result, Err(Error::Validation(_))));
+            }
+        }
+    }
+}
+
+#[test]
 fn each_preset_remains_dynamic_and_explicit_model_overrides_are_preserved() {
     for preset in ["fast", "low", "medium", "high", "xhigh", "future-preset"] {
         let config = PerplexityConfig::new(PerplexitySelection::preset(preset));

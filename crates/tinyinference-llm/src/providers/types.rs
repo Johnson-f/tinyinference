@@ -236,7 +236,8 @@ pub struct ProviderSpec {
     pub kind: ProviderKind,
     /// Provider id written to profiles and normalized errors.
     pub provider: String,
-    /// Default provider model id.
+    /// Default provider model id. Empty for Perplexity, whose native adapter
+    /// requires an explicit model, fallback chain, or preset selection.
     pub model: String,
     /// API base URL without a trailing slash.
     pub base_url: String,

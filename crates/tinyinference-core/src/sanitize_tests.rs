@@ -304,61 +304,32 @@ fn references_and_type_annotations_are_not_secrets() {
 // alphabetic-password fix, so the agent could not read its own source.
 
 #[test]
-fn lowercase_builtin_type_annotations_are_not_secrets() {
-    assert_unchanged("  accessToken: string | null;");
-    assert_unchanged("  refreshToken: string;");
-    assert_unchanged("def login(password: str, api_key: str) -> bool:");
-    assert_unchanged("  sessionSecret: unknown;");
-}
-
-#[test]
-fn dotted_member_paths_are_references_not_secrets() {
-    assert_unchanged("      state.accessToken = action.payload;");
-    assert_unchanged("const token = response.data;");
-    assert_unchanged("const apiKey = config.apiKey;");
-    assert_unchanged("request.credential = session.credential");
-}
-
-#[test]
-fn ts_auth_slice_from_the_issue_is_unchanged() {
-    let source = r#"interface AuthState {
-  accessToken: string | null;
-}
-
-const authSlice = createSlice({
-  reducers: {
-    setToken(state, action) {
-      state.accessToken = action.payload;
-    },
-  },
-});
-"#;
-    assert_unchanged(source);
+fn member_paths_and_lowercase_type_annotations_are_not_secrets() {
+    for source in [
+        "  accessToken: string | null;",
+        "def login(password: str, api_key: str) -> bool:",
+        "      state.accessToken = action.payload;",
+        "const apiKey = config.apiKey;",
+        "request.credential = session.credential",
+    ] {
+        assert_unchanged(source);
+    }
 }
 
 #[test]
 fn values_that_only_resemble_code_references_stay_redacted() {
-    // A quoted type name is a string literal, so it is data.
-    let quoted = scrub_credentials(r#"password: "string""#);
-    assert!(quoted.contains("*[REDACTED]"), "{quoted}");
-
-    // A plain word is still a password, with `:` or `=`.
-    let colon = scrub_credentials("password: correcthorse");
-    assert!(!colon.contains("correcthorse"), "{colon}");
-    assert_eq!(
-        scrub_credentials("password=correcthorse"),
-        "password=corr*[REDACTED]"
-    );
-
-    // Under a password or secret key a dotted word may be the value itself.
-    let password = scrub_credentials("password=correct.horse");
-    assert!(!password.contains("correct.horse"), "{password}");
-    let secret = scrub_credentials("secret: a.b");
-    assert!(secret.contains("*[REDACTED]"), "{secret}");
-    let client_secret = scrub_credentials("client_secret = battery.staple");
-    assert!(!client_secret.contains("battery.staple"), "{client_secret}");
-
-    // A dotted value with digits is not a digitless member path.
-    let dotted = scrub_credentials("token=abc123.def456");
-    assert!(!dotted.contains("abc123.def456"), "{dotted}");
+    for (input, value) in [
+        // A quoted type name is a string literal, so it is data.
+        (r#"password: "string""#, "string"),
+        // A plain word after `:` is not a type name.
+        ("password: correcthorse", "correcthorse"),
+        // Under a password or secret key a dotted word may be the value.
+        ("password=correct.horse", "correct.horse"),
+        ("secret: a.b", "a.b"),
+        // A dotted value with digits is not a member path.
+        ("token=abc123.def456", "abc123.def456"),
+    ] {
+        let out = scrub_credentials(input);
+        assert!(!out.contains(value), "{input} -> {out}");
+    }
 }

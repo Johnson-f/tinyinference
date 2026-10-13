@@ -137,19 +137,14 @@ static NON_SECRET_NUMBER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Lowercase built-in type names that follow `:` in an annotation
 /// (TypeScript primitives and Python builtins), as in `accessToken: string`.
-const LOWERCASE_TYPE_NAMES: [&str; 16] = [
+const LOWERCASE_TYPE_NAMES: [&str; 11] = [
     "string",
     "number",
     "boolean",
-    "bigint",
-    "symbol",
-    "object",
     "null",
     "undefined",
     "any",
     "unknown",
-    "never",
-    "void",
     "str",
     "int",
     "float",

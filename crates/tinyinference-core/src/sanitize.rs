@@ -135,6 +135,27 @@ static NON_SECRET_NUMBER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+/// Lowercase built-in type names that follow `:` in an annotation
+/// (TypeScript primitives and Python builtins), as in `accessToken: string`.
+const LOWERCASE_TYPE_NAMES: [&str; 16] = [
+    "string",
+    "number",
+    "boolean",
+    "bigint",
+    "symbol",
+    "object",
+    "null",
+    "undefined",
+    "any",
+    "unknown",
+    "never",
+    "void",
+    "str",
+    "int",
+    "float",
+    "bool",
+];
+
 /// Identifiers and dotted member paths with no digit (`None`, `self.vocab`,
 /// `os.environ`): references to a value in code, not the value itself.
 static DIGITLESS_IDENTIFIER_REGEX: LazyLock<Regex> =
@@ -178,6 +199,11 @@ fn looks_like_secret(value: &str, quoted: bool, rest: &str, key: &str) -> bool {
             return false;
         }
         _ => {}
+    }
+    // A bare dotted member path (`action.payload`, `self.vocab`) reads a
+    // value in code; it is not the value itself.
+    if !quoted && value.contains('.') && DIGITLESS_IDENTIFIER_REGEX.is_match(value) {
+        return false;
     }
     // A string literal is data, so `"short"` stays redacted. A bare word that
     // is exactly the sensitive key is a common source-code reference
@@ -272,14 +298,17 @@ pub fn scrub_credentials(input: &str) -> String {
         // `api_key: String` is a type annotation, not a credential
         // assignment. Uppercase type names make this unambiguous while
         // lowercase alphabetic values such as `password: correcthorse`
-        // remain protected.
+        // remain protected. Lowercase built-in type names (`accessToken:
+        // string | null`) are annotations too, but only bare: a quoted
+        // `"string"` is data.
         if &caps[2] == ":"
-            && value
+            && ((value
                 .as_str()
                 .chars()
                 .next()
                 .is_some_and(char::is_uppercase)
-            && DIGITLESS_IDENTIFIER_REGEX.is_match(value.as_str())
+                && DIGITLESS_IDENTIFIER_REGEX.is_match(value.as_str()))
+                || (!quoted && LOWERCASE_TYPE_NAMES.contains(&value.as_str())))
         {
             return full_match.to_string();
         }

@@ -110,14 +110,30 @@ fn parse_tolerates_a_body_without_output() {
 }
 
 #[test]
-fn parse_preserves_incomplete_reason() {
+fn an_output_limit_stop_is_reported_as_length() {
+    // The Responses API spells the output cap `max_output_tokens`; consumers
+    // compare against the canonical `length`. The wire value stays on `raw`.
     let resp = parse_responses_response(json!({
         "status": "incomplete",
         "incomplete_details": { "reason": "max_output_tokens" },
         "output_text": "partial"
     }));
     assert_eq!(resp.text(), "partial");
-    assert_eq!(resp.finish_reason.as_deref(), Some("max_output_tokens"));
+    assert_eq!(resp.finish_reason.as_deref(), Some("length"));
+    assert_eq!(
+        resp.raw.as_ref().unwrap()["incomplete_details"]["reason"],
+        json!("max_output_tokens")
+    );
+}
+
+#[test]
+fn other_incomplete_reasons_pass_through() {
+    let resp = parse_responses_response(json!({
+        "status": "incomplete",
+        "incomplete_details": { "reason": "content_filter" },
+        "output_text": ""
+    }));
+    assert_eq!(resp.finish_reason.as_deref(), Some("content_filter"));
 }
 
 #[test]

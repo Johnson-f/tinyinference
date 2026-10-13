@@ -821,6 +821,12 @@ pub struct ModelResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
     /// Provider finish reason (for example `stop`, `tool_calls`, `length`).
+    ///
+    /// A reply the output limit cut off is always `length`, whatever the
+    /// provider called it (see [`canonical_finish_reason`]); the provider's
+    /// own value is in [`raw`](Self::raw).
+    ///
+    /// [`canonical_finish_reason`]: crate::model::canonical_finish_reason
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
     /// Raw provider metadata preserved for callers who need it.
@@ -913,7 +919,9 @@ pub struct ProviderError {
     pub partial_message: Option<AssistantMessage>,
     /// The stop/finish reason reported before the failure, when the provider
     /// sent one (for example Anthropic's `message_delta.stop_reason`) prior
-    /// to the error that ended the stream.
+    /// to the error that ended the stream. Spelled the way
+    /// [`ModelResponse::finish_reason`] would spell it: an output-limit stop
+    /// is `length`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
 }

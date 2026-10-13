@@ -489,6 +489,26 @@ fn parses_text_only_response_without_usage_details() {
 }
 
 #[test]
+fn an_output_limit_stop_is_reported_as_length_whatever_the_gateway_calls_it() {
+    // Gemini behind an OpenAI-compatible gateway spells the output cap
+    // `MAX_TOKENS`; the response carries the canonical `length` and keeps the
+    // wire value on `raw`.
+    let body = json!({
+        "id": "chatcmpl-cut",
+        "choices": [
+            { "message": { "role": "assistant", "content": "cut" }, "finish_reason": "MAX_TOKENS" }
+        ],
+        "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+    });
+    let response = parse_response(body).unwrap();
+    assert_eq!(response.finish_reason.as_deref(), Some("length"));
+    assert_eq!(
+        response.raw.as_ref().unwrap()["choices"][0]["finish_reason"],
+        json!("MAX_TOKENS")
+    );
+}
+
+#[test]
 fn total_tokens_falls_back_to_prompt_plus_completion_when_omitted() {
     // Some OpenAI-compatible backends omit `total_tokens` entirely; it must
     // not silently deserialize to a misleading `0` when prompt/completion

@@ -542,6 +542,24 @@ fn cache_usage_is_mapped_from_anthropic_response() {
 }
 
 #[test]
+fn max_tokens_stop_reason_is_reported_as_length() {
+    // Anthropic spells the output cap `max_tokens`; OpenAI-shaped providers
+    // say `length`. The response carries the canonical spelling and keeps
+    // the wire value on `raw`, so a consumer comparing against `length`
+    // sees truncation on every provider.
+    let response = parse_response(json!({
+        "id": "msg_3", "content": [{ "type": "text", "text": "cut" }], "stop_reason": "max_tokens",
+        "usage": { "input_tokens": 2, "output_tokens": 3 }
+    }))
+    .unwrap();
+    assert_eq!(response.finish_reason.as_deref(), Some("length"));
+    assert_eq!(
+        response.raw.as_ref().unwrap()["stop_reason"],
+        json!("max_tokens")
+    );
+}
+
+#[test]
 fn tool_use_blocks_parse_into_tool_calls() {
     let response = parse_response(json!({
         "id": "msg_2",
@@ -741,6 +759,30 @@ async fn streaming_reassembles_text_tool_calls_and_cache_usage() {
     assert_eq!(usage.input_tokens, 903);
     assert_eq!(usage.output_tokens, 12);
     assert_eq!(usage.total_tokens, 915);
+}
+
+#[tokio::test]
+async fn streamed_max_tokens_stop_reason_is_reported_as_length() {
+    let events = [
+        json!({"type":"message_start","message":{"id":"msg_l","usage":{"input_tokens":3,"output_tokens":1}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"cut"}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":9}}),
+        json!({"type":"message_stop"}),
+    ];
+    let items: Vec<ModelStreamItem> = stream::stream_from_bytes(vec![sse(&events)], "m")
+        .collect()
+        .await;
+    let Some(ModelStreamItem::Completed(response)) = items.last() else {
+        panic!("stream must end in Completed, got {:?}", items.last());
+    };
+    assert_eq!(response.finish_reason.as_deref(), Some("length"));
+    // The wire spelling is kept on the raw payload.
+    assert_eq!(
+        response.raw.as_ref().unwrap()["stop_reason"],
+        json!("max_tokens")
+    );
 }
 
 #[tokio::test]

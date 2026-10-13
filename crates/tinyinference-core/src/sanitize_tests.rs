@@ -315,7 +315,8 @@ fn lowercase_builtin_type_annotations_are_not_secrets() {
 fn dotted_member_paths_are_references_not_secrets() {
     assert_unchanged("      state.accessToken = action.payload;");
     assert_unchanged("const token = response.data;");
-    assert_unchanged("password = form.password");
+    assert_unchanged("const apiKey = config.apiKey;");
+    assert_unchanged("request.credential = session.credential");
 }
 
 #[test]
@@ -348,6 +349,14 @@ fn values_that_only_resemble_code_references_stay_redacted() {
         scrub_credentials("password=correcthorse"),
         "password=corr*[REDACTED]"
     );
+
+    // Under a password or secret key a dotted word may be the value itself.
+    let password = scrub_credentials("password=correct.horse");
+    assert!(!password.contains("correct.horse"), "{password}");
+    let secret = scrub_credentials("secret: a.b");
+    assert!(secret.contains("*[REDACTED]"), "{secret}");
+    let client_secret = scrub_credentials("client_secret = battery.staple");
+    assert!(!client_secret.contains("battery.staple"), "{client_secret}");
 
     // A dotted value with digits is not a digitless member path.
     let dotted = scrub_credentials("token=abc123.def456");

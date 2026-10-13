@@ -201,8 +201,15 @@ fn looks_like_secret(value: &str, quoted: bool, rest: &str, key: &str) -> bool {
         _ => {}
     }
     // A bare dotted member path (`action.payload`, `self.vocab`) reads a
-    // value in code; it is not the value itself.
-    if !quoted && value.contains('.') && DIGITLESS_IDENTIFIER_REGEX.is_match(value) {
+    // value in code; it is not the value itself. Not under a password or
+    // secret key, where `correct.horse` is as likely a value as a path.
+    let lower_key = key.to_ascii_lowercase();
+    if !quoted
+        && value.contains('.')
+        && DIGITLESS_IDENTIFIER_REGEX.is_match(value)
+        && !lower_key.ends_with("password")
+        && !lower_key.ends_with("secret")
+    {
         return false;
     }
     // A string literal is data, so `"short"` stays redacted. A bare word that

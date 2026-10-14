@@ -299,3 +299,37 @@ fn references_and_type_annotations_are_not_secrets() {
     assert_unchanged("    api_key: String,");
     assert_unchanged(r#"token = os.environ["GITHUB_TOKEN"]"#);
 }
+
+// openhuman#7713: TypeScript auth code came back redacted after the
+// alphabetic-password fix, so the agent could not read its own source.
+
+#[test]
+fn member_paths_and_lowercase_type_annotations_are_not_secrets() {
+    for source in [
+        "  accessToken: string | null;",
+        "def login(password: str, api_key: str) -> bool:",
+        "      state.accessToken = action.payload;",
+        "const apiKey = config.apiKey;",
+        "request.credential = session.credential",
+    ] {
+        assert_unchanged(source);
+    }
+}
+
+#[test]
+fn values_that_only_resemble_code_references_stay_redacted() {
+    for (input, value) in [
+        // A quoted type name is a string literal, so it is data.
+        (r#"password: "string""#, "string"),
+        // A plain word after `:` is not a type name.
+        ("password: correcthorse", "correcthorse"),
+        // Under a password or secret key a dotted word may be the value.
+        ("password=correct.horse", "correct.horse"),
+        ("secret: a.b", "a.b"),
+        // A dotted value with digits is not a member path.
+        ("token=abc123.def456", "abc123.def456"),
+    ] {
+        let out = scrub_credentials(input);
+        assert!(!out.contains(value), "{input} -> {out}");
+    }
+}

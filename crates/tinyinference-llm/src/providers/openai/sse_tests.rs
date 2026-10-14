@@ -32,6 +32,19 @@ async fn completed(raw: Vec<&'static [u8]>) -> ModelResponse {
         .expect("stream ends with Completed")
 }
 
+/// Gemini behind an OpenAI-compatible gateway reports the output cap as
+/// `MAX_TOKENS`; the streamed response must carry the canonical `length`.
+#[tokio::test]
+async fn sse_stream_reports_an_output_limit_stop_as_length() {
+    let response = completed(vec![
+        b"data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":\"cut\"},\"finish_reason\":\"MAX_TOKENS\"}]}\n\n",
+        b"data: [DONE]\n\n",
+    ])
+    .await;
+    assert_eq!(response.text(), "cut");
+    assert_eq!(response.finish_reason.as_deref(), Some("length"));
+}
+
 /// A gateway that bills the call sends its charge on its own SSE frame after
 /// the usage chunk (`event: openhuman-metadata`). The streamed response must
 /// carry it on `raw`, as the non-streaming response does, or a streaming

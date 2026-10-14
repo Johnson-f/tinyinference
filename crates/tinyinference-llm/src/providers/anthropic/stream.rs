@@ -435,7 +435,7 @@ impl AnthropicStreamAcc {
                 origin: None,
             },
             usage,
-            finish_reason: self.stop_reason,
+            finish_reason: self.stop_reason.map(crate::model::canonical_finish_reason),
             raw: Some(raw),
             resolved_model: None,
             continue_turn: None,
@@ -496,7 +496,11 @@ impl SseState {
         };
         provider_error.provider = self.provider.clone();
         provider_error.model = Some(self.model.clone());
-        provider_error.stop_reason = self.acc.stop_reason.clone();
+        provider_error.stop_reason = self
+            .acc
+            .stop_reason
+            .clone()
+            .map(crate::model::canonical_finish_reason);
         let partial = std::mem::take(&mut self.acc).into_response().message;
         if !partial.content.is_empty() || !partial.tool_calls.is_empty() {
             provider_error.partial_message = Some(partial);

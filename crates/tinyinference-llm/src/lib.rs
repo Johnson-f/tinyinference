@@ -26,8 +26,9 @@ pub use failure::{
 };
 pub use message::{AssistantMessage, ContentBlock, Message, MessageDelta};
 pub use model::{
-    ChatModel, InputModality, InputSource, ModelRequest, ModelResponse, ModelStream,
-    ModelStreamItem, context_window_for_model_id, model_id_supports_vision,
+    ChatModel, FINISH_REASON_LENGTH, InputModality, InputSource, ModelRequest, ModelResponse,
+    ModelStream, ModelStreamItem, canonical_finish_reason, context_window_for_model_id,
+    model_id_supports_vision,
 };
 pub use network_guard::{allow_network_models, deny_network_models, network_models_denied};
 pub use providers::{MockModel, ProviderKind, ProviderSpec};

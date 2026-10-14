@@ -562,7 +562,9 @@ impl OpenAiStreamAcc {
         ModelResponse {
             message,
             usage: self.usage,
-            finish_reason: self.finish_reason,
+            finish_reason: self
+                .finish_reason
+                .map(crate::model::canonical_finish_reason),
             raw: (!self.extensions.is_empty()).then_some(Value::Object(self.extensions)),
             resolved_model: None,
             continue_turn: None,
@@ -770,7 +772,11 @@ impl SseState {
         self.terminal_emitted = true;
         error.provider = self.provider.clone();
         error.model = Some(self.model.clone());
-        error.stop_reason = self.acc.finish_reason.clone();
+        error.stop_reason = self
+            .acc
+            .finish_reason
+            .clone()
+            .map(crate::model::canonical_finish_reason);
         let partial = std::mem::take(&mut self.acc).into_response().message;
         if !partial.content.is_empty() || !partial.tool_calls.is_empty() {
             error.partial_message = Some(partial);

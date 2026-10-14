@@ -472,7 +472,9 @@ pub(super) fn parse_chat_response(
     Ok(ModelResponse {
         message,
         usage,
-        finish_reason: choice.finish_reason,
+        finish_reason: choice
+            .finish_reason
+            .map(crate::model::canonical_finish_reason),
         raw: Some(value),
         resolved_model: None,
         continue_turn: None,

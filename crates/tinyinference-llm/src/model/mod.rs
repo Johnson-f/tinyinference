@@ -19,6 +19,7 @@ mod decorators;
 pub mod discover;
 mod error_slot;
 mod fallback;
+mod finish_reason;
 mod types;
 pub mod workload;
 
@@ -36,6 +37,7 @@ use crate::usage::Usage;
 pub use decorators::*;
 pub use error_slot::{ErrorSlotModel, ModelErrorSlot};
 pub use fallback::FallbackModel;
+pub use finish_reason::{FINISH_REASON_LENGTH, canonical_finish_reason};
 pub use types::*;
 
 /// How a context-window pattern is matched against a model id.

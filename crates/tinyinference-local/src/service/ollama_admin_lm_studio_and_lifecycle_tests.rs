@@ -103,7 +103,7 @@ async fn lm_studio_diagnostics_reports_no_loaded_models() {
     let config = lm_studio_config(&base);
     let service = LocalAiService::new(&config);
 
-    let diag = service.diagnostics(&config).await.expect("diagnostics");
+    let diag = service.lm_studio_diagnostics_at(&config, &base).await;
 
     assert_eq!(diag["lm_studio_running"], true);
     assert_eq!(diag["ok"], false);

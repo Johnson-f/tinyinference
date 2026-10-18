@@ -49,11 +49,18 @@ fn route_kind_classifies_managed_local_subprocess_and_cloud_routes() {
             RouteKind::Local(LocalProviderKind::Ollama),
         ),
         (
+            "lm-studio:model",
+            RouteKind::Local(LocalProviderKind::LmStudio),
+        ),
+        ("mlx:model", RouteKind::Local(LocalProviderKind::Mlx)),
+        ("omlx:model", RouteKind::Local(LocalProviderKind::Omlx)),
+        (
             "local_openai:llama",
             RouteKind::Local(LocalProviderKind::LocalOpenai),
         ),
         ("claude-code:sonnet", RouteKind::ClaudeCode),
         ("claude_agent_sdk:sonnet", RouteKind::ClaudeAgentSdk),
+        ("claude-agent-sdk:sonnet", RouteKind::ClaudeAgentSdk),
         (
             "My-Provider:model",
             RouteKind::Cloud {
@@ -69,10 +76,18 @@ fn route_kind_classifies_managed_local_subprocess_and_cloud_routes() {
 #[test]
 fn external_route_classification_excludes_managed_and_sentinel_routes() {
     for (raw, expected) in [
-        ("openhuman:model", false),
+        ("openhuman:model", true),
         ("cloud:model", false),
-        ("ollama:qwen3", true),
+        ("ollama:qwen3", false),
+        ("lmstudio:model", false),
+        ("mlx:model", false),
+        ("omlx:model", false),
+        ("local-openai:model", false),
+        ("local_openai:model", false),
+        ("custom-openai:model", false),
         ("claude-code:sonnet", true),
+        ("claude_agent_sdk:sonnet", true),
+        ("claude-agent-sdk:sonnet", true),
         ("openai:gpt-4.1", true),
     ] {
         assert_eq!(
@@ -112,5 +127,13 @@ fn bare_model_routes_default_to_ollama_and_owner_uses_route_slug() {
     assert_eq!(
         route_owner("bare-model"),
         ("bare-model".to_owned(), "openhuman".to_owned())
+    );
+    assert_eq!(
+        route_owner("acme:model@0.7"),
+        ("acme:model".to_owned(), "acme".to_owned())
+    );
+    assert_eq!(
+        route_owner("acme:model@beta"),
+        ("acme:model@beta".to_owned(), "acme".to_owned())
     );
 }

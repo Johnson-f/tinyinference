@@ -61,7 +61,11 @@ pub enum RouteKind {
         /// Provider slug as written in the route.
         slug: String,
     },
-    /// A host routing sentinel such as `cloud`.
+    /// A host routing sentinel such as `cloud` that still needs resolution.
+    ///
+    /// A sentinel is not a concrete provider route and is therefore not
+    /// classified as external by [`ProviderRoute::is_external`]. Hosts should
+    /// resolve it before constructing a provider or recording egress.
     Sentinel,
 }
 
@@ -112,10 +116,21 @@ impl ProviderRoute {
         }
     }
 
-    /// Returns whether this route is handled outside the managed gateway.
+    /// Returns whether inference for this route leaves the host device.
+    ///
+    /// Local runtimes are not external. Managed and cloud routes, along with
+    /// the Claude subprocess providers, are external. An unresolved sentinel
+    /// returns `false` because it has no concrete destination yet; hosts must
+    /// resolve it before construction and egress accounting.
     #[must_use]
     pub fn is_external(&self) -> bool {
-        !matches!(self.kind(), RouteKind::Managed | RouteKind::Sentinel)
+        matches!(
+            self.kind(),
+            RouteKind::Managed
+                | RouteKind::ClaudeCode
+                | RouteKind::ClaudeAgentSdk
+                | RouteKind::Cloud { .. }
+        )
     }
 }
 
@@ -143,9 +158,10 @@ pub fn custom_provider_string(slug: &str, endpoint: Option<&str>) -> String {
 
 /// Converts a bare local model name to the default Ollama route.
 ///
-/// Explicit routes and the managed `openhuman` sentinel are returned unchanged.
-/// Other bare names are routed to Ollama. Bare local model names may include
-/// tag colons, such as `qwen3:14b`.
+/// Names containing a colon are treated as explicit provider routes and
+/// returned unchanged. The bare `openhuman` sentinel also stays unchanged;
+/// other names are routed to Ollama. This follows the `/v1` host behavior,
+/// where a colon-bearing model string is considered already qualified.
 #[must_use]
 pub fn bare_model_route(name: &str) -> String {
     if name.contains(':') || name == "openhuman" {

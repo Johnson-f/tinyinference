@@ -1,5 +1,9 @@
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use axum::{Json, Router, routing::get};
 use serde_json::json;
@@ -153,6 +157,82 @@ async fn bootstrap_with_nothing_listening_is_unreachable_and_spawns_nothing() {
         std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_err(),
         "nothing may have been started on the configured endpoint"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bootstrap_does_not_launch_local_runtime_processes() {
+    let _guard = crate::service::inference_test_guard();
+
+    let scripts = tempfile::tempdir().expect("scripts");
+    let marker = scripts.path().join("runtime-launched.marker");
+    for name in [
+        "ollama",
+        "lms",
+        "mlx_lm.server",
+        "piper",
+        "python",
+        "python3",
+    ] {
+        let executable = scripts.path().join(name);
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\n: > \"$TINYINFERENCE_SPAWN_MARKER\"\nexit 0\n",
+        )
+        .expect("write runtime stub");
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+            .expect("make runtime stub executable");
+    }
+
+    // Prove that the immediately-exiting stub would leave a trace if a launch
+    // occurred; a closed endpoint alone cannot distinguish that from no launch.
+    let canary = Command::new(scripts.path().join("ollama"))
+        .env("TINYINFERENCE_SPAWN_MARKER", &marker)
+        .status()
+        .expect("run marker canary");
+    assert!(canary.success());
+    assert!(marker.exists(), "the fake runtime must create its marker");
+    std::fs::remove_file(&marker).expect("clear canary marker");
+
+    let (base, _forbidden) = spawn_counting_ollama(Arc::new(AtomicUsize::new(0))).await;
+    let output = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "service::bootstrap::tests::bootstrap_process_probe_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("PATH", scripts.path())
+        .env("TINYINFERENCE_BOOTSTRAP_BASE_URL", base)
+        .env("TINYINFERENCE_SPAWN_MARKER", &marker)
+        .env_remove("OPENHUMAN_OLLAMA_BASE_URL")
+        .env_remove("OLLAMA_BIN")
+        .output()
+        .expect("run bootstrap probe in isolated child");
+
+    assert!(
+        output.status.success(),
+        "child bootstrap test failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !marker.exists(),
+        "bootstrap must not launch a runtime, even one that exits immediately"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "invoked by bootstrap_does_not_launch_local_runtime_processes"]
+async fn bootstrap_process_probe_child() {
+    let base = std::env::var("TINYINFERENCE_BOOTSTRAP_BASE_URL")
+        .expect("parent test passes the mock endpoint");
+    let config = opted_in(&base);
+    let service = LocalAiService::new(&config);
+
+    service.bootstrap(&config).await;
+
+    assert_eq!(service.status().state, "ready");
 }
 
 /// An unreachable endpoint is probed again on the next call, so a runtime the

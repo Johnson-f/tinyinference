@@ -460,11 +460,7 @@ impl LocalAiService {
         Ok(self.lm_studio_diagnostics_at(config, &base_url).await)
     }
 
-    async fn lm_studio_diagnostics_at(
-        &self,
-        config: &Config,
-        base_url: &str,
-    ) -> serde_json::Value {
+    async fn lm_studio_diagnostics_at(&self, config: &Config, base_url: &str) -> serde_json::Value {
         let models_result = self.list_lm_studio_models_at(config, base_url).await;
         Self::lm_studio_diagnostics_from_models_result(config, base_url, models_result)
     }

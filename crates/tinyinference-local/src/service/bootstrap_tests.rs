@@ -179,6 +179,7 @@ async fn bootstrap_does_not_launch_local_runtime_processes() {
         "ollama",
         "lms",
         "mlx_lm.server",
+        "mlx_lm.generate",
         "piper",
         "python",
         "python3",
@@ -214,8 +215,14 @@ async fn bootstrap_does_not_launch_local_runtime_processes() {
         .env("PATH", scripts.path())
         .env("TINYINFERENCE_BOOTSTRAP_BASE_URL", base)
         .env("TINYINFERENCE_SPAWN_MARKER", &marker)
+        .env(
+            "TINYINFERENCE_CHILD_COMPLETED",
+            scripts.path().join("child-completed.marker"),
+        )
         .env_remove("OPENHUMAN_OLLAMA_BASE_URL")
         .env_remove("OLLAMA_BIN")
+        .env_remove("PIPER_BIN")
+        .env_remove("WHISPER_BIN")
         .output()
         .await
         .expect("run bootstrap probe in isolated child");
@@ -224,6 +231,10 @@ async fn bootstrap_does_not_launch_local_runtime_processes() {
         output.status.success(),
         "child bootstrap test failed: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        scripts.path().join("child-completed.marker").exists(),
+        "the exact child test must run through diagnostics and bootstrap"
     );
     assert!(
         !marker.exists(),
@@ -240,9 +251,18 @@ async fn bootstrap_process_probe_child() {
     let config = opted_in(&base);
     let service = LocalAiService::new(&config);
 
+    service
+        .diagnostics(&config)
+        .await
+        .expect("diagnostics should succeed against the mock endpoint");
     service.bootstrap(&config).await;
 
     assert_eq!(service.status().state, "ready");
+    std::fs::write(
+        std::env::var("TINYINFERENCE_CHILD_COMPLETED").expect("parent passes completion marker"),
+        "completed",
+    )
+    .expect("write child completion marker");
 }
 
 /// An unreachable endpoint is probed again on the next call, so a runtime the

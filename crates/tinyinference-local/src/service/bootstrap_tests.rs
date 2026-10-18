@@ -1,10 +1,13 @@
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use std::os::unix::fs::PermissionsExt;
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use std::collections::BTreeMap;
 
 use axum::{Json, Router, routing::get};
 use serde_json::json;
@@ -169,7 +172,9 @@ async fn bootstrap_with_rejecting_endpoint_is_unreachable_promptly() {
     );
 }
 
-#[cfg(unix)]
+/// Linux x86_64 process probes use seccomp to observe forbidden starts
+/// synchronously. Other platforms do not claim this syscall-level guarantee.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[tokio::test]
 async fn bootstrap_does_not_launch_local_runtime_processes() {
     let _guard = crate::service::inference_test_guard();
@@ -212,7 +217,7 @@ async fn bootstrap_does_not_launch_local_runtime_processes() {
     run_process_probe_child(scripts.path(), &marker, &rejecting_base, "unreachable").await;
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 async fn run_process_probe_child(
     scripts_dir: &std::path::Path,
     spawn_marker: &std::path::Path,
@@ -255,7 +260,68 @@ async fn run_process_probe_child(
     );
 }
 
-#[cfg(unix)]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn install_process_creation_guard() {
+    use seccompiler::{
+        BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
+        SeccompRule,
+    };
+    use std::convert::TryInto;
+
+    let arch = std::env::consts::ARCH
+        .try_into()
+        .expect("supported Linux x86_64");
+
+    let deny_process_creation = SeccompFilter::new(
+        [
+            (libc::SYS_fork, vec![]),
+            (libc::SYS_vfork, vec![]),
+            (libc::SYS_execve, vec![]),
+            (libc::SYS_execveat, vec![]),
+            (
+                libc::SYS_clone,
+                vec![
+                    SeccompRule::new(vec![
+                        SeccompCondition::new(
+                            0,
+                            SeccompCmpArgLen::Dword,
+                            SeccompCmpOp::MaskedEq(libc::CLONE_THREAD as u64),
+                            0,
+                        )
+                        .expect("valid clone flags condition"),
+                    ])
+                    .expect("valid clone rule"),
+                ],
+            ),
+        ]
+        .into_iter()
+        .collect::<BTreeMap<_, _>>(),
+        SeccompAction::Allow,
+        SeccompAction::KillProcess,
+        arch,
+    )
+    .expect("build process-creation seccomp filter");
+    let deny_process_creation: BpfProgram = deny_process_creation
+        .try_into()
+        .expect("compile process-creation seccomp filter");
+    seccompiler::apply_filter(&deny_process_creation).expect("install process-creation filter");
+
+    // libc may probe clone3 before falling back to clone for threads. Return
+    // ENOSYS there; the clone rule above permits only CLONE_THREAD clones.
+    let disable_clone3 = SeccompFilter::new(
+        [(libc::SYS_clone3, vec![])].into_iter().collect(),
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::ENOSYS as u32),
+        arch,
+    )
+    .expect("build clone3 fallback filter");
+    let disable_clone3: BpfProgram = disable_clone3
+        .try_into()
+        .expect("compile clone3 fallback filter");
+    seccompiler::apply_filter(&disable_clone3).expect("install clone3 fallback filter");
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[tokio::test]
 #[ignore = "invoked by bootstrap_does_not_launch_local_runtime_processes"]
 async fn bootstrap_process_probe_child() {
@@ -263,6 +329,11 @@ async fn bootstrap_process_probe_child() {
         .expect("parent test passes the mock endpoint");
     let config = opted_in(&base);
     let service = LocalAiService::new(&config);
+
+    install_process_creation_guard();
+    std::thread::spawn(|| ())
+        .join()
+        .expect("process guard must continue to allow threads");
 
     service
         .diagnostics(&config)

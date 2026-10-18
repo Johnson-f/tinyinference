@@ -106,6 +106,10 @@ fn distinguishes_a_reported_zero_charge_from_missing_billing() {
         Usage::default(),
         serde_json::json!({ "openhuman": { "usage": { "context_window": 8192 } } }),
     ));
+    let billing_without_amount = project_tinyhumans_envelope(response(
+        Usage::default(),
+        serde_json::json!({ "openhuman": { "billing": {} } }),
+    ));
 
     assert_eq!(
         recover_usage(&free_call)
@@ -118,5 +122,11 @@ fn distinguishes_a_reported_zero_charge_from_missing_billing() {
             .expect("unbilled call has usage")
             .charged_amount_usd,
         None
+    );
+    assert_eq!(
+        recover_usage(&billing_without_amount)
+            .expect("billing block has usage")
+            .charged_amount_usd,
+        Some(0.0)
     );
 }

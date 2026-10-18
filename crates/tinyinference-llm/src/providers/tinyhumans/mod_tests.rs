@@ -141,11 +141,12 @@ async fn constructor_model_is_default_and_nonblank_request_model_overrides_it() 
         request.model = requested_model.map(str::to_owned);
         model.invoke(&(), request).await.unwrap();
     }
-    let requests = fixture.requests.lock().unwrap();
-    assert_eq!(requests[0].1["model"], "constructor-model");
-    assert_eq!(requests[1].1["model"], "request-model");
-    assert_eq!(requests[2].1["model"], "constructor-model");
-    drop(requests);
+    {
+        let requests = fixture.requests.lock().unwrap();
+        assert_eq!(requests[0].1["model"], "constructor-model");
+        assert_eq!(requests[1].1["model"], "request-model");
+        assert_eq!(requests[2].1["model"], "constructor-model");
+    }
 
     let fallback_model =
         TinyHumansModel::new(&base, "  ", "fallback-model", || Ok("token".into())).unwrap();
@@ -333,7 +334,7 @@ async fn readiness_fails_open_on_transport_failure() {
         .expect("transport errors fail open");
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn readiness_fails_open_after_its_timeout() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -349,11 +350,63 @@ async fn readiness_fails_open_after_its_timeout() {
     let model = fixture_model(&format!("http://{address}"));
     let probe = tokio::spawn(async move { model.probe_readiness().await });
     entered_rx.await.expect("probe request reached fixture");
+    tokio::time::pause();
     tokio::time::advance(Duration::from_secs(5)).await;
     probe
         .await
         .expect("probe task")
         .expect("probe timeout fails open");
+}
+
+async fn spawn_counting_relay(upstream: String) -> (String, Arc<AtomicUsize>) {
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind relay");
+    let address = listener.local_addr().expect("relay address");
+    let count = accepted.clone();
+    tokio::spawn(async move {
+        while let Ok((mut inbound, _)) = listener.accept().await {
+            count.fetch_add(1, Ordering::SeqCst);
+            let upstream = upstream.clone();
+            tokio::spawn(async move {
+                if let Ok(mut outbound) = tokio::net::TcpStream::connect(&upstream).await {
+                    let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                }
+            });
+        }
+    });
+    (format!("http://{address}"), accepted)
+}
+
+#[tokio::test]
+async fn consecutive_managed_calls_reuse_one_connection() {
+    let fixture = Fixture::default();
+    let upstream = serve(fixture.clone()).await;
+    let upstream = upstream
+        .strip_prefix("http://")
+        .expect("fixture uses http")
+        .to_owned();
+    let (relay, accepted) = spawn_counting_relay(upstream).await;
+    let model = fixture_model(&relay);
+
+    for _ in 0..3 {
+        model
+            .probe_readiness()
+            .await
+            .expect("managed readiness call");
+    }
+
+    assert_eq!(
+        fixture.requests.lock().unwrap().len(),
+        3,
+        "all three probes reach the upstream fixture"
+    );
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        1,
+        "three consecutive managed calls reuse one pooled connection"
+    );
 }
 
 #[tokio::test]

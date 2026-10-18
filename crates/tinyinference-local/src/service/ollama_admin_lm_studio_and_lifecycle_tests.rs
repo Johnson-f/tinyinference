@@ -94,6 +94,50 @@ async fn lm_studio_diagnostics_reports_loaded_chat_model() {
     assert_eq!(diag["ok"], true);
 }
 
+#[tokio::test]
+async fn lm_studio_diagnostics_reports_no_loaded_models() {
+    let _guard = crate::service::inference_test_guard();
+
+    let app = Router::new().route(
+        "/v1/models",
+        get(|| async { Json(json!({ "data": [] })) }),
+    );
+    let base = spawn_mock(app).await;
+    let config = lm_studio_config(&base);
+    let service = LocalAiService::new(&config);
+
+    let diag = service.diagnostics(&config).await.expect("diagnostics");
+
+    assert_eq!(diag["lm_studio_running"], true);
+    assert_eq!(diag["ok"], false);
+    assert!(diag["issues"].as_array().unwrap().iter().any(|issue| {
+        issue
+            .as_str()
+            .unwrap_or("")
+            .contains("LM Studio is reachable but no models are loaded")
+    }));
+}
+
+#[tokio::test]
+async fn lm_studio_diagnostics_reports_unreachable_server() {
+    let _guard = crate::service::inference_test_guard();
+
+    let config = lm_studio_config("http://127.0.0.1:1");
+    let service = LocalAiService::new(&config);
+
+    let diag = service.diagnostics(&config).await.expect("diagnostics");
+
+    assert_eq!(diag["provider"], "lm_studio");
+    assert_eq!(diag["lm_studio_running"], false);
+    assert_eq!(diag["ok"], false);
+    assert!(diag["issues"].as_array().unwrap().iter().any(|issue| {
+        issue
+            .as_str()
+            .unwrap_or("")
+            .contains("LM Studio server is not running or not reachable")
+    }));
+}
+
 /// Regression for GH #5053: a custom OpenAI-compatible BYOK endpoint on
 /// localhost (e.g. LM Studio at `http://localhost:1234/v1`) whose `provider`
 /// tag still defaults to `ollama` must be probed with `/v1/models`, NOT the

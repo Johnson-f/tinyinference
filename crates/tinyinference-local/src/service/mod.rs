@@ -24,6 +24,7 @@ mod vision_embed;
 use crate::status::LocalAiStatus;
 use parking_lot::Mutex;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 
 #[cfg(test)]
 static INFERENCE_TEST_MUTEX: once_cell::sync::Lazy<std::sync::Mutex<()>> =
@@ -134,6 +135,7 @@ impl crate::models::LocalModelConfig for RuntimeConfig {
 pub struct LocalAiService {
     pub(crate) status: Mutex<LocalAiStatus>,
     pub(crate) bootstrap_lock: tokio::sync::Mutex<()>,
+    pub(crate) bootstrap_scheduled: AtomicBool,
     pub(crate) last_memory_summary_at: Mutex<Option<std::time::Instant>>,
     pub(crate) http: reqwest::Client,
 }

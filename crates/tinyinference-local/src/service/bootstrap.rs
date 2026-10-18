@@ -11,6 +11,7 @@ use crate::provider::{
 };
 use crate::service::RuntimeConfig as Config;
 use crate::status::LocalAiStatus;
+use std::sync::{Arc, atomic::Ordering};
 
 use super::LocalAiService;
 use super::ollama_admin::OllamaHealthStatus;
@@ -27,6 +28,35 @@ enum EndpointProbe {
 }
 
 impl LocalAiService {
+    /// Schedules a background endpoint probe unless one is already pending.
+    ///
+    /// Unlike [`Self::bootstrap`], this method coalesces repeated requests
+    /// while a probe is running. Once the probe completes, another call can
+    /// schedule a fresh attempt, including after an unreachable result.
+    ///
+    /// Returns the spawned task when this call schedules it, or `None` when
+    /// another probe is already scheduled or no Tokio runtime is active.
+    pub fn schedule_bootstrap(
+        self: &Arc<Self>,
+        config: Config,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        if self
+            .bootstrap_scheduled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return None;
+        }
+
+        let guard = BootstrapScheduleGuard(Arc::clone(self));
+        let service = Arc::clone(self);
+        Some(runtime.spawn(async move {
+            let _guard = guard;
+            service.bootstrap(&config).await;
+        }))
+    }
+
     pub fn new(config: &Config) -> Self {
         let model_id = model_ids::effective_chat_model_id(config);
         let provider = provider_from_name(&config.local_ai.provider);
@@ -56,6 +86,7 @@ impl LocalAiService {
                 gen_toks_per_sec: None,
             }),
             bootstrap_lock: tokio::sync::Mutex::new(()),
+            bootstrap_scheduled: std::sync::atomic::AtomicBool::new(false),
             last_memory_summary_at: parking_lot::Mutex::new(None),
             http: reqwest::Client::builder()
                 // Local models can take >30s on cold start and first-token generation.
@@ -259,6 +290,14 @@ impl LocalAiService {
                 true
             }
         }
+    }
+}
+
+struct BootstrapScheduleGuard(Arc<LocalAiService>);
+
+impl Drop for BootstrapScheduleGuard {
+    fn drop(&mut self) {
+        self.0.bootstrap_scheduled.store(false, Ordering::Release);
     }
 }
 

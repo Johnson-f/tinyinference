@@ -60,6 +60,40 @@ async fn spawn_rejecting_endpoint() -> String {
     format!("http://127.0.0.1:{}", addr.port())
 }
 
+async fn spawn_counting_rejecting_endpoint(hits: Arc<AtomicUsize>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            hits.fetch_add(1, Ordering::SeqCst);
+            drop(stream);
+        }
+    });
+    format!("http://127.0.0.1:{}", addr.port())
+}
+
+async fn spawn_latched_endpoint() -> (
+    String,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        if let Ok((stream, _)) = listener.accept().await {
+            let _ = accepted_tx.send(());
+            let _stream = stream;
+            std::future::pending::<()>().await;
+        }
+    });
+    (
+        format!("http://127.0.0.1:{}", addr.port()),
+        accepted_rx,
+        task,
+    )
+}
+
 fn opted_in(base_url: &str) -> Config {
     let mut config = Config::default();
     config.local_ai.runtime_enabled = true;
@@ -170,6 +204,82 @@ async fn bootstrap_with_rejecting_endpoint_is_unreachable_promptly() {
         elapsed < std::time::Duration::from_secs(10),
         "probe must not wait on a spawned runtime (took {elapsed:?})"
     );
+}
+
+#[tokio::test]
+async fn rapid_bootstrap_burst_does_not_queue_unreachable_probes() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let config = opted_in(&spawn_counting_rejecting_endpoint(Arc::clone(&hits)).await);
+    let service = Arc::new(LocalAiService::new(&config));
+    let mut first_task = None;
+    for _ in 0..8 {
+        if let Some(task) = service.schedule_bootstrap(config.clone()) {
+            assert!(
+                first_task.replace(task).is_none(),
+                "only one probe is scheduled"
+            );
+        }
+    }
+    first_task
+        .expect("first poll schedules a probe")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "a burst of status polls must not queue redundant unreachable probes"
+    );
+
+    service
+        .schedule_bootstrap(config)
+        .expect("a fresh poll can retry after the unreachable probe completes")
+        .await
+        .unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn unpolled_scheduled_bootstrap_cancellation_releases_single_flight_guard() {
+    let config = opted_in(&unbound_base_url());
+    let service = Arc::new(LocalAiService::new(&config));
+    let task = service
+        .schedule_bootstrap(config)
+        .expect("first poll schedules a probe");
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let retry_config = opted_in(&spawn_counting_rejecting_endpoint(Arc::clone(&hits)).await);
+    service
+        .schedule_bootstrap(retry_config)
+        .expect("cancellation before first poll releases the guard")
+        .await
+        .unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cancelled_scheduled_bootstrap_releases_single_flight_guard() {
+    let (blocked_base, accepted, server) = spawn_latched_endpoint().await;
+    let config = opted_in(&blocked_base);
+    let service = Arc::new(LocalAiService::new(&config));
+    let task = service
+        .schedule_bootstrap(config)
+        .expect("first poll schedules a probe");
+    accepted.await.unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    server.abort();
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let retry_config = opted_in(&spawn_counting_rejecting_endpoint(Arc::clone(&hits)).await);
+    service
+        .schedule_bootstrap(retry_config)
+        .expect("cancellation releases the scheduling guard")
+        .await
+        .unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
 }
 
 /// Linux x86_64 process probes use seccomp to observe forbidden starts

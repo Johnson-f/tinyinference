@@ -177,6 +177,10 @@ pub fn bare_model_route(name: &str) -> String {
 /// slug as `owned_by`. Unqualified model ids are owned by the managed
 /// `openhuman` route. The suffix handling matches the existing `/v1` model
 /// catalog behavior, including values such as `NaN` and `inf`.
+///
+/// A colon-bearing input is interpreted as an explicit provider route, matching
+/// the host's `/v1` parser. Callers listing a bare `default_model` with a colon
+/// in its model id must retain that known managed-owner context themselves.
 #[must_use]
 pub fn route_owner(route: &str) -> (String, String) {
     let route = route.trim();

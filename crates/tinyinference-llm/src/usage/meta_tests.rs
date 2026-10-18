@@ -201,3 +201,53 @@ fn positive_submicro_provider_charge_keeps_rounding_to_zero_micros() {
         Some(ChargedAmount::usd_micros(0))
     );
 }
+
+#[test]
+fn billed_usage_keeps_submicro_usd_across_response_conversion() {
+    use crate::model::{ModelRequest, response_to_model_response};
+    use crate::providers::response::ChatResponse;
+    use crate::usage::{BilledUsage, billed_usage_report, usage_info_from_response};
+
+    let amount = 0.000000123_f64;
+    let billed = BilledUsage::from_counts(8, 3).with_charged_usd(amount);
+    let report = billed_usage_report(&billed);
+    let response = response_to_model_response(
+        &ChatResponse {
+            usage: Some(billed),
+            ..Default::default()
+        },
+        &ModelRequest::default(),
+    );
+
+    assert_eq!(report.charged_amount_usd.to_bits(), amount.to_bits());
+    assert_eq!(
+        response.usage.unwrap().charged_amount,
+        Some(ChargedAmount::usd_micros(0)),
+        "the legacy integer-micros projection stays available"
+    );
+    let recovered = usage_info_from_response(&response).expect("usage is present");
+    assert_eq!(recovered.charged_amount_usd.to_bits(), amount.to_bits());
+    assert!(recovered.charge_reported);
+    assert!(!recovered.cost_is_estimate);
+}
+
+#[test]
+fn estimated_billed_usage_does_not_become_a_reported_charge() {
+    use crate::model::{ModelRequest, response_to_model_response};
+    use crate::providers::response::ChatResponse;
+    use crate::usage::{BilledUsage, usage_info_from_response};
+
+    let estimate = BilledUsage::from_counts(8, 3).with_estimated_usd(0.25);
+    let response = response_to_model_response(
+        &ChatResponse {
+            usage: Some(estimate),
+            ..Default::default()
+        },
+        &ModelRequest::default(),
+    );
+
+    assert_eq!(response.usage.unwrap().charged_amount, None);
+    let recovered = usage_info_from_response(&response).expect("usage is present");
+    assert!(!recovered.charge_reported);
+    assert_eq!(recovered.charged_amount_usd, 0.0);
+}

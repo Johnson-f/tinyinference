@@ -31,6 +31,19 @@ const VALID_EMOTIONS: &[&str] = &[
 /// Known valence labels.
 const VALID_VALENCES: &[&str] = &["positive", "negative", "neutral"];
 
+/// Builds the provider-neutral prompt used to classify a user's sentiment.
+pub fn sentiment_prompt(message: &str) -> String {
+    format!(
+        "Classify the emotion and sentiment of this user message.\n\
+         Reply with EXACTLY three words separated by spaces:\n\
+         EMOTION VALENCE CONFIDENCE\n\
+         Where EMOTION is one of: joy, sadness, anger, surprise, fear, disgust, neutral\n\
+         VALENCE is one of: positive, negative, neutral\n\
+         CONFIDENCE is a number from 0.0 to 1.0\n\n\
+         User message: {message}"
+    )
+}
+
 /// Parse the model's 3-word response into a `SentimentResult`.
 /// Falls back to neutral on any parsing error.
 pub fn parse_sentiment_response(text: &str) -> SentimentResult {

@@ -20,6 +20,7 @@ pub mod discover;
 mod error_slot;
 mod fallback;
 mod finish_reason;
+mod response_conversion;
 mod types;
 pub mod workload;
 
@@ -38,6 +39,7 @@ pub use decorators::*;
 pub use error_slot::{ErrorSlotModel, ModelErrorSlot};
 pub use fallback::FallbackModel;
 pub use finish_reason::{FINISH_REASON_LENGTH, canonical_finish_reason};
+pub use response_conversion::response_to_model_response;
 pub use types::*;
 
 /// How a context-window pattern is matched against a model id.

@@ -29,7 +29,7 @@ fn reasoning_budget_reserves_visible_output_room() {
     );
     assert_eq!(
         high.clone().with_output_room(Some(1_861)).budget_tokens,
-        Some(1_023)
+        None
     );
     assert_eq!(
         high.clone().with_output_room(Some(1_862)).budget_tokens,
@@ -97,7 +97,7 @@ fn response_conversion_parses_advertised_pformat_tools_and_strips_markup() {
         }),
     )]);
     let response = ChatResponse::<BilledUsage, NativeToolCall> {
-        text: Some("Before. <tool_call>lookup[27|bird]</tool_call> After.".into()),
+        text: Some("Before. <tool_call>lookup[0|27|1|bird]</tool_call> After.".into()),
         ..Default::default()
     };
 

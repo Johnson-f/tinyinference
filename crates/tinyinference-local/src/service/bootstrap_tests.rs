@@ -97,6 +97,29 @@ async fn bootstrap_against_reachable_endpoint_is_ready_without_pulling() {
     );
 }
 
+#[tokio::test]
+async fn ready_status_is_retained_until_reset_to_idle() {
+    let _guard = crate::service::inference_test_guard();
+
+    let forbidden = Arc::new(AtomicUsize::new(0));
+    let reachable_base = spawn_counting_ollama(Arc::clone(&forbidden)).await;
+    let reachable = opted_in(&reachable_base);
+    let unreachable = opted_in(&unbound_base_url());
+    let service = LocalAiService::new(&reachable);
+
+    service.bootstrap(&reachable).await;
+    assert_eq!(service.status().state, "ready");
+
+    // A ready state remains authoritative until the host explicitly resets it.
+    service.bootstrap(&unreachable).await;
+    assert_eq!(service.status().state, "ready");
+
+    service.reset_to_idle(&unreachable);
+    service.bootstrap(&unreachable).await;
+    assert_eq!(service.status().state, "unreachable");
+    assert_eq!(forbidden.load(Ordering::SeqCst), 0);
+}
+
 /// Regression: with nothing listening, bootstrap reports `unreachable` and
 /// does not try to start a runtime (it returns promptly and the endpoint is
 /// still not listening afterwards).

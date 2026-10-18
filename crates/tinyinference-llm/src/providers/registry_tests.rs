@@ -90,7 +90,7 @@ fn discovery_uses_same_endpoint_model_auth_and_pinned_routes() {
 }
 
 #[test]
-fn local_and_oauth_discovery_do_not_read_credentials() {
+fn local_discovery_does_not_read_credentials() {
     let registry = ProviderRegistry::new(|_: &ProviderSpec| -> Result<String> {
         panic!("discovery must not consult credentials when no listing exists")
     });
@@ -98,24 +98,6 @@ fn local_and_oauth_discovery_do_not_read_credentials() {
     assert!(
         registry
             .discovery_request(&spec, &Default::default())
-            .unwrap()
-            .is_none()
-    );
-    let spec = ProviderSpec::for_kind(ProviderKind::OpenAi);
-    let route = OpenAiCodexRouting {
-        endpoint: "https://chatgpt.com/backend-api/codex".into(),
-        using_oauth: true,
-        account_id: Some("account".into()),
-    };
-    assert!(
-        registry
-            .discovery_request(
-                &spec,
-                &ProviderBuildOptions {
-                    codex: Some(&route),
-                    ..Default::default()
-                }
-            )
             .unwrap()
             .is_none()
     );

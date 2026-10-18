@@ -205,7 +205,21 @@ async fn bootstrap_does_not_launch_local_runtime_processes() {
     assert!(marker.exists(), "the fake runtime must create its marker");
     std::fs::remove_file(&marker).expect("clear canary marker");
 
-    let base = spawn_counting_ollama(Arc::new(AtomicUsize::new(0))).await;
+    let healthy_base = spawn_counting_ollama(Arc::new(AtomicUsize::new(0))).await;
+    run_process_probe_child(scripts.path(), &marker, &healthy_base, "ready").await;
+
+    let rejecting_base = spawn_rejecting_endpoint().await;
+    run_process_probe_child(scripts.path(), &marker, &rejecting_base, "unreachable").await;
+}
+
+#[cfg(unix)]
+async fn run_process_probe_child(
+    scripts_dir: &std::path::Path,
+    spawn_marker: &std::path::Path,
+    base: &str,
+    expected_state: &str,
+) {
+    let completion_marker = scripts_dir.join(format!("child-completed-{expected_state}.marker"));
     let output = tokio::process::Command::new(std::env::current_exe().expect("test executable"))
         .args([
             "--exact",
@@ -213,13 +227,11 @@ async fn bootstrap_does_not_launch_local_runtime_processes() {
             "--ignored",
             "--nocapture",
         ])
-        .env("PATH", scripts.path())
+        .env("PATH", scripts_dir)
         .env("TINYINFERENCE_BOOTSTRAP_BASE_URL", base)
-        .env("TINYINFERENCE_SPAWN_MARKER", &marker)
-        .env(
-            "TINYINFERENCE_CHILD_COMPLETED",
-            scripts.path().join("child-completed.marker"),
-        )
+        .env("TINYINFERENCE_SPAWN_MARKER", spawn_marker)
+        .env("TINYINFERENCE_CHILD_COMPLETED", &completion_marker)
+        .env("TINYINFERENCE_EXPECTED_STATE", expected_state)
         .env_remove("OPENHUMAN_OLLAMA_BASE_URL")
         .env_remove("OLLAMA_BIN")
         .env_remove("PIPER_BIN")
@@ -230,16 +242,16 @@ async fn bootstrap_does_not_launch_local_runtime_processes() {
 
     assert!(
         output.status.success(),
-        "child bootstrap test failed: {}",
+        "child bootstrap test failed for expected {expected_state}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        scripts.path().join("child-completed.marker").exists(),
+        completion_marker.exists(),
         "the exact child test must run through diagnostics and bootstrap"
     );
     assert!(
-        !marker.exists(),
-        "bootstrap must not launch a runtime, even one that exits immediately"
+        !spawn_marker.exists(),
+        "bootstrap must not launch a runtime when the endpoint is {expected_state}"
     );
 }
 
@@ -258,7 +270,10 @@ async fn bootstrap_process_probe_child() {
         .expect("diagnostics should succeed against the mock endpoint");
     service.bootstrap(&config).await;
 
-    assert_eq!(service.status().state, "ready");
+    assert_eq!(
+        service.status().state,
+        std::env::var("TINYINFERENCE_EXPECTED_STATE").expect("parent passes expected state")
+    );
     std::fs::write(
         std::env::var("TINYINFERENCE_CHILD_COMPLETED").expect("parent passes completion marker"),
         "completed",

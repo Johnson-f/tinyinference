@@ -46,6 +46,7 @@ mod types;
 pub mod anthropic;
 pub mod omission;
 pub mod openai;
+pub mod tinyhumans;
 // #[cfg(feature = "ollama")]    pub mod ollama;
 
 pub use types::*;

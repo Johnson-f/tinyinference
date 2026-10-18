@@ -101,6 +101,36 @@ async fn diagnostics_reports_server_unreachable_when_url_unbound() {
 }
 
 #[tokio::test]
+async fn diagnostics_reports_server_error_from_model_listing() {
+    let _guard = crate::service::inference_test_guard();
+
+    let app = Router::new().route(
+        "/api/tags",
+        get(|| async {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "model listing failed",
+            )
+        }),
+    );
+    let base = spawn_mock(app).await;
+    let mut config = Config::default();
+    config.local_ai.base_url = Some(base);
+    let service = LocalAiService::new(&config);
+
+    let diag = service.diagnostics(&config).await.expect("diagnostics");
+
+    assert_eq!(diag["ollama_running"], false);
+    assert_eq!(diag["ok"], false);
+    assert!(diag["issues"].as_array().unwrap().iter().any(|issue| {
+        issue
+            .as_str()
+            .unwrap_or("")
+            .contains("not running or not reachable")
+    }));
+}
+
+#[tokio::test]
 async fn diagnostics_with_running_server_but_missing_models_flags_issues() {
     let _guard = crate::service::inference_test_guard();
 
@@ -147,21 +177,26 @@ async fn diagnostics_with_running_server_but_missing_models_flags_issues() {
 async fn diagnostics_ok_when_expected_models_are_present() {
     let _guard = crate::service::inference_test_guard();
 
-    let config = Config::default();
+    let mut config = Config::default();
+    config.local_ai.vision_model_id = "llava:latest".to_string();
     let chat = crate::models::effective_chat_model_id(&config);
     let embedding = crate::models::effective_embedding_model_id(&config);
+    let vision = crate::models::effective_vision_model_id(&config);
     let chat_tag = format!("{}:latest", chat);
     let embed_tag = format!("{}:latest", embedding);
+    let vision_tag = format!("{}:latest", vision);
     let app = Router::new().route(
         "/api/tags",
         get(move || {
             let chat_tag = chat_tag.clone();
             let embed_tag = embed_tag.clone();
+            let vision_tag = vision_tag.clone();
             async move {
                 Json(json!({
                     "models": [
                         { "name": chat_tag, "modified_at": "", "size": 1u64, "digest": "d" },
                         { "name": embed_tag, "modified_at": "", "size": 2u64, "digest": "e" },
+                        { "name": vision_tag, "modified_at": "", "size": 3u64, "digest": "v" },
                     ]
                 }))
             }
@@ -177,6 +212,7 @@ async fn diagnostics_ok_when_expected_models_are_present() {
     assert_eq!(diag["ollama_running"], true);
     assert_eq!(diag["expected"]["chat_found"], true);
     assert_eq!(diag["expected"]["embedding_found"], true);
+    assert_eq!(diag["expected"]["vision_found"], true);
     assert!(diag["ollama_base_url"].as_str().is_some());
     // All required models present → no issues and no repair actions.
     let issues = diag["issues"].as_array().cloned().unwrap_or_default();

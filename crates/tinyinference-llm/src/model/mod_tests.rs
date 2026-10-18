@@ -45,12 +45,26 @@ fn reasoning_budget_reserves_visible_output_room() {
 }
 
 #[test]
+fn response_shapes_are_available_from_the_model_module() {
+    use crate::model::{ChatResponse, ProviderDelta};
+
+    let response: ChatResponse = ChatResponse::default();
+    assert!(response.text.is_none());
+    let ProviderDelta::TextDelta { delta } = (ProviderDelta::TextDelta {
+        delta: String::new(),
+    }) else {
+        panic!("text delta variant expected");
+    };
+    assert!(delta.is_empty());
+}
+
+#[test]
 fn response_conversion_keeps_native_calls_and_thinking_content() {
     use crate::providers::response::ChatResponse;
     use tinytools_agent::dialect::NativeToolCall;
 
     let response = ChatResponse {
-        text: Some("visible".into()),
+        text: Some("visible <tool_call>known_tool[0|7]</tool_call>".into()),
         tool_calls: vec![NativeToolCall {
             id: "provider-id".into(),
             name: "unknown_tool".into(),
@@ -63,17 +77,20 @@ fn response_conversion_keeps_native_calls_and_thinking_content() {
     let request = ModelRequest::new(vec![]).with_tools(vec![ToolSchema::new(
         "known_tool",
         "known",
-        json!({"type":"object"}),
+        json!({"type":"object","properties":{"value":{"type":"integer"}}}),
     )]);
 
     let converted = response_to_model_response(&response, &request);
-    assert_eq!(converted.text(), "visible");
+    assert_eq!(
+        converted.text(),
+        "visible <tool_call>known_tool[0|7]</tool_call>"
+    );
     assert_eq!(converted.message.tool_calls[0].id, "provider-id");
     assert_eq!(converted.message.tool_calls[0].name, "unknown_tool");
     assert_eq!(
         converted.message.content,
         vec![
-            ContentBlock::Text("visible".into()),
+            ContentBlock::Text("visible <tool_call>known_tool[0|7]</tool_call>".into()),
             ContentBlock::Thinking {
                 text: "  private reasoning  ".into(),
                 signature: None,
@@ -109,7 +126,7 @@ fn response_conversion_parses_advertised_pformat_tools_and_strips_markup() {
         converted.message.tool_calls[0].arguments,
         json!({"id":27,"query":"bird"})
     );
-    assert_eq!(converted.text(), "Before.  After.");
+    assert_eq!(converted.text(), "Before.\nAfter.");
 }
 
 #[test]

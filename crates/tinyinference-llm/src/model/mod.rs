@@ -35,6 +35,7 @@ use crate::message::{AssistantMessage, ContentBlock, Message};
 use crate::tool::{ToolCall, ToolSchema};
 use crate::usage::Usage;
 
+pub use crate::providers::response::{ChatResponse, ProviderDelta};
 pub use decorators::*;
 pub use error_slot::{ErrorSlotModel, ModelErrorSlot};
 pub use fallback::FallbackModel;

@@ -42,10 +42,6 @@ pub struct ModelRequestDefaults {
     pub temperature: Option<f64>,
 }
 
-#[cfg(test)]
-#[path = "decorators_tests.rs"]
-mod tests;
-
 impl ModelRequestDefaults {
     /// Applies defaults without replacing caller-supplied values.
     #[must_use]
@@ -500,3 +496,7 @@ impl<State: Send + Sync> ChatModel<State> for ObservingModel<State> {
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "decorators_tests.rs"]
+mod tests;

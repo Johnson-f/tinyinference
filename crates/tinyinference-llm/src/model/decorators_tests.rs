@@ -2,8 +2,10 @@ use super::*;
 
 #[test]
 fn without_reasoning_sets_the_existing_metadata_hint_without_dropping_metadata() {
-    let mut request = ModelRequest::default();
-    request.metadata = serde_json::json!({"caller": "kept"});
+    let request = ModelRequest {
+        metadata: serde_json::json!({"caller": "kept"}),
+        ..ModelRequest::default()
+    };
 
     let request = without_reasoning(request);
     assert_eq!(request.metadata["caller"], "kept");
@@ -15,8 +17,10 @@ fn without_reasoning_sets_the_existing_metadata_hint_without_dropping_metadata()
 
 #[test]
 fn without_reasoning_replaces_non_object_metadata_with_the_hint() {
-    let mut request = ModelRequest::default();
-    request.metadata = serde_json::Value::Null;
+    let request = ModelRequest {
+        metadata: serde_json::Value::Null,
+        ..ModelRequest::default()
+    };
 
     let request = without_reasoning(request);
     assert_eq!(

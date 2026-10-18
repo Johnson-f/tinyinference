@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use crate::catalog::append_query_param;
 use crate::model::ChatModel;
 use crate::model::discover::{DiscoveryRequest, pinned_openrouter_providers};
 use crate::{Error, Result};
@@ -305,14 +306,16 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
 
     /// Builds a listing request with the same endpoint, model and credentials
     /// as construction. Ollama enables native /api/show limit discovery. Other
-    /// local families and Codex OAuth return None without reading credentials.
+    /// local families return None; Codex OAuth carries its listing URL and
+    /// protocol headers in the returned request.
     ///
-    /// Extra headers are retained; query parameters and user-agent settings
-    /// describe inference transport and are not copied into listing requests.
+    /// Extra headers are retained. For Codex OAuth listings, extra query
+    /// parameters and the supplied user-agent are also carried to the listing
+    /// request; other providers do not copy inference query parameters.
     ///
     /// # Errors
     /// Returns configuration/credential errors for discoverable routes. Local
-    /// families other than Ollama and OAuth routes do not consult credentials.
+    /// families other than Ollama do not consult credentials.
     pub fn discovery_request(
         &self,
         spec: &ProviderSpec,
@@ -320,7 +323,6 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
     ) -> Result<Option<DiscoveryRequest>> {
         if (is_local(&spec.kind) && spec.kind != ProviderKind::Ollama)
             || options.local_compatible.is_some()
-            || options.codex.is_some_and(|route| route.using_oauth)
         {
             return Ok(None);
         }
@@ -329,6 +331,26 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
         let endpoint = effective_endpoint(spec, options).trim();
         let model = spec.model.trim();
         let mut request = DiscoveryRequest::new(endpoint, model);
+        if let Some(route) = options.codex.filter(|route| route.using_oauth) {
+            let mut listing_url = format!("{}/models", endpoint.trim_end_matches('/'));
+            for (name, value) in options.extra_query_params {
+                listing_url = append_query_param(&listing_url, name, value);
+            }
+            request = request.with_listing_url(listing_url);
+            if let Some(account_id) = route.account_id.as_deref() {
+                request = request.with_header(
+                    super::openai::codex::OPENAI_CODEX_ACCOUNT_HEADER,
+                    account_id,
+                );
+            }
+            request = request.with_header(
+                super::openai::codex::OPENAI_CODEX_ORIGINATOR_HEADER,
+                super::openai::codex::OPENAI_CODEX_ORIGINATOR,
+            );
+            if let Some(user_agent) = options.user_agent {
+                request = request.with_header("User-Agent", user_agent);
+            }
+        }
         if spec.kind == ProviderKind::Ollama {
             request = request.with_ollama_native(true);
         }

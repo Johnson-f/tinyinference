@@ -80,3 +80,19 @@ fn model_discovery_api_uses_v1_models_for_openai_compatible() {
         ModelDiscoveryApi::OpenAiModels
     );
 }
+
+#[test]
+fn local_runtime_models_endpoint_selects_ollama_and_lm_studio_paths() {
+    assert_eq!(
+        local_runtime_models_endpoint("ollama", "http://localhost:11434/"),
+        Some("http://localhost:11434/v1/models".to_string())
+    );
+    assert_eq!(
+        local_runtime_models_endpoint("lm_studio", "http://localhost:1234/v1/"),
+        Some("http://localhost:1234/v1/models".to_string())
+    );
+    assert_eq!(
+        local_runtime_models_endpoint("anthropic", "https://api.example/v1"),
+        None
+    );
+}

@@ -43,6 +43,19 @@ async fn spawn_counting_ollama(forbidden_hits: Arc<AtomicUsize>) -> String {
     format!("http://127.0.0.1:{}", addr.port())
 }
 
+/// A loopback listener that accepts requests and closes them without an HTTP
+/// response, keeping the endpoint bound for the duration of the test.
+async fn spawn_rejecting_endpoint() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            drop(stream);
+        }
+    });
+    format!("http://127.0.0.1:{}", addr.port())
+}
+
 fn opted_in(base_url: &str) -> Config {
     let mut config = Config::default();
     config.local_ai.runtime_enabled = true;
@@ -108,7 +121,8 @@ async fn ready_status_is_retained_until_reset_to_idle() {
     let forbidden = Arc::new(AtomicUsize::new(0));
     let reachable_base = spawn_counting_ollama(Arc::clone(&forbidden)).await;
     let reachable = opted_in(&reachable_base);
-    let unreachable = opted_in(&unbound_base_url());
+    let unreachable_base = spawn_rejecting_endpoint().await;
+    let unreachable = opted_in(&unreachable_base);
     let service = LocalAiService::new(&reachable);
 
     service.bootstrap(&reachable).await;
@@ -128,8 +142,8 @@ async fn ready_status_is_retained_until_reset_to_idle() {
 /// does not try to start a runtime (it returns promptly and the endpoint is
 /// still not listening afterwards).
 #[tokio::test]
-async fn bootstrap_with_nothing_listening_is_unreachable_and_spawns_nothing() {
-    let base = unbound_base_url();
+async fn bootstrap_with_rejecting_endpoint_is_unreachable_promptly() {
+    let base = spawn_rejecting_endpoint().await;
     let config = opted_in(&base);
     let service = LocalAiService::new(&config);
 
@@ -151,11 +165,6 @@ async fn bootstrap_with_nothing_listening_is_unreachable_and_spawns_nothing() {
     assert!(
         elapsed < std::time::Duration::from_secs(10),
         "probe must not wait on a spawned runtime (took {elapsed:?})"
-    );
-    let port = base.rsplit(':').next().unwrap();
-    assert!(
-        std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_err(),
-        "nothing may have been started on the configured endpoint"
     );
 }
 

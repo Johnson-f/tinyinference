@@ -150,3 +150,54 @@ fn estimated_or_unreported_cost_never_becomes_a_charged_amount() {
         assert_eq!(usage.charged_amount.is_some(), expect_charge);
     }
 }
+
+#[test]
+fn provider_reported_zero_charge_is_preserved_as_a_free_call() {
+    let report = ProviderUsageReport {
+        charged_amount_usd: 0.0,
+        charge_reported: true,
+        cost_is_estimate: false,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        report.to_usage().charged_amount,
+        Some(ChargedAmount::usd_micros(0))
+    );
+    assert_eq!(
+        report.raw_meta(),
+        Some(serde_json::json!({
+            "openhuman_usage_meta": {"charged_amount_usd": 0.0, "context_window": 0}
+        }))
+    );
+}
+
+#[test]
+fn invalid_provider_charges_are_not_recorded_or_stashed() {
+    for amount in [-0.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let report = ProviderUsageReport {
+            charged_amount_usd: amount,
+            charge_reported: true,
+            cost_is_estimate: false,
+            ..Default::default()
+        };
+
+        assert_eq!(report.to_usage().charged_amount, None);
+        assert_eq!(report.raw_meta(), None);
+    }
+}
+
+#[test]
+fn positive_submicro_provider_charge_keeps_rounding_to_zero_micros() {
+    let report = ProviderUsageReport {
+        charged_amount_usd: 0.0000001,
+        charge_reported: true,
+        cost_is_estimate: false,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        report.to_usage().charged_amount,
+        Some(ChargedAmount::usd_micros(0))
+    );
+}

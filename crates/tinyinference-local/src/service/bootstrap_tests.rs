@@ -341,15 +341,6 @@ async fn bootstrap_process_probe_child() {
         .expect("diagnostics should succeed against the mock endpoint");
     service.bootstrap(&config).await;
 
-    if service.status().state == "unreachable" {
-        std::process::Command::new("ollama")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("mutant detached startup should find fake runtime");
-    }
-
     assert_eq!(
         service.status().state,
         std::env::var("TINYINFERENCE_EXPECTED_STATE").expect("parent passes expected state")

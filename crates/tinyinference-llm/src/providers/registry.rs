@@ -101,8 +101,9 @@ pub struct ProviderBuildOptions<'a> {
     /// Ollama context setup policy. Defaults to native setup; CompatibleOnly
     /// preserves hosts that historically used the compatible wire exclusively.
     pub ollama_context_mode: OllamaContextMode,
-    /// Resolved Codex routing. OAuth endpoints have no discoverable listing.
-    /// The host supplies any account/originator headers and client identity.
+    /// Resolved Codex routing. OAuth listings use the Codex `/models` endpoint;
+    /// the host supplies `client_version` through `extra_query_params`, and any
+    /// user-agent identity through `user_agent`.
     pub codex: Option<&'a OpenAiCodexRouting>,
     /// HTTP client carrying host TLS/proxy policy.
     pub http: Option<reqwest::Client>,

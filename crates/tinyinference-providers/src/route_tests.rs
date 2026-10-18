@@ -58,6 +58,18 @@ fn route_kind_classifies_managed_local_subprocess_and_cloud_routes() {
             "local_openai:llama",
             RouteKind::Local(LocalProviderKind::LocalOpenai),
         ),
+        (
+            "llamacpp:model",
+            RouteKind::Local(LocalProviderKind::LocalOpenai),
+        ),
+        (
+            "llama.cpp:model",
+            RouteKind::Local(LocalProviderKind::LocalOpenai),
+        ),
+        (
+            "vllm:model",
+            RouteKind::Local(LocalProviderKind::LocalOpenai),
+        ),
         ("claude-code:sonnet", RouteKind::ClaudeCode),
         ("claude_agent_sdk:sonnet", RouteKind::ClaudeAgentSdk),
         ("claude-agent-sdk:sonnet", RouteKind::ClaudeAgentSdk),
@@ -65,6 +77,12 @@ fn route_kind_classifies_managed_local_subprocess_and_cloud_routes() {
             "My-Provider:model",
             RouteKind::Cloud {
                 slug: "My-Provider".to_owned(),
+            },
+        ),
+        (
+            "openai:model",
+            RouteKind::Cloud {
+                slug: "openai".to_owned(),
             },
         ),
         ("cloud:model", RouteKind::Sentinel),
@@ -85,6 +103,9 @@ fn external_route_classification_excludes_managed_and_sentinel_routes() {
         ("local-openai:model", false),
         ("local_openai:model", false),
         ("custom-openai:model", false),
+        ("llamacpp:model", false),
+        ("llama.cpp:model", false),
+        ("vllm:model", false),
         ("claude-code:sonnet", true),
         ("claude_agent_sdk:sonnet", true),
         ("claude-agent-sdk:sonnet", true),
@@ -129,11 +150,23 @@ fn bare_model_routes_default_to_ollama_and_owner_uses_route_slug() {
         ("bare-model".to_owned(), "openhuman".to_owned())
     );
     assert_eq!(
-        route_owner("acme:model@0.7"),
-        ("acme:model".to_owned(), "acme".to_owned())
+        route_owner("acme:org/model:tag@0.7"),
+        ("acme:org/model:tag".to_owned(), "acme".to_owned())
     );
     assert_eq!(
         route_owner("acme:model@beta"),
         ("acme:model@beta".to_owned(), "acme".to_owned())
+    );
+    assert_eq!(
+        route_owner("gpt-4o@0.7"),
+        ("gpt-4o".to_owned(), "openhuman".to_owned())
+    );
+    assert_eq!(
+        route_owner("gpt-4o@NaN"),
+        ("gpt-4o".to_owned(), "openhuman".to_owned())
+    );
+    assert_eq!(
+        route_owner("gpt-4o@beta"),
+        ("gpt-4o@beta".to_owned(), "openhuman".to_owned())
     );
 }

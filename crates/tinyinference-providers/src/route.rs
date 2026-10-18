@@ -37,9 +37,8 @@ impl LocalProviderKind {
             "lmstudio" | "lm-studio" | "lm_studio" => Some(Self::LmStudio),
             "mlx" | "mlx-server" | "mlx_lm" => Some(Self::Mlx),
             "omlx" | "omlx-server" => Some(Self::Omlx),
-            "local-openai" | "local_openai" | "custom-openai" | "custom_openai" => {
-                Some(Self::LocalOpenai)
-            }
+            "local-openai" | "local_openai" | "custom-openai" | "custom_openai" | "llamacpp"
+            | "llama.cpp" | "vllm" => Some(Self::LocalOpenai),
             _ => None,
         }
     }
@@ -173,19 +172,34 @@ pub fn bare_model_route(name: &str) -> String {
 
 /// Returns the model id and provider owner represented by a route.
 ///
-/// Explicit routes keep their complete model id and use their provider slug as
-/// `owned_by`. An unqualified model is owned by the managed `openhuman` route.
+/// Explicit routes keep their provider prefix and model namespace/tag, remove
+/// a trailing suffix accepted by Rust's `f64` parser, and use their provider
+/// slug as `owned_by`. Unqualified model ids are owned by the managed
+/// `openhuman` route. The suffix handling matches the existing `/v1` model
+/// catalog behavior, including values such as `NaN` and `inf`.
 #[must_use]
 pub fn route_owner(route: &str) -> (String, String) {
-    ProviderRoute::parse(route).map_or_else(
-        || (route.trim().to_owned(), "openhuman".to_owned()),
-        |parsed| {
-            (
-                format!("{}:{}", parsed.provider, parsed.model),
-                parsed.provider,
-            )
-        },
-    )
+    let route = route.trim();
+    let (id, owned_by) = match route.split_once(':') {
+        Some((provider, model)) => (
+            format!("{}:{}", provider.trim(), strip_temperature_suffix(model)),
+            provider.trim(),
+        ),
+        None => (strip_temperature_suffix(route).to_owned(), "openhuman"),
+    };
+    (id, owned_by.to_owned())
+}
+
+fn strip_temperature_suffix(model: &str) -> &str {
+    let trimmed = model.trim();
+    let Some((head, tail)) = trimmed.rsplit_once('@') else {
+        return trimmed;
+    };
+    if tail.parse::<f64>().is_ok() {
+        head.trim()
+    } else {
+        trimmed
+    }
 }
 
 /// Parse a `<model>[@<temp>]` tail into `(model, override)`.

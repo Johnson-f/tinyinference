@@ -98,10 +98,7 @@ async fn lm_studio_diagnostics_reports_loaded_chat_model() {
 async fn lm_studio_diagnostics_reports_no_loaded_models() {
     let _guard = crate::service::inference_test_guard();
 
-    let app = Router::new().route(
-        "/v1/models",
-        get(|| async { Json(json!({ "data": [] })) }),
-    );
+    let app = Router::new().route("/v1/models", get(|| async { Json(json!({ "data": [] })) }));
     let base = spawn_mock(app).await;
     let config = lm_studio_config(&base);
     let service = LocalAiService::new(&config);

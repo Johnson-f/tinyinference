@@ -251,6 +251,9 @@ async fn bootstrap_process_probe_child() {
     let config = opted_in(&base);
     let service = LocalAiService::new(&config);
 
+    Command::new("mlx_lm.generate")
+        .status()
+        .expect("mutant probe should find the fake generator");
     service
         .diagnostics(&config)
         .await

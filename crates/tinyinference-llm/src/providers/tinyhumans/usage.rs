@@ -21,7 +21,7 @@ struct EnvelopeUsage {
 #[derive(Debug, Default, serde::Deserialize)]
 struct EnvelopeBilling {
     #[serde(default)]
-    charged_amount_usd: f64,
+    charged_amount_usd: Option<f64>,
 }
 
 /// Projects `openhuman.{billing,usage}` into standard usage metadata.
@@ -37,7 +37,9 @@ pub fn project_tinyhumans_envelope(mut response: ModelResponse) -> ModelResponse
         .and_then(|raw| raw.get("openhuman"))
         .and_then(|value| serde_json::from_value(value.clone()).ok())
         .unwrap_or_default();
-    let charged = envelope.billing.map(|billing| billing.charged_amount_usd);
+    let charged = envelope
+        .billing
+        .and_then(|billing| billing.charged_amount_usd);
     let context_window = envelope
         .usage
         .as_ref()
@@ -53,3 +55,7 @@ pub fn project_tinyhumans_envelope(mut response: ModelResponse) -> ModelResponse
     response.raw = crate::usage::merge_usage_meta(response.raw, charged, context_window);
     response
 }
+
+#[cfg(test)]
+#[path = "usage_tests.rs"]
+mod tests;

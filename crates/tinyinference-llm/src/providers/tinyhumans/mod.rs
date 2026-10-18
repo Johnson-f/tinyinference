@@ -230,11 +230,11 @@ impl TinyHumansModel {
 #[async_trait]
 impl ChatModel<()> for TinyHumansModel {
     fn profile(&self) -> Option<&ModelProfile> {
-        self.model.profile()
+        <OpenAiModel as ChatModel<()>>::profile(&self.model)
     }
 
     fn supports_input(&self, modality: InputModality, mime: &str, source: InputSource) -> bool {
-        self.model.supports_input(modality, mime, source)
+        <OpenAiModel as ChatModel<()>>::supports_input(&self.model, modality, mime, source)
     }
 
     fn cache_identity(&self) -> Option<String> {

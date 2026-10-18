@@ -382,7 +382,7 @@ async fn spawn_counting_relay(upstream: String) -> (String, Arc<AtomicUsize>) {
 #[tokio::test]
 async fn consecutive_managed_calls_reuse_one_connection() {
     let fixture = Fixture::default();
-    let upstream = serve(fixture).await;
+    let upstream = serve(fixture.clone()).await;
     let upstream = upstream
         .strip_prefix("http://")
         .expect("fixture uses http")
@@ -397,6 +397,11 @@ async fn consecutive_managed_calls_reuse_one_connection() {
             .expect("managed readiness call");
     }
 
+    assert_eq!(
+        fixture.requests.lock().unwrap().len(),
+        3,
+        "all three probes reach the upstream fixture"
+    );
     assert_eq!(
         accepted.load(Ordering::SeqCst),
         1,

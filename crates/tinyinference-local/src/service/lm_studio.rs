@@ -21,6 +21,14 @@ impl LocalAiService {
         config: &Config,
     ) -> Result<Vec<OllamaModelTag>, String> {
         let base = lm_studio_base_url(config.local_ai.base_url.as_deref());
+        self.list_lm_studio_models_at(config, &base).await
+    }
+
+    pub(in crate::service) async fn list_lm_studio_models_at(
+        &self,
+        config: &Config,
+        base: &str,
+    ) -> Result<Vec<OllamaModelTag>, String> {
         let url = format!("{base}/models");
         let safe_base = tinyinference_core::sanitize::redact_url(&base);
         let safe_url = tinyinference_core::sanitize::redact_url(&url);

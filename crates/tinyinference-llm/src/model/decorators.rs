@@ -11,6 +11,25 @@ use super::{
 use crate::Result;
 use crate::usage::Usage;
 
+/// Metadata key whose `true` value asks an adapter to disable reasoning for
+/// one request. The managed provider maps it to its existing wire extension.
+pub const WITHOUT_REASONING_METADATA_KEY: &str = "openhuman_reasoning_off";
+
+/// Marks one request as not needing reasoning before its response.
+#[must_use]
+pub fn without_reasoning(mut request: ModelRequest) -> ModelRequest {
+    if !request.metadata.is_object() {
+        request.metadata = serde_json::Value::Object(serde_json::Map::new());
+    }
+    if let Some(metadata) = request.metadata.as_object_mut() {
+        metadata.insert(
+            WITHOUT_REASONING_METADATA_KEY.to_owned(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    request
+}
+
 /// Request defaults applied only when the caller leaves a field unset.
 ///
 /// This deliberately contains only model-boundary knobs. Provider credentials,
@@ -477,3 +496,7 @@ impl<State: Send + Sync> ChatModel<State> for ObservingModel<State> {
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "decorators_tests.rs"]
+mod tests;

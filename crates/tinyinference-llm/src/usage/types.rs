@@ -2,6 +2,99 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Provider usage with an exact USD charge and normalized token counts.
+///
+/// `charged_amount_usd` retains provider precision for hosts that persist
+/// fractional micro-dollar values. The normalized [`Usage`] projection keeps
+/// the existing integer-micros representation for compatibility.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BilledUsage {
+    /// Token counts and optional provider metadata.
+    pub usage: Usage,
+    /// Provider-reported or estimated amount in USD. Zero when unavailable.
+    pub charged_amount_usd: f64,
+    /// Whether the value is a local estimate rather than a provider charge.
+    pub cost_is_estimate: bool,
+    /// Whether a provider explicitly reported the charge, including zero.
+    pub charge_reported: bool,
+}
+
+impl BilledUsage {
+    /// Creates usage from input and output counts with no known charge.
+    pub fn from_counts(input_tokens: u64, output_tokens: u64) -> Self {
+        Self {
+            usage: Usage::new(input_tokens, output_tokens),
+            ..Self::default()
+        }
+    }
+
+    /// Returns cached input tokens.
+    pub fn cached_input_tokens(&self) -> u64 {
+        self.usage.cache_read_tokens
+    }
+
+    /// Returns the context window, or zero when it is unknown.
+    pub fn context_window(&self) -> u64 {
+        self.usage.context_window_tokens.unwrap_or(0)
+    }
+
+    /// Sets cached input tokens.
+    pub fn with_cached_input_tokens(mut self, tokens: u64) -> Self {
+        self.usage.cache_read_tokens = tokens;
+        self
+    }
+
+    /// Sets the context window; zero means unknown.
+    pub fn with_context_window(mut self, tokens: u64) -> Self {
+        self.usage.context_window_tokens = (tokens > 0).then_some(tokens);
+        self
+    }
+
+    /// Sets cache-creation tokens.
+    pub fn with_cache_creation_tokens(mut self, tokens: u64) -> Self {
+        self.usage.cache_creation_tokens = tokens;
+        self
+    }
+
+    /// Sets reasoning tokens.
+    pub fn with_reasoning_tokens(mut self, tokens: u64) -> Self {
+        self.usage.reasoning_tokens = tokens;
+        self
+    }
+
+    /// Sets an exact provider-reported USD charge. Zero is a known free call.
+    pub fn with_charged_usd(mut self, usd: f64) -> Self {
+        self.charged_amount_usd = usd;
+        self.cost_is_estimate = false;
+        self.charge_reported = true;
+        self
+    }
+
+    /// Sets a provider-reported charge when present; `None` leaves it unknown.
+    pub fn with_reported_charge(self, usd: Option<f64>) -> Self {
+        match usd {
+            Some(usd) => self.with_charged_usd(usd),
+            None => self,
+        }
+    }
+
+    /// Sets a local USD estimate, which is never projected as a provider charge.
+    pub fn with_estimated_usd(mut self, usd: f64) -> Self {
+        self.charged_amount_usd = usd;
+        self.cost_is_estimate = true;
+        self.charge_reported = false;
+        self
+    }
+}
+
+impl std::ops::Deref for BilledUsage {
+    type Target = Usage;
+
+    fn deref(&self) -> &Usage {
+        &self.usage
+    }
+}
+
 /// A provider-reported charge expressed in integer micro-units.
 ///
 /// The inference boundary carries the provider's measured charge but deliberately

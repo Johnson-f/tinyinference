@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::ModelResponse;
-use crate::usage::{ChargedAmount, Usage};
+use crate::usage::{BilledUsage, ChargedAmount, Usage};
 
 /// JSON key in `ModelResponse.raw` under which the metadata is stashed. It is a
 /// wire contract: payloads written under this key by earlier releases must keep
@@ -90,6 +90,22 @@ impl ProviderUsageReport {
     }
 }
 
+/// Converts billed usage to the provider-neutral report used by model responses.
+#[must_use]
+pub fn billed_usage_report(usage: &BilledUsage) -> ProviderUsageReport {
+    ProviderUsageReport {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cached_input_tokens: usage.cached_input_tokens(),
+        cache_creation_tokens: usage.cache_creation_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
+        charged_amount_usd: usage.charged_amount_usd,
+        charge_reported: usage.charge_reported,
+        cost_is_estimate: usage.cost_is_estimate,
+        context_window: usage.context_window(),
+    }
+}
+
 /// Merges the metadata into an existing `raw` value under [`USAGE_META_KEY`],
 /// preserving the wire JSON in an object `raw`, or creating a fresh object.
 /// A no-op (returns `raw` unchanged) when there is nothing to carry.
@@ -160,6 +176,22 @@ pub fn recover_usage(response: &ModelResponse) -> Option<RecoveredUsage> {
         charged_amount_usd: meta.charged_amount_usd,
         context_window: meta.context_window,
     })
+}
+
+/// Reconstructs billed usage from a model response, or returns `None` when it
+/// carried no usage. Exact USD metadata wins; legacy micros remain a fallback.
+#[must_use]
+pub fn usage_info_from_response(response: &ModelResponse) -> Option<BilledUsage> {
+    let recovered = recover_usage(response)?;
+    let usage = recovered.usage;
+    Some(
+        BilledUsage {
+            usage,
+            ..BilledUsage::default()
+        }
+        .with_context_window(recovered.context_window)
+        .with_reported_charge(recovered.charged_amount_usd),
+    )
 }
 
 #[cfg(test)]

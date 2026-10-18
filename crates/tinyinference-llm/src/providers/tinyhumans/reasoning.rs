@@ -2,10 +2,12 @@
 
 use serde_json::{Value, json};
 
-use crate::model::{ModelRequest, ReasoningConfig, ReasoningEffort};
+use crate::model::{
+    ModelRequest, ReasoningConfig, ReasoningEffort, WITHOUT_REASONING_METADATA_KEY,
+};
 
 /// Request metadata key used by callers to disable reasoning for one request.
-pub const REASONING_OFF_METADATA_KEY: &str = "openhuman_reasoning_off";
+pub use crate::model::WITHOUT_REASONING_METADATA_KEY as REASONING_OFF_METADATA_KEY;
 
 /// Applies the managed gateway's `reasoning` object to a request.
 ///
@@ -20,7 +22,7 @@ pub fn apply_reasoning(mut request: ModelRequest) -> ModelRequest {
     }
     let off = request
         .metadata
-        .get(REASONING_OFF_METADATA_KEY)
+        .get(WITHOUT_REASONING_METADATA_KEY)
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let neutral = request.reasoning.take();

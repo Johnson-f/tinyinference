@@ -192,7 +192,7 @@ async fn diagnostics_ok_when_expected_models_are_present() {
     let vision = crate::models::effective_vision_model_id(&config);
     let chat_tag = format!("{}:latest", chat);
     let embed_tag = format!("{}:latest", embedding);
-    let vision_tag = format!("{}:latest", vision);
+    let vision_tag = vision.clone();
     let app = Router::new().route(
         "/api/tags",
         get(move || {

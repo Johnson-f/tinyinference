@@ -86,7 +86,7 @@ async fn lm_studio_diagnostics_reports_loaded_chat_model() {
     let config = lm_studio_config(&base);
     let service = LocalAiService::new(&config);
 
-    let diag = service.diagnostics(&config).await.expect("diagnostics");
+    let diag = service.lm_studio_diagnostics_at(&config, &base).await;
 
     assert_eq!(diag["provider"].as_str(), Some("lm_studio"));
     assert_eq!(diag["lm_studio_running"], true);
@@ -116,13 +116,15 @@ async fn lm_studio_diagnostics_reports_no_loaded_models() {
 }
 
 #[tokio::test]
-async fn lm_studio_diagnostics_reports_unreachable_server() {
+async fn lm_studio_diagnostics_classifies_injected_transport_failure_as_unreachable() {
     let _guard = crate::service::inference_test_guard();
 
-    let config = lm_studio_config("http://127.0.0.1:1");
-    let service = LocalAiService::new(&config);
-
-    let diag = service.diagnostics(&config).await.expect("diagnostics");
+    let config = lm_studio_config("http://configured.invalid/v1");
+    let diag = LocalAiService::lm_studio_diagnostics_from_models_result(
+        &config,
+        "http://injected.invalid/v1",
+        Err("lm studio models request failed: injected connection refusal".to_string()),
+    );
 
     assert_eq!(diag["provider"], "lm_studio");
     assert_eq!(diag["lm_studio_running"], false);

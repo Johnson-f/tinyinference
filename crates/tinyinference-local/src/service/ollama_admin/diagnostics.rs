@@ -457,7 +457,23 @@ impl LocalAiService {
 
     async fn lm_studio_diagnostics(&self, config: &Config) -> Result<serde_json::Value, String> {
         let base_url = lm_studio_base_url(config.local_ai.base_url.as_deref());
-        let models_result = self.list_lm_studio_models(config).await;
+        Ok(self.lm_studio_diagnostics_at(config, &base_url).await)
+    }
+
+    async fn lm_studio_diagnostics_at(
+        &self,
+        config: &Config,
+        base_url: &str,
+    ) -> serde_json::Value {
+        let models_result = self.list_lm_studio_models_at(config, base_url).await;
+        Self::lm_studio_diagnostics_from_models_result(config, base_url, models_result)
+    }
+
+    fn lm_studio_diagnostics_from_models_result(
+        config: &Config,
+        base_url: &str,
+        models_result: Result<Vec<OllamaModelTag>, String>,
+    ) -> serde_json::Value {
         let (models, models_error, healthy) = match models_result {
             Ok(models) => (models, None, true),
             Err(err) => {
@@ -506,7 +522,7 @@ impl LocalAiService {
             "[local_ai] diagnostics"
         );
 
-        Ok(serde_json::json!({
+        serde_json::json!({
             "provider": "lm_studio",
             "lm_studio_running": healthy,
             "lm_studio_base_url": base_url,
@@ -525,6 +541,6 @@ impl LocalAiService {
             "issues": issues,
             "repair_actions": repair_actions,
             "ok": issues.is_empty(),
-        }))
+        })
     }
 }

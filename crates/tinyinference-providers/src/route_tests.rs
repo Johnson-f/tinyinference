@@ -92,7 +92,7 @@ fn route_kind_classifies_managed_local_subprocess_and_cloud_routes() {
 }
 
 #[test]
-fn external_route_classification_excludes_managed_and_sentinel_routes() {
+fn local_and_unresolved_sentinel_routes_are_not_external() {
     for (raw, expected) in [
         ("openhuman:model", true),
         ("cloud:model", false),

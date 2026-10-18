@@ -81,6 +81,40 @@ async fn inference_hits_ollama_chat_completions_and_returns_response() {
 }
 
 #[tokio::test]
+async fn summarize_and_inline_completion_use_local_inference() {
+    let _guard = crate::service::inference_test_guard();
+
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|Json(body): Json<serde_json::Value>| async move {
+            let prompt = body["messages"][1]["content"].as_str().unwrap_or_default();
+            let content = if prompt.starts_with("Summarize this text") {
+                "summary from mock"
+            } else {
+                "completion from mock"
+            };
+            Json(openai_response(content))
+        }),
+    );
+    let base = spawn_mock(app).await;
+    let mut config = enabled_config();
+    config.local_ai.base_url = Some(base);
+    let service = ready_service(&config);
+
+    let summary = service
+        .summarize(&config, "decisions and commitments", Some(16))
+        .await
+        .expect("summarize");
+    let completion = service
+        .inline_complete_interactive(&config, "OpenHuman is", "concise", None, &[], Some(16))
+        .await
+        .expect("inline completion");
+
+    assert_eq!(summary, "summary from mock");
+    assert_eq!(completion, "completion from mock");
+}
+
+#[tokio::test]
 async fn inference_errors_on_non_success_status() {
     let _guard = crate::service::inference_test_guard();
 

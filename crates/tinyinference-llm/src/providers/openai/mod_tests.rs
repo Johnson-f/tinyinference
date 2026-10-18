@@ -819,6 +819,15 @@ async fn sse_stream_parses_text_tool_calls_and_usage() {
         .filter(|item| matches!(item, ModelStreamItem::ToolCallDelta(_)))
         .count();
     assert_eq!(tool_deltas, 2);
+    assert!(
+        items
+            .iter()
+            .filter_map(|item| match item {
+                ModelStreamItem::ToolCallDelta(delta) => Some(delta.call_id.as_str()),
+                _ => None,
+            })
+            .all(|call_id| call_id == "call-1")
+    );
 
     // A usage delta was emitted.
     assert!(

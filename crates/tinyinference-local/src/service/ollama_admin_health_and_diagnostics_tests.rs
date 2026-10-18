@@ -162,9 +162,12 @@ async fn diagnostics_with_running_server_but_missing_models_flags_issues() {
             .any(|issue| issue.contains("is not installed; run `ollama pull ")),
         "missing-model issue should carry an `ollama pull` hint, got: {issues:?}"
     );
-    assert!(issues.iter().filter_map(|issue| issue.as_str()).any(|issue| {
-        issue.contains("Vision model `missing-vision`")
-    }));
+    assert!(
+        issues
+            .iter()
+            .filter_map(|issue| issue.as_str())
+            .any(|issue| { issue.contains("Vision model `missing-vision`") })
+    );
     let repair_actions = diag["repair_actions"]
         .as_array()
         .cloned()

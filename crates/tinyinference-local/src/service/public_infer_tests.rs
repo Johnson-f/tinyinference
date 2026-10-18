@@ -106,14 +106,7 @@ async fn summarize_and_inline_completion_use_local_inference() {
         .await
         .expect("summarize");
     let completion = service
-        .inline_complete_interactive(
-            &config,
-            "OpenHuman is",
-            "concise",
-            None,
-            &[],
-            Some(16),
-        )
+        .inline_complete_interactive(&config, "OpenHuman is", "concise", None, &[], Some(16))
         .await
         .expect("inline completion");
 

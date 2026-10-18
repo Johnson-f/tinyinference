@@ -39,6 +39,44 @@ fn provider_failure_taxonomy_is_complete() {
 }
 
 #[test]
+fn host_session_expiry_predicate_can_override_retryable_status() {
+    let message = "host session token expired";
+    assert_eq!(
+        classify_provider_failure_with(Some(503), None, message, |value| {
+            value.contains("session token expired")
+        }),
+        ProviderFailureClass::NonRetryable
+    );
+}
+
+#[test]
+fn default_classifier_does_not_assign_host_session_expiry_meaning() {
+    let message = "host session token expired";
+    assert_eq!(
+        classify_provider_failure(Some(503), None, message),
+        ProviderFailureClass::UpstreamUnhealthy
+    );
+    assert_eq!(
+        classify_provider_failure_with(Some(503), None, message, |_| false),
+        ProviderFailureClass::UpstreamUnhealthy
+    );
+}
+
+#[test]
+fn context_and_quota_failures_remain_terminal_under_retryable_statuses() {
+    for message in [
+        "maximum context length is 8192 tokens",
+        "MONTHLY_REQUEST_COUNT quota exhausted",
+    ] {
+        assert_eq!(
+            classify_provider_failure(Some(503), None, message),
+            ProviderFailureClass::NonRetryable,
+            "{message}"
+        );
+    }
+}
+
+#[test]
 fn structured_status_takes_precedence_over_message_heuristics() {
     assert_eq!(
         classify_provider_failure(Some(400), None, "proxy said bad gateway"),

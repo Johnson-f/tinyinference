@@ -20,9 +20,14 @@ pub mod tool;
 pub mod usage;
 
 pub use error::{Error, Result};
+pub use failure::copy::{
+    FailureCopy, FailureCopyClass, FailureCopyProvider, default_failure_copy, failure_copy_with,
+};
+pub use failure::demotion::{DemotionKind, demote_decision};
 pub use failure::{
-    ProviderFailureClass, classify_provider_error, classify_provider_failure, parse_retry_after_ms,
-    provider_error_is_retryable, structured_http_status,
+    ProviderFailureClass, classify_provider_error, classify_provider_failure,
+    classify_provider_failure_with, parse_retry_after_ms, provider_error_is_retryable,
+    structured_http_status,
 };
 pub use message::{AssistantMessage, ContentBlock, Message, MessageDelta};
 pub use model::{

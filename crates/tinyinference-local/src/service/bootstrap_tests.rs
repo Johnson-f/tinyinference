@@ -194,7 +194,7 @@ async fn bootstrap_does_not_launch_local_runtime_processes() {
     assert!(marker.exists(), "the fake runtime must create its marker");
     std::fs::remove_file(&marker).expect("clear canary marker");
 
-    let (base, _forbidden) = spawn_counting_ollama(Arc::new(AtomicUsize::new(0))).await;
+    let base = spawn_counting_ollama(Arc::new(AtomicUsize::new(0))).await;
     let output = Command::new(std::env::current_exe().expect("test executable"))
         .args([
             "--exact",

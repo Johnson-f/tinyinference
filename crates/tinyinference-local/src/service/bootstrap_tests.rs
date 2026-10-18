@@ -195,7 +195,7 @@ async fn bootstrap_does_not_launch_local_runtime_processes() {
     std::fs::remove_file(&marker).expect("clear canary marker");
 
     let base = spawn_counting_ollama(Arc::new(AtomicUsize::new(0))).await;
-    let output = Command::new(std::env::current_exe().expect("test executable"))
+    let output = tokio::process::Command::new(std::env::current_exe().expect("test executable"))
         .args([
             "--exact",
             "service::bootstrap::tests::bootstrap_process_probe_child",
@@ -208,6 +208,7 @@ async fn bootstrap_does_not_launch_local_runtime_processes() {
         .env_remove("OPENHUMAN_OLLAMA_BASE_URL")
         .env_remove("OLLAMA_BIN")
         .output()
+        .await
         .expect("run bootstrap probe in isolated child");
 
     assert!(

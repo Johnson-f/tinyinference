@@ -30,7 +30,7 @@ impl LocalAiService {
         base: &str,
     ) -> Result<Vec<OllamaModelTag>, String> {
         let url = format!("{base}/models");
-        let safe_base = tinyinference_core::sanitize::redact_url(&base);
+        let safe_base = tinyinference_core::sanitize::redact_url(base);
         let safe_url = tinyinference_core::sanitize::redact_url(&url);
         // GH #5055: log the *resolved* discovery URL so a wrong base URL is
         // diagnosable from app logs alone, without reproducing against the
@@ -80,7 +80,7 @@ impl LocalAiService {
             // this is a recovery path, never a probe order, and it never runs
             // for any status other than 404.
             if status == reqwest::StatusCode::NOT_FOUND
-                && let Some(models) = self.list_ollama_tags_fallback(config, &base).await
+                && let Some(models) = self.list_ollama_tags_fallback(config, base).await
             {
                 return Ok(models);
             }

@@ -140,10 +140,12 @@ async fn diagnostics_with_running_server_but_missing_models_flags_issues() {
         std::env::set_var("OPENHUMAN_OLLAMA_BASE_URL", &base);
     }
 
-    let config = Config::default();
+    let mut config = Config::default();
+    config.local_ai.vision_model_id = "missing-vision".to_string();
     let service = LocalAiService::new(&config);
     let diag = service.diagnostics(&config).await.expect("diagnostics");
     assert_eq!(diag["ollama_running"], true);
+    assert_eq!(diag["expected"]["vision_found"], false);
     assert_eq!(
         diag["ollama_base_url"].as_str(),
         Some(base.as_str()),
@@ -160,6 +162,9 @@ async fn diagnostics_with_running_server_but_missing_models_flags_issues() {
             .any(|issue| issue.contains("is not installed; run `ollama pull ")),
         "missing-model issue should carry an `ollama pull` hint, got: {issues:?}"
     );
+    assert!(issues.iter().filter_map(|issue| issue.as_str()).any(|issue| {
+        issue.contains("Vision model `missing-vision`")
+    }));
     let repair_actions = diag["repair_actions"]
         .as_array()
         .cloned()

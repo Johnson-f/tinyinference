@@ -91,6 +91,33 @@ pub const WORKLOAD_ROUTES: &[WorkloadRouteSpec] = &[
     },
 ];
 
+/// Static context-window hint for workload aliases and the small-model ids
+/// historically used by local profiles.
+///
+/// Hosts may supply their own pricing-catalog or managed-model hints and
+/// should prefer those when their product policy gives them higher priority.
+/// The managed default model itself is deliberately not identified here.
+#[must_use]
+pub fn context_window_for_model(model: &str) -> Option<u64> {
+    const LARGE: u64 = 200_000;
+    const REASONING: u64 = 1_000_000;
+    const STANDARD: u64 = 128_000;
+    const CHAT: u64 = 1_000_000;
+    const LOCAL: u64 = 8_192;
+
+    let model = model.trim();
+    match model {
+        "hint:reasoning" | "reasoning-quick-v1" | "reasoning-v1" => Some(REASONING),
+        "hint:agentic" | "hint:coding" | "agentic-v1" | "coding-v1" => Some(LARGE),
+        "hint:burst" | "burst-v1" => Some(STANDARD),
+        "hint:chat" | "hint:summarization" | "chat-v1" | "summarization-v1" | "chat" => Some(CHAT),
+        _ if model.starts_with("gemma") || model.contains(":1b") || model.contains("270m") => {
+            Some(LOCAL)
+        }
+        _ => None,
+    }
+}
+
 /// Looks up a route by alias.
 #[must_use]
 pub fn workload_route(name: &str) -> Option<&'static WorkloadRouteSpec> {

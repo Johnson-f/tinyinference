@@ -5,12 +5,65 @@
 //! reads configuration, credentials or platform pricing catalogs.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use super::discover::{
-    DiscoveryRequest, LimitSource, ModelLimitsCache, ModelListingFetcher,
+    DiscoveryRequest, LimitSource, ModelLimitsCache, ModelListingFetcher, ReqwestListingFetcher,
     discover_model_limits_with_guard,
 };
+use crate::model::context_window_for_model_id;
+use crate::model::workload;
+use tinyinference_providers::route::LocalProviderKind;
+
+/// A managed default hint supplied by the host that owns that model mapping.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedDefaultWindow {
+    /// The exact managed model id receiving this hint.
+    pub model: String,
+    /// Its context window in tokens.
+    pub window: u64,
+}
+
+/// Host-owned facts used to resolve one concrete model route.
+///
+/// `endpoint` is the base URL used by the selected model; a local Ollama
+/// route accepts either its native root or its `/v1` OpenAI-compatible base.
+/// A supplied `discovery` request takes precedence and can carry host-owned
+/// headers, listing URLs, pinned-provider data, and timeouts. `catalog_window`
+/// is a host catalog hint; managed model defaults are supplied separately so
+/// this generic crate never embeds a managed provider's model id.
+#[derive(Clone, Default)]
+pub struct ContextWindowRouteInput {
+    /// A non-zero user override.
+    pub config_override: Option<u64>,
+    /// Inference endpoint, used to build a default limits request when needed.
+    pub endpoint: Option<String>,
+    /// Host-built request for a route with custom discovery requirements.
+    pub discovery: Option<DiscoveryRequest>,
+    /// Host-owned pricing or model catalog hint.
+    pub catalog_window: Option<u64>,
+    /// Optional host-owned managed default model mapping.
+    pub managed_default: Option<ManagedDefaultWindow>,
+    /// Context window selected by the host's local runtime profile logic.
+    pub local_window: Option<u64>,
+}
+
+impl std::fmt::Debug for ContextWindowRouteInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ContextWindowRouteInput")
+            .field("config_override", &self.config_override)
+            .field("endpoint", &self.endpoint.as_ref().map(|_| "[redacted]"))
+            .field("discovery", &self.discovery.as_ref().map(|_| "[redacted]"))
+            .field("catalog_window", &self.catalog_window)
+            .field(
+                "managed_default",
+                &self.managed_default.as_ref().map(|hint| hint.window),
+            )
+            .field("local_window", &self.local_window)
+            .finish()
+    }
+}
 
 /// Where a resolved context window came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +209,128 @@ impl ContextWindowResolver {
         state.remembered.clear();
     }
 
+    /// Resolves a concrete provider route using host-owned configuration and
+    /// transport policy, then the same precedence and identity memory as
+    /// [`Self::resolve`].
+    ///
+    /// The host supplies the endpoint or a complete discovery request, its
+    /// explicit/catalog/managed model hints, local profile result, shared
+    /// cache, and a factory for the HTTP client configured with its CA and
+    /// proxy policy. A local Ollama route forces the native `/api/show` probe
+    /// and strips a route temperature suffix from the probed model id. Other
+    /// endpoints use the existing Ollama URL auto-detection. The factory is
+    /// called only when discovery can run; overrides and routes without an
+    /// endpoint do not construct a client.
+    ///
+    /// This route-level method emits the final source diagnostics and warns
+    /// once per external model when the result is a static guess or unknown.
+    /// It never logs the endpoint or discovery headers.
+    pub async fn resolve_for_route<F>(
+        &self,
+        provider: &str,
+        model: &str,
+        local_kind: Option<LocalProviderKind>,
+        route: ContextWindowRouteInput,
+        cache: &ModelLimitsCache,
+        fetcher_factory: F,
+    ) -> ResolvedWindow
+    where
+        F: FnOnce() -> reqwest::Client,
+    {
+        let prepared = PreparedRoute::new(model, local_kind, route);
+        let needs_fetcher = prepared.config_override.is_none_or(|window| window == 0)
+            && prepared.discovery.is_some();
+        let fetcher = needs_fetcher.then(|| ReqwestListingFetcher::new(fetcher_factory()));
+        let unavailable = UnavailableRouteFetcher;
+        let fetcher: &dyn ModelListingFetcher = fetcher
+            .as_ref()
+            .map_or(&unavailable, |fetcher| fetcher as &dyn ModelListingFetcher);
+        self.resolve_prepared_route(provider, model, local_kind, prepared, fetcher, cache)
+            .await
+    }
+
+    /// Resolves a concrete provider route with a host-supplied listing fetcher.
+    ///
+    /// This has the same route normalization, precedence, identity memory and
+    /// diagnostics as [`Self::resolve_for_route`], while letting hosts inject a
+    /// fake or policy-configured [`ModelListingFetcher`] directly. It is useful
+    /// when a host already owns a fetcher and must keep tests offline.
+    pub async fn resolve_for_route_with_fetcher(
+        &self,
+        provider: &str,
+        model: &str,
+        local_kind: Option<LocalProviderKind>,
+        route: ContextWindowRouteInput,
+        cache: &ModelLimitsCache,
+        fetcher: &dyn ModelListingFetcher,
+    ) -> ResolvedWindow {
+        let prepared = PreparedRoute::new(model, local_kind, route);
+        self.resolve_prepared_route(provider, model, local_kind, prepared, fetcher, cache)
+            .await
+    }
+
+    async fn resolve_prepared_route(
+        &self,
+        provider: &str,
+        model: &str,
+        local_kind: Option<LocalProviderKind>,
+        prepared: PreparedRoute,
+        fetcher: &dyn ModelListingFetcher,
+        cache: &ModelLimitsCache,
+    ) -> ResolvedWindow {
+        let input = ContextWindowInput {
+            config_override: prepared.config_override,
+            discovery: prepared.discovery.as_ref(),
+            static_window: prepared.static_window,
+            has_local_profile: local_kind.is_some(),
+            local_window: prepared.local_window,
+        };
+        let resolved = self.resolve(provider, model, input, fetcher, cache).await;
+
+        let route_label = provider.split_once(':').map_or(provider, |(slug, _)| slug);
+        let route_label = if !route_label.is_empty()
+            && route_label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+        {
+            route_label
+        } else {
+            "provider"
+        };
+        if local_kind.is_none()
+            && matches!(
+                resolved.source,
+                WindowSource::StaticGuess | WindowSource::Unknown
+            )
+        {
+            warn_static_guess(model, resolved.window, route_label);
+        }
+        if prepared.discovery.is_some()
+            && matches!(
+                resolved.source,
+                WindowSource::ProviderReported | WindowSource::LearnedFromOverflow
+            )
+        {
+            tracing::info!(
+                route = route_label,
+                model,
+                context_window = resolved.window,
+                max_output_tokens = ?resolved.max_output_tokens,
+                source = resolved.source.label(),
+                "[model_context] context window from provider"
+            );
+        }
+        tracing::debug!(
+            route = route_label,
+            model,
+            context_window = ?resolved.window,
+            max_output_tokens = ?resolved.max_output_tokens,
+            source = resolved.source.label(),
+            "[model_context] resolved context window"
+        );
+        resolved
+    }
+
     /// Resolves override > discovered/learned > remembered > static/local > unknown.
     ///
     /// Discovery failures retain provenance and output ceilings only for the
@@ -276,6 +451,109 @@ impl ContextWindowResolver {
     }
 }
 
+struct PreparedRoute {
+    config_override: Option<u64>,
+    discovery: Option<DiscoveryRequest>,
+    static_window: Option<u64>,
+    local_window: Option<u64>,
+}
+
+impl PreparedRoute {
+    fn new(
+        model: &str,
+        local_kind: Option<LocalProviderKind>,
+        route: ContextWindowRouteInput,
+    ) -> Self {
+        let ollama = local_kind == Some(LocalProviderKind::Ollama);
+        let probe_model = if ollama {
+            model.split_once('@').map_or(model, |(id, _)| id).trim()
+        } else {
+            model.trim()
+        };
+        let mut discovery = route.discovery.or_else(|| {
+            route.endpoint.map(|endpoint| {
+                let endpoint = if ollama {
+                    ollama_openai_endpoint(&endpoint)
+                } else {
+                    endpoint
+                };
+                DiscoveryRequest::new(endpoint, probe_model)
+            })
+        });
+        if ollama && let Some(request) = discovery.as_mut() {
+            request.model = probe_model.to_owned();
+            request.ollama_native = Some(true);
+        }
+
+        let managed_window = route.managed_default.as_ref().and_then(|hint| {
+            (hint.model.trim() == model.trim() && hint.window > 0).then_some(hint.window)
+        });
+        let static_window = managed_window
+            .or_else(|| workload::context_window_for_model(model))
+            .or(route.catalog_window.filter(|window| *window > 0))
+            .or_else(|| context_window_for_model_id(model));
+
+        Self {
+            config_override: route.config_override,
+            discovery,
+            static_window,
+            local_window: route.local_window,
+        }
+    }
+}
+
+fn warn_static_guess(model: &str, window: Option<u64>, route: &str) {
+    let first = first_static_guess_for_model(model);
+    if first {
+        tracing::warn!(
+            model,
+            route,
+            context_window = ?window,
+            "[model_context] context window is a static guess — the provider did not report one"
+        );
+    } else {
+        tracing::debug!(
+            model,
+            route,
+            context_window = ?window,
+            "[model_context] context window is a static guess"
+        );
+    }
+}
+
+fn first_static_guess_for_model(model: &str) -> bool {
+    static WARNED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    WARNED
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(model.to_owned())
+}
+
+fn ollama_openai_endpoint(endpoint: &str) -> String {
+    let endpoint = endpoint.trim().trim_end_matches('/');
+    if endpoint.ends_with("/v1") {
+        endpoint.to_owned()
+    } else {
+        format!("{endpoint}/v1")
+    }
+}
+
+struct UnavailableRouteFetcher;
+
+#[async_trait::async_trait]
+impl ModelListingFetcher for UnavailableRouteFetcher {
+    async fn get_json(
+        &self,
+        _url: &str,
+        _headers: &[(String, String)],
+    ) -> crate::Result<serde_json::Value> {
+        Err(crate::Error::Catalog(
+            "route discovery is unavailable".to_owned(),
+        ))
+    }
+}
+
 impl ResolverState {
     fn lookup(&self, key: &RememberedKey) -> RememberedLimits {
         if key.discovery.is_some() {
@@ -345,3 +623,7 @@ mod tests;
 #[cfg(test)]
 #[path = "context_window_review_tests.rs"]
 mod review_tests;
+
+#[cfg(test)]
+#[path = "context_window_route_tests.rs"]
+mod route_tests;

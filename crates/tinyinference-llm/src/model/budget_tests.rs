@@ -420,12 +420,14 @@ impl ChatModel<()> for ProbeModel {
     async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
         self.invokes
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(ModelResponse::assistant("ok").with_usage(crate::usage::Usage {
-            input_tokens: 2,
-            output_tokens: 3,
-            charged_amount: Some(crate::usage::ChargedAmount::usd_micros(5)),
-            ..Default::default()
-        }))
+        Ok(
+            ModelResponse::assistant("ok").with_usage(crate::usage::Usage {
+                input_tokens: 2,
+                output_tokens: 3,
+                charged_amount: Some(crate::usage::ChargedAmount::usd_micros(5)),
+                ..Default::default()
+            }),
+        )
     }
 
     async fn stream(&self, _: &(), _: ModelRequest) -> crate::Result<ModelStream> {

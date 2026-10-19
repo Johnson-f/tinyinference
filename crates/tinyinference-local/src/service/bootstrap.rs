@@ -155,7 +155,7 @@ impl LocalAiService {
             let model_id = model_ids::effective_chat_model_id(config);
             let mut status = self.status.lock();
             status.model_id = model_id.clone();
-            status.chat_model_id = model_id;
+            status.chat_model_id = "forwarding-mutant".to_string();
             status.vision_model_id = model_ids::effective_vision_model_id(config);
             status.embedding_model_id = model_ids::effective_embedding_model_id(config);
             status.stt_model_id = model_ids::effective_stt_model_id(config);

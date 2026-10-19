@@ -245,8 +245,12 @@ fn cancelling_queued_temp_write_does_not_recreate_audio_after_cleanup() {
 
     runtime.block_on(async {
         let provider = CaptureProvider::default();
-        let future = transcribe_bytes_in(b"queued voice", Some("wav"), Some(&directory_path), &provider);
-        tokio::pin!(future);
+        let mut future = Box::pin(transcribe_bytes_in(
+            b"queued voice",
+            Some("wav"),
+            Some(&directory_path),
+            &provider,
+        ));
 
         // First poll creates the tempfile and queues Tokio's blocking write
         // behind the latched worker, then returns Pending.

@@ -134,20 +134,42 @@ async fn connection_test_preserves_noop_provider_success() {
 
 #[tokio::test]
 async fn public_custom_verification_uses_native_width_and_skips_models_on_success() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
-    let server = tokio::spawn(respond_to_requests(
-        listener,
-        vec![(
-            "POST /v1/embeddings ",
-            200,
-            r#"{"data":[{"embedding":[0.1,0.2]}]}"#,
-        )],
-    ));
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut chunk = [0; 1024];
+        loop {
+            let read = stream.read(&mut chunk).await.unwrap();
+            request.extend_from_slice(&chunk[..read]);
+            if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                break;
+            }
+        }
+        assert!(String::from_utf8_lossy(&request).starts_with("POST /v1/embeddings "));
+        let body = r#"{"data":[{"embedding":[0.1,0.2]}]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        tokio::select! {
+            biased;
+            unexpected = listener.accept() => { drop(unexpected); true }
+            _ = done_rx => false,
+        }
+    });
     let verified = verify_custom_endpoint(&endpoint, "test-key", "nomic-embed-text", 99)
         .await
         .unwrap();
-    server.await.unwrap();
+    done_tx.send(()).unwrap();
+    assert!(
+        !server.await.unwrap(),
+        "successful verification must not request /models"
+    );
     assert_eq!(verified.dimensions, 2);
     assert_eq!(
         verified.signature,

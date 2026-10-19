@@ -19,7 +19,7 @@ pub enum VerifyRejection {
     /// Probe rejection with stable remediation fields.
     Probe(crate::probe::EmbeddingProbeRejection),
     /// Positive evidence the selected model is not served.
-    ModelNotServed(ModelNotServed),
+    ModelNotServed(Box<ModelNotServed>),
 }
 
 impl VerifyRejection {
@@ -134,7 +134,7 @@ async fn rejection_with_model_guidance(
     .await
         && let Some(rejection) = check_requested_model_served(model, &served)
     {
-        return VerifyRejection::ModelNotServed(rejection);
+        return VerifyRejection::ModelNotServed(Box::new(rejection));
     }
     VerifyRejection::Probe(rejection)
 }

@@ -221,3 +221,49 @@ async fn cancelling_transcribe_bytes_removes_temporary_audio() {
     assert!(task.await.unwrap_err().is_cancelled());
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
 }
+
+#[test]
+fn cancelling_queued_temp_write_does_not_recreate_audio_after_cleanup() {
+    use std::future::Future;
+    use std::sync::mpsc;
+    use std::task::Poll;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let directory_path = directory.path().to_owned();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let blocker = runtime.spawn_blocking(move || {
+        started_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    });
+    started_rx.recv().unwrap();
+
+    runtime.block_on(async {
+        let provider = CaptureProvider::default();
+        let future = transcribe_bytes_in(b"queued voice", Some("wav"), Some(&directory_path), &provider);
+        tokio::pin!(future);
+
+        // First poll creates the tempfile and queues Tokio's blocking write
+        // behind the latched worker, then returns Pending.
+        let pending = std::future::poll_fn(|context| {
+            Poll::Ready(matches!(future.as_mut().poll(context), Poll::Pending))
+        })
+        .await;
+        assert!(pending, "write should be queued behind the blocked worker");
+        assert_eq!(std::fs::read_dir(&directory_path).unwrap().count(), 1);
+
+        drop(future);
+        release_tx.send(()).unwrap();
+        blocker.await.unwrap();
+        // This sentinel is submitted after the queued file write; when it
+        // completes, the blocking queue has drained through the write.
+        tokio::task::spawn_blocking(|| {}).await.unwrap();
+    });
+
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+}

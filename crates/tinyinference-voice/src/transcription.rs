@@ -118,8 +118,6 @@ where
         None => builder.tempfile(),
     }
     .map_err(|error| format!("[voice-stt] failed to create temporary audio file: {error}"))?;
-    // Keep only TempPath so its synchronous Drop cleanup still runs if this
-    // async function is cancelled while writing or awaiting the provider.
     let temporary_path = temporary_file.into_temp_path();
     tokio::fs::write(&temporary_path, audio)
         .await

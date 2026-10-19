@@ -6,17 +6,38 @@ use std::fmt;
 
 /// A catalog request or response failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ListModelsError(String);
+pub struct ListModelsError {
+    message: String,
+    http_status: Option<u16>,
+}
 
 impl ListModelsError {
     fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            http_status: None,
+        }
+    }
+
+    fn from_http_response(message: impl Into<String>, status: u16) -> Self {
+        Self {
+            message: message.into(),
+            http_status: Some(status),
+        }
+    }
+
+    /// Returns the HTTP status when the error came from a non-success response.
+    ///
+    /// Request failures, malformed responses, and provider error payloads do
+    /// not carry a status, even if their message or body mentions one.
+    pub fn http_status(&self) -> Option<u16> {
+        self.http_status
     }
 }
 
 impl fmt::Display for ListModelsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
@@ -56,14 +77,14 @@ pub async fn list_models(
         let body = response.text().await.unwrap_or_default();
         let snippet = snippet(&body);
         if status.as_u16() == 404 {
-            return Err(ListModelsError::new(format!(
+            return Err(ListModelsError::from_http_response(format!(
                 "provider returned 404: {snippet} — the configured base URL does not expose a `/models` endpoint; check the provider's base URL (it usually ends in `/v1`)"
-            )));
+            ), status.as_u16()));
         }
-        return Err(ListModelsError::new(format!(
+        return Err(ListModelsError::from_http_response(format!(
             "provider returned {}: {snippet}",
             status.as_u16()
-        )));
+        ), status.as_u16()));
     }
 
     let raw_body = response.text().await.map_err(|error| {
@@ -127,11 +148,11 @@ pub async fn validate_openrouter_key(
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(ListModelsError::new(format!(
+        return Err(ListModelsError::from_http_response(format!(
             "OpenRouter key validation returned {}: {}",
             status.as_u16(),
             snippet(&body)
-        )));
+        ), status.as_u16()));
     }
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body)
         && let Some(error) = value.get("error")

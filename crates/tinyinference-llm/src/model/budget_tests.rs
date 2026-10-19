@@ -411,6 +411,119 @@ async fn oversized_schema_and_provider_prompt_are_refused_before_http() {
 }
 
 #[derive(Debug)]
+struct ProbeModel {
+    invokes: std::sync::atomic::AtomicUsize,
+    streams: std::sync::atomic::AtomicUsize,
+}
+#[async_trait]
+impl ChatModel<()> for ProbeModel {
+    async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
+        self.invokes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ModelResponse::assistant("ok").with_usage(crate::usage::Usage {
+            input_tokens: 2,
+            output_tokens: 3,
+            charged_amount: Some(crate::usage::ChargedAmount::usd_micros(5)),
+            ..Default::default()
+        }))
+    }
+
+    async fn stream(&self, _: &(), _: ModelRequest) -> crate::Result<ModelStream> {
+        self.streams
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ModelStream::new(Box::pin(futures::stream::iter(vec![
+            ModelStreamItem::Completed(ModelResponse::assistant("ok")),
+        ]))))
+    }
+}
+
+#[derive(Debug)]
+struct DispatchCheck {
+    allowed: bool,
+    checks: std::sync::atomic::AtomicUsize,
+}
+impl super::BeforeDispatch for DispatchCheck {
+    fn check(&self) -> crate::Result<()> {
+        self.checks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.allowed {
+            Ok(())
+        } else {
+            Err(crate::Error::Validation("dispatch refused".into()))
+        }
+    }
+}
+
+fn probe_model() -> Arc<ProbeModel> {
+    Arc::new(ProbeModel {
+        invokes: Default::default(),
+        streams: Default::default(),
+    })
+}
+
+#[tokio::test]
+async fn before_dispatch_success_keeps_existing_budget_settlement() {
+    let budget = Budget::new(SpendLimits::default());
+    let inner = probe_model();
+    let hook = Arc::new(DispatchCheck {
+        allowed: true,
+        checks: Default::default(),
+    });
+    let model = BudgetedModel::new(inner.clone(), budget.clone(), call_policy())
+        .before_dispatch(hook.clone());
+
+    let response = model.invoke(&(), request()).await.unwrap();
+
+    assert_eq!(response.text(), "ok");
+    assert_eq!(inner.invokes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(budget.snapshot().spent.cost_micros, 5);
+    assert_eq!(budget.snapshot().reserved, Spend::default());
+}
+
+#[tokio::test]
+async fn before_dispatch_refusal_refunds_reservation_without_invoking_provider() {
+    let budget = Budget::new(SpendLimits::default());
+    let inner = probe_model();
+    let hook = Arc::new(DispatchCheck {
+        allowed: false,
+        checks: Default::default(),
+    });
+    let model = BudgetedModel::new(inner.clone(), budget.clone(), call_policy())
+        .before_dispatch(hook.clone());
+
+    assert!(matches!(
+        model.invoke(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch refused"
+    ));
+
+    assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(inner.invokes.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(budget.snapshot(), BudgetSnapshot::default());
+}
+
+#[tokio::test]
+async fn before_dispatch_refusal_prevents_stream_construction_and_refunds() {
+    let budget = Budget::new(SpendLimits::default());
+    let inner = probe_model();
+    let hook = Arc::new(DispatchCheck {
+        allowed: false,
+        checks: Default::default(),
+    });
+    let model = BudgetedModel::new(inner.clone(), budget.clone(), call_policy())
+        .before_dispatch(hook.clone());
+
+    assert!(matches!(
+        model.stream(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch refused"
+    ));
+
+    assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(inner.streams.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(budget.snapshot(), BudgetSnapshot::default());
+}
+
+#[derive(Debug)]
 struct LazyRetryStreamModel(Arc<std::sync::atomic::AtomicUsize>);
 #[async_trait]
 impl ChatModel<()> for LazyRetryStreamModel {

@@ -261,6 +261,17 @@ pub struct CallBudget {
     /// Conservative cost bound including prompt, cache, reasoning and output.
     pub cost_micros: u64,
 }
+
+/// A synchronous, provider-neutral check immediately before dispatching a
+/// reserved model call.
+///
+/// The host can use this hook to recheck an absolute deadline or other
+/// admission policy after [`BudgetedModel`] has waited for monetary capacity.
+/// It must be quick and must not perform I/O.
+pub trait BeforeDispatch: Send + Sync {
+    /// Returns an error when the reserved call must not reach the provider.
+    fn check(&self) -> crate::Result<()>;
+}
 // Concrete transports call this before sending: adapters may retry request
 // shape internally, below ChatModel. The first attempt owns the outer permit;
 // each extra attempt is conservatively charged before dispatch.
@@ -299,6 +310,7 @@ pub struct BudgetedModel<State: Send + Sync> {
     inner: Arc<dyn ChatModel<State>>,
     budget: Budget,
     call: CallBudget,
+    before_dispatch: Option<Arc<dyn BeforeDispatch>>,
 }
 impl<State: Send + Sync> std::fmt::Debug for BudgetedModel<State> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -315,7 +327,15 @@ impl<State: Send + Sync> BudgetedModel<State> {
             inner,
             budget,
             call,
+            before_dispatch: None,
         }
+    }
+
+    /// Install a synchronous policy check after monetary admission and before
+    /// each provider invocation or stream construction.
+    pub fn before_dispatch(mut self, hook: Arc<dyn BeforeDispatch>) -> Self {
+        self.before_dispatch = Some(hook);
+        self
     }
     async fn admit(&self, request: &mut ModelRequest) -> crate::Result<Reservation> {
         if ["max_tokens", "max_completion_tokens", "max_output_tokens"]

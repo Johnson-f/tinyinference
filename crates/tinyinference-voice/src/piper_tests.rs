@@ -34,41 +34,15 @@ fn explicit_output_path_and_optional_length_scale_are_preserved() {
 }
 
 #[cfg(unix)]
-fn fake_piper(directory: &std::path::Path, exit_code: i32) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
-    let executable = directory.join("fake-piper");
-    std::fs::write(
-        &executable,
-        format!(
-            r#"#!/bin/sh
-set -eu
-script_dir=$(dirname "$0")
-output=''
-previous=''
-for argument in "$@"; do
-  if [ "$previous" = "--output_file" ]; then output="$argument"; fi
-  previous="$argument"
-done
-[ -n "$output" ]
-printf '%s' "$*" > "$script_dir/captured.args"
-cat > "$script_dir/captured.stdin"
-printf 'fake wav bytes' > "$output"
-printf 'fake piper error' >&2
-exit {exit_code}
-"#
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-    executable
+fn fake_piper() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/test_fixtures/fake_piper.sh")
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn file_api_runs_piper_with_trimmed_stdin_and_preserves_caller_output() {
     let directory = tempfile::tempdir().unwrap();
-    let binary = fake_piper(directory.path(), 0);
+    let binary = fake_piper();
     let voice = directory.path().join("voice.onnx");
     let output = directory.path().join("chosen.wav");
     let result = synthesize_to_file(&binary, &voice, "  speak this  ", &output, None).await;
@@ -89,7 +63,7 @@ async fn file_api_runs_piper_with_trimmed_stdin_and_preserves_caller_output() {
 #[tokio::test]
 async fn legacy_api_keeps_base64_visemes_and_explicit_default_length_scale() {
     let directory = tempfile::tempdir().unwrap();
-    let binary = fake_piper(directory.path(), 0);
+    let binary = fake_piper();
     let voice = directory.path().join("voice.onnx");
     let speech = synthesize(&binary, &voice, " legacy text ").await;
     let speech = speech.unwrap();
@@ -111,18 +85,13 @@ async fn legacy_api_keeps_base64_visemes_and_explicit_default_length_scale() {
 #[tokio::test]
 async fn file_api_reports_piper_child_failure() {
     let directory = tempfile::tempdir().unwrap();
-    let binary = fake_piper(directory.path(), 7);
+    let binary = fake_piper();
     let output = directory.path().join("failed.wav");
+    let voice = directory.path().join("voice-fail.onnx");
 
-    let error = synthesize_to_file(
-        &binary,
-        std::path::Path::new("voice.onnx"),
-        "hello",
-        &output,
-        None,
-    )
-    .await
-    .unwrap_err();
+    let error = synthesize_to_file(&binary, &voice, "hello", &output, None)
+        .await
+        .unwrap_err();
 
     assert!(error.contains("piper failed (exit=Some(7))"));
     assert!(error.contains("fake piper error"));

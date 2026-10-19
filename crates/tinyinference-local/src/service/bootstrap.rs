@@ -359,10 +359,10 @@ impl LocalAiService {
     fn bootstrap_action(&self) -> BootstrapAction {
         let mut flight = self.bootstrap_flight.lock();
         let receiver = flight.as_ref().map(|sender| sender.subscribe());
-        if let Some(receiver) = receiver {
-            if *receiver.borrow() == BootstrapFlightState::Running {
-                return BootstrapAction::Wait(receiver);
-            }
+        if let Some(receiver) = receiver
+            && *receiver.borrow() == BootstrapFlightState::Running
+        {
+            return BootstrapAction::Wait(receiver);
         }
         BootstrapAction::Lead(Self::claim_bootstrap_locked(&mut flight))
     }

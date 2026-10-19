@@ -77,14 +77,17 @@ pub async fn list_models(
         let body = response.text().await.unwrap_or_default();
         let snippet = snippet(&body);
         if status.as_u16() == 404 {
-            return Err(ListModelsError::from_http_response(format!(
-                "provider returned 404: {snippet} — the configured base URL does not expose a `/models` endpoint; check the provider's base URL (it usually ends in `/v1`)"
-            ), status.as_u16()));
+            return Err(ListModelsError::from_http_response(
+                format!(
+                    "provider returned 404: {snippet} — the configured base URL does not expose a `/models` endpoint; check the provider's base URL (it usually ends in `/v1`)"
+                ),
+                status.as_u16(),
+            ));
         }
-        return Err(ListModelsError::from_http_response(format!(
-            "provider returned {}: {snippet}",
-            status.as_u16()
-        ), status.as_u16()));
+        return Err(ListModelsError::from_http_response(
+            format!("provider returned {}: {snippet}", status.as_u16()),
+            status.as_u16(),
+        ));
     }
 
     let raw_body = response.text().await.map_err(|error| {
@@ -148,11 +151,14 @@ pub async fn validate_openrouter_key(
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(ListModelsError::from_http_response(format!(
-            "OpenRouter key validation returned {}: {}",
+        return Err(ListModelsError::from_http_response(
+            format!(
+                "OpenRouter key validation returned {}: {}",
+                status.as_u16(),
+                snippet(&body)
+            ),
             status.as_u16(),
-            snippet(&body)
-        ), status.as_u16()));
+        ));
     }
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body)
         && let Some(error) = value.get("error")

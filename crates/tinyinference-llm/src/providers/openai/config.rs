@@ -117,7 +117,7 @@ pub fn build_openai_model_with_http(
 }
 
 /// [`build_openai_model`] with the Anthropic-model `cache_control` default made
-/// explicit; a local runtime passes `false` so it never receives the markers.
+/// explicit. Local runtimes use [`build_local_openai_model_with`] instead.
 pub(crate) fn build_openai_model_with(
     config: OpenAiConfig<'_>,
     anthropic_cache_control: bool,
@@ -131,6 +131,27 @@ pub(crate) fn build_openai_model_with(
     )
     .with_auth_style(config.auth_style.clone())
     .with_anthropic_cache_control(anthropic_cache_control);
+
+    Arc::new(configure_openai_model(model, config, http))
+}
+
+/// Builds a local OpenAI-compatible model from a completed config: no
+/// Anthropic cache markers, and every system message sent as one leading
+/// `system` message, because local chat templates commonly reject a `system`
+/// turn anywhere but first (tinyhumansai/openhuman#7440).
+pub(crate) fn build_local_openai_model_with(
+    config: OpenAiConfig<'_>,
+    http: Option<reqwest::Client>,
+) -> Arc<dyn ChatModel<()>> {
+    let model = OpenAiModel::compatible_provider(
+        config.provider_name,
+        config.api_key,
+        config.endpoint,
+        config.model,
+    )
+    .with_auth_style(config.auth_style.clone())
+    .with_anthropic_cache_control(false)
+    .with_single_system_message();
 
     Arc::new(configure_openai_model(model, config, http))
 }
@@ -239,14 +260,7 @@ pub fn build_local_runtime_chat_model(
             "options": { "num_ctx": value }
         })
     });
-    // Local chat templates commonly reject a `system` turn anywhere but first
-    // (tinyhumansai/openhuman#7440), so every system message goes out as one.
-    let chat = OpenAiModel::compatible_provider(provider_name, api_key, endpoint, model)
-        .with_auth_style(auth_style.clone())
-        .with_anthropic_cache_control(false)
-        .with_single_system_message();
-    let chat = configure_openai_model(
-        chat,
+    build_local_openai_model_with(
         OpenAiConfig {
             provider_name,
             endpoint,
@@ -267,6 +281,5 @@ pub fn build_local_runtime_chat_model(
             explicit_cache_control: false,
         },
         None,
-    );
-    Arc::new(chat)
+    )
 }

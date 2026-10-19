@@ -98,3 +98,55 @@ fn user_agent_names_embedding_host() {
         "codex_cli_rs/0.0.0 (OpenHuman 1.2.3)"
     );
 }
+
+#[test]
+fn resolver_only_selects_oauth_for_openai_with_an_oauth_bearer() {
+    for (slug, bearer_is_oauth, expected_oauth) in [
+        ("openai", true, true),
+        ("openai", false, false),
+        ("OpenAI", true, false),
+        ("anthropic", true, false),
+    ] {
+        let route = resolve_codex_routing(
+            slug,
+            "https://example.invalid/v1/",
+            bearer_is_oauth,
+            Some(" account-1 "),
+        );
+        assert_eq!(route.using_oauth, expected_oauth);
+        assert_eq!(
+            route.account_id.as_deref(),
+            expected_oauth.then_some("account-1")
+        );
+        if !expected_oauth {
+            assert_eq!(route.endpoint, "https://example.invalid/v1");
+        }
+    }
+}
+
+#[test]
+fn oauth_headers_and_client_version_query_are_reusable() {
+    let route = resolve_codex_routing("openai", "ignored", true, None);
+    assert_eq!(
+        route.headers(),
+        vec![
+            (
+                OPENAI_CODEX_ORIGINATOR_HEADER.into(),
+                OPENAI_CODEX_ORIGINATOR.into()
+            ),
+            (
+                OPENAI_CODEX_BETA_HEADER.into(),
+                OPENAI_CODEX_BETA_VALUE.into()
+            ),
+        ]
+    );
+    assert_eq!(
+        route.client_version_query("0.137.0"),
+        vec![("client_version".into(), "0.137.0".into())]
+    );
+    assert!(
+        OpenAiCodexRouting::standard("https://example.invalid")
+            .headers()
+            .is_empty()
+    );
+}

@@ -10,6 +10,7 @@ use crate::catalog::append_query_param;
 use crate::model::ChatModel;
 use crate::model::discover::{DiscoveryRequest, pinned_openrouter_providers};
 use crate::{Error, Result};
+use tinyinference_providers::route::{ProviderRoute, RouteKind};
 
 use super::anthropic::{AnthropicConfig, endpoint_is_anthropic_messages};
 use super::openai::codex::OpenAiCodexRouting;
@@ -105,8 +106,46 @@ pub struct ProviderBuildOptions<'a> {
     /// the host supplies `client_version` through `extra_query_params`, and any
     /// user-agent identity through `user_agent`.
     pub codex: Option<&'a OpenAiCodexRouting>,
-    /// HTTP client carrying host TLS/proxy policy.
+    /// HTTP client carrying host TLS/proxy policy. When set it is authoritative
+    /// and CA/builder settings below are ignored.
     pub http: Option<reqwest::Client>,
+    /// Factory for host-configured HTTP builders, used when no finished client
+    /// is injected. The closure should return a fresh builder for every call.
+    pub http_builder: Option<ProviderHttpClientBuilder<'a>>,
+    /// Additional trusted CA certificates in PEM format. Applied to the
+    /// configured builder, preserving its proxy/timeouts, or to a default
+    /// builder when none is supplied.
+    pub ca_bundle: Option<&'a str>,
+}
+
+/// A factory for host-configured HTTP builders.
+///
+/// The closure returns a fresh builder so provider construction can preserve
+/// host proxy, timeout, and TLS policy while applying optional CA roots.
+pub type ProviderHttpClientBuilder<'a> = Arc<dyn Fn() -> reqwest::ClientBuilder + Send + Sync + 'a>;
+
+impl ProviderBuildOptions<'_> {
+    fn http_client(&self) -> Result<Option<reqwest::Client>> {
+        if let Some(client) = &self.http {
+            return Ok(Some(client.clone()));
+        }
+        let Some(builder) = self
+            .http_builder
+            .as_ref()
+            .map(|factory| factory())
+            .or_else(|| self.ca_bundle.is_some().then(reqwest::Client::builder))
+        else {
+            return Ok(None);
+        };
+        let builder = match self.ca_bundle {
+            Some(pem) => super::http::client_builder_with_ca_bundle(builder, pem)?,
+            None => builder,
+        };
+        builder
+            .build()
+            .map(Some)
+            .map_err(|_| Error::Validation("could not build provider HTTP client".into()))
+    }
 }
 
 impl std::fmt::Debug for ProviderBuildOptions<'_> {
@@ -135,6 +174,11 @@ impl std::fmt::Debug for ProviderBuildOptions<'_> {
                     .collect::<Vec<_>>(),
             )
             .field("codex_oauth", &self.codex.map(|route| route.using_oauth))
+            .field("ca_bundle", &self.ca_bundle.map(|_| "<PEM>"))
+            .field(
+                "http_builder",
+                &self.http_builder.as_ref().map(|_| "<builder factory>"),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -192,6 +236,7 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
             ));
         }
         let key = self.resolve_key(spec)?;
+        let http = options.http_client()?;
         let endpoint = effective_endpoint(spec, &options).trim();
         let model = spec.model.trim();
         let auth = effective_auth(spec, &options, &key);
@@ -210,7 +255,7 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
                         temperature_unsupported_models: options.temperature_unsupported_models,
                         extra_headers: options.extra_headers,
                     },
-                    options.http.clone(),
+                    http.clone(),
                     &spec.provider,
                     options.vision,
                 ),
@@ -251,6 +296,8 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
             None
         };
         let native_options = provider_options.clone();
+        let extra_headers = effective_headers(&options);
+        let extra_query_params = effective_query_params(&options);
         let config = OpenAiConfig {
             provider_name: &spec.provider,
             endpoint,
@@ -260,13 +307,13 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
             temperature_unsupported_models: options.temperature_unsupported_models,
             temperature_override: options.temperature_override,
             merge_system_into_user: options.merge_system_into_user,
-            extra_headers: options.extra_headers,
+            extra_headers: &extra_headers,
             native_tool_calling: options.native_tool_calling.or(local.then_some(false)),
             vision: options.vision.or(local.then_some(false)),
             default_provider_options: provider_options,
             responses_api_primary: oauth,
             responses_omit_max_output_tokens: oauth,
-            extra_query_params: options.extra_query_params,
+            extra_query_params: &extra_query_params,
             user_agent: options.user_agent,
             explicit_cache_control: !local && endpoint_is_openrouter(endpoint),
         };
@@ -274,7 +321,7 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
             return Ok(super::openai::config::build_openai_model_with(
                 config,
                 false,
-                options.http.clone(),
+                http.clone(),
             ));
         }
         if local {
@@ -284,7 +331,7 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
             let model =
                 super::openai::OpenAiModel::from_spec(resolved, &key)?.with_auth_style(auth);
             let mut model =
-                super::openai::config::configure_openai_model(model, config, options.http.clone());
+                super::openai::config::configure_openai_model(model, config, http.clone());
             let num_ctx = native_num_ctx;
             if let Some(num_ctx) = num_ctx {
                 model = model.with_local_num_ctx(num_ctx);
@@ -299,10 +346,58 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
             }));
         }
         Ok(super::openai::config::build_openai_model_with(
-            config,
-            true,
-            options.http.clone(),
+            config, true, http,
         ))
+    }
+
+    /// Resolves discovery for a typed route using host-resolved provider data.
+    ///
+    /// Route kinds without a provider listing, including managed, local, and
+    /// subprocess routes, return `None` without consulting credentials. A
+    /// cloud route uses the supplied spec's endpoint and credential resolver;
+    /// endpoints are never inferred from the route's product name. The
+    /// existing spec-and-options method remains [`Self::discovery_request`].
+    ///
+    /// # Errors
+    /// Returns validation or credential errors from the existing spec-based
+    /// discovery path.
+    pub fn discovery_request_for_route(
+        &self,
+        route: ProviderRoute,
+        spec: Option<ProviderSpec>,
+    ) -> Result<Option<DiscoveryRequest>> {
+        self.discovery_request_for_route_with_options(route, spec, &ProviderBuildOptions::default())
+    }
+
+    /// Resolves discovery for a typed route using host-resolved provider data.
+    ///
+    /// Route kinds without a provider listing, including managed, local, and
+    /// subprocess routes, return `None` without consulting credentials. A
+    /// cloud route uses the supplied spec's endpoint and credential resolver;
+    /// endpoints are never inferred from the route's product name.
+    ///
+    /// # Errors
+    /// Returns validation or credential errors from the existing spec-based
+    /// discovery path.
+    pub fn discovery_request_for_route_with_options(
+        &self,
+        route: ProviderRoute,
+        spec: Option<ProviderSpec>,
+        options: &ProviderBuildOptions<'_>,
+    ) -> Result<Option<DiscoveryRequest>> {
+        if !matches!(route.kind(), RouteKind::Cloud { .. }) {
+            return Ok(None);
+        }
+        let Some(mut spec) = spec else {
+            return Ok(None);
+        };
+        if spec.provider != route.provider {
+            return Ok(None);
+        }
+        if !route.model.trim().is_empty() {
+            spec.model = route.model;
+        }
+        self.discovery_request(&spec, options)
     }
 
     /// Builds a listing request with the same endpoint, model and credentials
@@ -334,20 +429,13 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
         let mut request = DiscoveryRequest::new(endpoint, model);
         if let Some(route) = options.codex.filter(|route| route.using_oauth) {
             let mut listing_url = format!("{}/models", endpoint.trim_end_matches('/'));
-            for (name, value) in options.extra_query_params {
-                listing_url = append_query_param(&listing_url, name, value);
+            for (name, value) in effective_query_params(options) {
+                listing_url = append_query_param(&listing_url, &name, &value);
             }
             request = request.with_listing_url(listing_url);
-            if let Some(account_id) = route.account_id.as_deref() {
-                request = request.with_header(
-                    super::openai::codex::OPENAI_CODEX_ACCOUNT_HEADER,
-                    account_id,
-                );
+            for (name, value) in route.headers() {
+                request = request.with_header(name, value);
             }
-            request = request.with_header(
-                super::openai::codex::OPENAI_CODEX_ORIGINATOR_HEADER,
-                super::openai::codex::OPENAI_CODEX_ORIGINATOR,
-            );
             if let Some(user_agent) = options.user_agent {
                 request = request.with_header("User-Agent", user_agent);
             }
@@ -368,8 +456,8 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
                 AuthStyle::Custom(name) => request.with_header(name, key.trim()),
             };
         }
-        for (name, value) in options.extra_headers {
-            request = with_replaced_header(request, name, value);
+        for (name, value) in effective_headers(options) {
+            request = with_replaced_header(request, &name, &value);
         }
         if let Some(provider_options) = options
             .default_provider_options
@@ -402,6 +490,97 @@ fn with_replaced_header(
         .headers
         .retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
     request.with_header(name, value)
+}
+
+fn effective_headers(options: &ProviderBuildOptions<'_>) -> Vec<(String, String)> {
+    let mut headers = options
+        .codex
+        .into_iter()
+        .flat_map(|route| route.headers())
+        .collect::<Vec<_>>();
+    for (name, value) in options.extra_headers {
+        if let Some(existing) = headers
+            .iter_mut()
+            .find(|(existing, _)| existing.eq_ignore_ascii_case(name))
+        {
+            *existing = (name.clone(), value.clone());
+        } else {
+            headers.push((name.clone(), value.clone()));
+        }
+    }
+    headers
+}
+
+fn effective_query_params(options: &ProviderBuildOptions<'_>) -> Vec<(String, String)> {
+    let mut query = options.extra_query_params.to_vec();
+    if let Some(route) = options.codex.filter(|route| route.using_oauth)
+        && !query.iter().any(|(name, _)| name == "client_version")
+    {
+        query.extend(
+            route.client_version_query(&super::openai::codex::openai_codex_client_version()),
+        );
+    }
+    query
+}
+
+/// Why a cloud slug could not resolve to a concrete model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlugModelError {
+    /// The requested model and its fallback were both empty.
+    MissingModel,
+    /// The requested model was a hint and its fallback was absent, blank, or
+    /// itself another hint.
+    NoConcreteDefault,
+}
+
+impl std::fmt::Display for SlugModelError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingModel => formatter.write_str("no model configured"),
+            Self::NoConcreteDefault => formatter.write_str("no concrete default model configured"),
+        }
+    }
+}
+
+impl std::error::Error for SlugModelError {}
+
+/// Resolves a cloud slug model using the host's abstract-model predicate.
+///
+/// Concrete requested model identifiers are returned byte-for-byte, including
+/// namespaced values such as `qwen3:14b`. Empty requests use the configured
+/// default. Hint requests map to a trimmed concrete default, and the predicate
+/// also validates that fallback. This preserves the host's existing trim
+/// behavior while keeping hint semantics owned by the host.
+///
+/// # Errors
+/// Returns [`SlugModelError::MissingModel`] for an empty request with no
+/// fallback, or [`SlugModelError::NoConcreteDefault`] when a hint cannot map to
+/// a concrete fallback.
+pub fn resolve_slug_model(
+    requested: &str,
+    default: Option<&str>,
+    is_hint: impl Fn(&str) -> bool,
+) -> std::result::Result<String, SlugModelError> {
+    let effective = if requested.trim().is_empty() {
+        default.unwrap_or_default()
+    } else {
+        requested
+    };
+    if effective.trim().is_empty() {
+        return if requested.trim().is_empty() {
+            Err(SlugModelError::MissingModel)
+        } else {
+            Err(SlugModelError::NoConcreteDefault)
+        };
+    }
+    if is_hint(effective) {
+        let fallback = default
+            .map(str::trim)
+            .filter(|candidate| !candidate.is_empty() && !is_hint(candidate))
+            .ok_or(SlugModelError::NoConcreteDefault)?;
+        return Ok(fallback.to_owned());
+    }
+    Ok(effective.to_owned())
 }
 
 /// Stable price ordering for direct OpenRouter routes; request-specific

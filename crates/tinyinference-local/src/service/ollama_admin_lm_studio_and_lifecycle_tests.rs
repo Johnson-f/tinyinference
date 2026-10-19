@@ -86,12 +86,57 @@ async fn lm_studio_diagnostics_reports_loaded_chat_model() {
     let config = lm_studio_config(&base);
     let service = LocalAiService::new(&config);
 
-    let diag = service.diagnostics(&config).await.expect("diagnostics");
+    let base_url = format!("{base}/v1");
+    let diag = service.lm_studio_diagnostics_at(&config, &base_url).await;
 
     assert_eq!(diag["provider"].as_str(), Some("lm_studio"));
     assert_eq!(diag["lm_studio_running"], true);
     assert_eq!(diag["expected"]["chat_found"], true);
     assert_eq!(diag["ok"], true);
+}
+
+#[tokio::test]
+async fn lm_studio_diagnostics_reports_no_loaded_models() {
+    let _guard = crate::service::inference_test_guard();
+
+    let app = Router::new().route("/v1/models", get(|| async { Json(json!({ "data": [] })) }));
+    let base = spawn_mock(app).await;
+    let config = lm_studio_config(&base);
+    let service = LocalAiService::new(&config);
+
+    let base_url = format!("{base}/v1");
+    let diag = service.lm_studio_diagnostics_at(&config, &base_url).await;
+
+    assert_eq!(diag["lm_studio_running"], true);
+    assert_eq!(diag["ok"], false);
+    assert!(diag["issues"].as_array().unwrap().iter().any(|issue| {
+        issue
+            .as_str()
+            .unwrap_or("")
+            .contains("LM Studio is reachable but no models are loaded")
+    }));
+}
+
+#[tokio::test]
+async fn lm_studio_diagnostics_classifies_injected_transport_failure_as_unreachable() {
+    let _guard = crate::service::inference_test_guard();
+
+    let config = lm_studio_config("http://configured.invalid/v1");
+    let diag = LocalAiService::lm_studio_diagnostics_from_models_result(
+        &config,
+        "http://injected.invalid/v1",
+        Err("lm studio models request failed: injected connection refusal".to_string()),
+    );
+
+    assert_eq!(diag["provider"], "lm_studio");
+    assert_eq!(diag["lm_studio_running"], false);
+    assert_eq!(diag["ok"], false);
+    assert!(diag["issues"].as_array().unwrap().iter().any(|issue| {
+        issue
+            .as_str()
+            .unwrap_or("")
+            .contains("LM Studio server is not running or not reachable")
+    }));
 }
 
 /// Regression for GH #5053: a custom OpenAI-compatible BYOK endpoint on
@@ -211,8 +256,10 @@ async fn lm_studio_diagnostics_surfaces_reachable_model_list_errors() {
 async fn diagnostics_gates_models_by_context_window() {
     let _guard = crate::service::inference_test_guard();
 
-    // /api/tags lists two models; /api/show reports their context windows:
-    // one at the 8192 floor (accepted) and one well below (rejected).
+    // /api/tags lists two embedding models and one allowlisted chat model;
+    // /api/show reports their context windows. The minimum is accepted while
+    // short contexts are rejected both in the installed-model list and for
+    // the configured chat model.
     let app = Router::new()
         .route(
             "/api/tags",
@@ -220,7 +267,8 @@ async fn diagnostics_gates_models_by_context_window() {
                 Json(json!({
                     "models": [
                         {"name": "bge-m3:latest", "modified_at": "", "size": 1u64, "digest": "d"},
-                        {"name": "tiny-embed:latest", "modified_at": "", "size": 2u64, "digest": "d"}
+                        {"name": "tiny-embed:latest", "modified_at": "", "size": 2u64, "digest": "d"},
+                        {"name": "gemma3:1b-it-qat", "modified_at": "", "size": 3u64, "digest": "d"}
                     ]
                 }))
             }),
@@ -240,11 +288,12 @@ async fn diagnostics_gates_models_by_context_window() {
             }),
         );
     let base = spawn_mock(app).await;
+    let mut config = Config::default();
+    config.local_ai.chat_model_id = "gemma3:1b-it-qat".to_string();
+    config.local_ai.base_url = Some(base.clone());
     unsafe {
         std::env::set_var("OPENHUMAN_OLLAMA_BASE_URL", &base);
     }
-
-    let config = Config::default();
     let service = LocalAiService::new(&config);
     let diag = service.diagnostics(&config).await.expect("diagnostics");
 
@@ -270,6 +319,14 @@ async fn diagnostics_gates_models_by_context_window() {
     assert_eq!(rejected["context_length"], 2048);
     assert_eq!(rejected["eligibility"]["status"], "below_minimum");
     assert_eq!(rejected["eligibility"]["required"], 8192);
+
+    let chat = by_name("gemma3:1b-it-qat");
+    assert_eq!(chat["eligibility"]["status"], "below_minimum");
+    assert_eq!(diag["expected"]["chat_found"], true);
+    assert_eq!(
+        diag["expected"]["chat_eligibility"]["status"],
+        "below_minimum"
+    );
 
     unsafe {
         std::env::remove_var("OPENHUMAN_OLLAMA_BASE_URL");

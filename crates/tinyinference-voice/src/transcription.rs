@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
+use tokio::io::AsyncWriteExt;
 
 use crate::mime::mime_for_extension;
 
@@ -118,15 +119,31 @@ where
         None => builder.tempfile(),
     }
     .map_err(|error| format!("[voice-stt] failed to create temporary audio file: {error}"))?;
-    let temporary_path = temporary_file.into_temp_path();
-    tokio::fs::write(&temporary_path, audio)
-        .await
-        .map_err(|error| format!("[voice-stt] failed to write temporary audio file: {error}"))?;
+    // Keep the original file handle in the async write. If cancellation drops
+    // the TempPath while a blocking write is queued, the write can finish only
+    // against the unlinked handle; it cannot recreate sensitive audio by path.
+    let temporary_path = write_temporary_audio(temporary_file, audio).await?;
 
     let file_name = format!("audio.{extension}");
     let result = transcribe_path(&temporary_path, Some(&file_name), provider).await;
     drop(temporary_path);
     result
+}
+
+async fn write_temporary_audio(
+    temporary_file: tempfile::NamedTempFile,
+    audio: &[u8],
+) -> Result<tempfile::TempPath, String> {
+    let (file, path) = temporary_file.into_parts();
+    let mut file = tokio::fs::File::from_std(file);
+    file.write_all(audio)
+        .await
+        .map_err(|error| format!("[voice-stt] failed to write temporary audio file: {error}"))?;
+    file.flush()
+        .await
+        .map_err(|error| format!("[voice-stt] failed to flush temporary audio file: {error}"))?;
+    drop(file);
+    Ok(path)
 }
 
 fn sanitize_extension(extension: Option<&str>) -> Result<String, String> {

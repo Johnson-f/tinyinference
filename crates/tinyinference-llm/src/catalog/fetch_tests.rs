@@ -199,6 +199,61 @@ async fn list_models_preserves_404_hint_and_rejects_success_error_payload() {
 }
 
 #[tokio::test]
+async fn list_models_error_exposes_only_the_actual_http_status() {
+    let client = reqwest::Client::new();
+
+    for (status, expected) in [
+        (StatusCode::UNAUTHORIZED, 401),
+        (StatusCode::FORBIDDEN, 403),
+        (StatusCode::NOT_FOUND, 404),
+    ] {
+        let (base, task) = serve(status, "response mentions 401").await;
+        let error = list_models(
+            &client,
+            crate::model::discover::DiscoveryRequest::new(format!("{base}/v1"), "model"),
+        )
+        .await
+        .expect_err("non-success HTTP status should fail");
+
+        assert_eq!(error.http_status(), Some(expected));
+        task.abort();
+    }
+
+    let (base, task) = serve(StatusCode::OK, r#"{"error":{"message":"401 rejected"}}"#).await;
+    let error = list_models(
+        &client,
+        crate::model::discover::DiscoveryRequest::new(format!("{base}/v1"), "model"),
+    )
+    .await
+    .expect_err("error payload should fail");
+    assert_eq!(error.http_status(), None);
+    task.abort();
+
+    let (base, task) = serve(StatusCode::OK, "not JSON").await;
+    let error = list_models(
+        &client,
+        crate::model::discover::DiscoveryRequest::new(format!("{base}/v1"), "model"),
+    )
+    .await
+    .expect_err("malformed JSON should fail");
+    assert_eq!(error.http_status(), None);
+    task.abort();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind closed fixture");
+    let address = listener.local_addr().expect("closed fixture address");
+    drop(listener);
+    let error = list_models(
+        &client,
+        crate::model::discover::DiscoveryRequest::new(format!("http://{address}/v1"), "model"),
+    )
+    .await
+    .expect_err("closed local port should fail");
+    assert_eq!(error.http_status(), None);
+}
+
+#[tokio::test]
 async fn malformed_success_body_has_a_bounded_sanitized_diagnostic() {
     let token = "sk-synthetic-secret-12345678901234567890";
     let body = format!("{token} {}", "界".repeat(500));
@@ -251,6 +306,21 @@ async fn openrouter_validation_sends_bearer_and_rejects_error_payload() {
             .as_ref()
             .and_then(|value| value.to_str().ok()),
         Some("Bearer fixture-key")
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn openrouter_validation_error_exposes_actual_http_status() {
+    let (base, task) = serve(StatusCode::FORBIDDEN, "response mentions 401").await;
+    let error = validate_openrouter_key(&reqwest::Client::new(), &base, "fixture-key")
+        .await
+        .expect_err("non-success HTTP status should fail");
+
+    assert_eq!(error.http_status(), Some(403));
+    assert_eq!(
+        error.to_string(),
+        "OpenRouter key validation returned 403: response mentions 401"
     );
     task.abort();
 }

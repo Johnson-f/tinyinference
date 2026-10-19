@@ -443,11 +443,11 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             requested: reservation.requested,
             attempts: std::sync::atomic::AtomicUsize::new(0),
         });
-        if let Some(hook) = &self.before_dispatch {
-            if let Err(error) = hook.check() {
-                reservation.settle(Spend::default());
-                return Err(error);
-            }
+        if let Some(hook) = &self.before_dispatch
+            && let Err(error) = hook.check()
+        {
+            reservation.settle(Spend::default());
+            return Err(error);
         }
         let response = PHYSICAL_CALL
             .scope(scope, self.inner.invoke(state, request))
@@ -462,11 +462,11 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             requested: reservation.requested,
             attempts: std::sync::atomic::AtomicUsize::new(0),
         });
-        if let Some(hook) = &self.before_dispatch {
-            if let Err(error) = hook.check() {
-                reservation.settle(Spend::default());
-                return Err(error);
-            }
+        if let Some(hook) = &self.before_dispatch
+            && let Err(error) = hook.check()
+        {
+            reservation.settle(Spend::default());
+            return Err(error);
         }
         let stream = PHYSICAL_CALL
             .scope(Arc::clone(&scope), self.inner.stream(state, request))

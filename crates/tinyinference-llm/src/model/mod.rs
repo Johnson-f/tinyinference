@@ -35,6 +35,7 @@ use crate::tool::{ToolCall, ToolSchema};
 use crate::usage::Usage;
 
 pub use decorators::*;
+pub use budget::BeforeDispatch;
 pub use error_slot::{ErrorSlotModel, ModelErrorSlot};
 pub use fallback::FallbackModel;
 pub use finish_reason::{FINISH_REASON_LENGTH, canonical_finish_reason};

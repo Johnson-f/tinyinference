@@ -270,6 +270,10 @@ pub struct CallBudget {
 /// It must be quick and must not perform I/O.
 pub trait BeforeDispatch: Send + Sync {
     /// Returns an error when the reserved call must not reach the provider.
+    ///
+    /// # Errors
+    ///
+    /// Returns the host's typed error when dispatch must be refused.
     fn check(&self) -> crate::Result<()>;
 }
 // Concrete transports call this before sending: adapters may retry request
@@ -439,6 +443,12 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             requested: reservation.requested,
             attempts: std::sync::atomic::AtomicUsize::new(0),
         });
+        if let Some(hook) = &self.before_dispatch {
+            if let Err(error) = hook.check() {
+                reservation.settle(Spend::default());
+                return Err(error);
+            }
+        }
         let response = PHYSICAL_CALL
             .scope(scope, self.inner.invoke(state, request))
             .await?;
@@ -452,6 +462,12 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             requested: reservation.requested,
             attempts: std::sync::atomic::AtomicUsize::new(0),
         });
+        if let Some(hook) = &self.before_dispatch {
+            if let Err(error) = hook.check() {
+                reservation.settle(Spend::default());
+                return Err(error);
+            }
+        }
         let stream = PHYSICAL_CALL
             .scope(Arc::clone(&scope), self.inner.stream(state, request))
             .await?;

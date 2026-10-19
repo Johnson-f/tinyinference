@@ -432,7 +432,14 @@ impl ChatModel<()> for ProbeModel {
         self.streams
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(ModelStream::new(Box::pin(futures::stream::iter(vec![
-            ModelStreamItem::Completed(ModelResponse::assistant("ok")),
+            ModelStreamItem::Completed(ModelResponse::assistant("ok").with_usage(
+                crate::usage::Usage {
+                    input_tokens: 2,
+                    output_tokens: 3,
+                    charged_amount: Some(crate::usage::ChargedAmount::usd_micros(5)),
+                    ..Default::default()
+                },
+            )),
         ]))))
     }
 }
@@ -521,6 +528,28 @@ async fn before_dispatch_refusal_prevents_stream_construction_and_refunds() {
     assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(inner.streams.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(budget.snapshot(), BudgetSnapshot::default());
+}
+
+#[tokio::test]
+async fn before_dispatch_success_checks_once_and_keeps_stream_settlement() {
+    let budget = Budget::new(SpendLimits::default());
+    let inner = probe_model();
+    let hook = Arc::new(DispatchCheck {
+        allowed: true,
+        checks: Default::default(),
+    });
+    let model = BudgetedModel::new(inner.clone(), budget.clone(), call_policy())
+        .before_dispatch(hook.clone());
+
+    let response = super::super::collect_model_stream(model.stream(&(), request()).await.unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.text(), "ok");
+    assert_eq!(inner.streams.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(budget.snapshot().spent.cost_micros, 5);
+    assert_eq!(budget.snapshot().reserved, Spend::default());
 }
 
 #[derive(Debug)]

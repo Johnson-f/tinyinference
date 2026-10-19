@@ -13,8 +13,8 @@ use crate::service::RuntimeConfig as Config;
 use crate::status::LocalAiStatus;
 use std::sync::{Arc, atomic::Ordering};
 
-use super::LocalAiService;
 use super::ollama_admin::OllamaHealthStatus;
+use super::{BootstrapFlightState, LocalAiService};
 
 /// Result of probing the configured endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,12 +49,28 @@ impl LocalAiService {
             return None;
         }
 
+        // Reserve the shared flight before spawning so a foreground caller can
+        // join this scheduled probe even when the task has not been polled yet.
+        let Some(completion) = self.try_claim_bootstrap() else {
+            self.bootstrap_scheduled.store(false, Ordering::Release);
+            return None;
+        };
+
         let guard = BootstrapScheduleGuard(Arc::clone(self));
         let service = Arc::clone(self);
         Some(runtime.spawn(async move {
             let _guard = guard;
-            service.bootstrap(&config).await;
+            let mut completion = completion;
+            service.bootstrap_inner(&config).await;
+            completion.finish();
         }))
+    }
+
+    /// Probes the configured runtime unless a ready or degraded result is
+    /// already cached. Concurrent calls share the same probe, including an
+    /// unreachable result; a later call may retry it.
+    pub async fn ensure_ready(&self, runtime: &Config) {
+        self.bootstrap(runtime).await;
     }
 
     pub fn new(config: &Config) -> Self {
@@ -86,6 +102,7 @@ impl LocalAiService {
                 gen_toks_per_sec: None,
             }),
             bootstrap_lock: tokio::sync::Mutex::new(()),
+            bootstrap_flight: parking_lot::Mutex::new(None),
             bootstrap_scheduled: std::sync::atomic::AtomicBool::new(false),
             last_memory_summary_at: parking_lot::Mutex::new(None),
             http: reqwest::Client::builder()
@@ -165,6 +182,37 @@ impl LocalAiService {
     /// `unreachable` endpoint is probed again on the next call, so a runtime
     /// the user starts later is picked up.
     pub async fn bootstrap(&self, config: &Config) {
+        loop {
+            let action = self.bootstrap_action();
+
+            match action {
+                BootstrapAction::Wait(mut receiver) => loop {
+                    let state = *receiver.borrow_and_update();
+                    match state {
+                        BootstrapFlightState::Completed => {
+                            if self.bootstrap_result_matches_config(config) {
+                                return;
+                            }
+                            break;
+                        }
+                        BootstrapFlightState::Cancelled => break,
+                        BootstrapFlightState::Running => {
+                            if receiver.changed().await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                },
+                BootstrapAction::Lead(mut completion) => {
+                    self.bootstrap_inner(config).await;
+                    completion.finish();
+                    return;
+                }
+            }
+        }
+    }
+
+    async fn bootstrap_inner(&self, config: &Config) {
         let _guard = self.bootstrap_lock.lock().await;
 
         if !local_inference_enabled(config) {
@@ -242,6 +290,15 @@ impl LocalAiService {
         }
     }
 
+    fn bootstrap_result_matches_config(&self, config: &Config) -> bool {
+        let state = self.status.lock().state.clone();
+        if local_inference_enabled(config) {
+            !matches!(state.as_str(), "idle" | "disabled")
+        } else {
+            state == "disabled"
+        }
+    }
+
     /// Probe the configured endpoint without side effects. Returns the probed
     /// base URL and the verdict.
     async fn probe_endpoint(&self, config: &Config) -> (String, EndpointProbe) {
@@ -289,6 +346,67 @@ impl LocalAiService {
                 *guard = Some(now);
                 true
             }
+        }
+    }
+}
+
+enum BootstrapAction {
+    Wait(tokio::sync::watch::Receiver<BootstrapFlightState>),
+    Lead(BootstrapCompletion),
+}
+
+impl LocalAiService {
+    fn bootstrap_action(&self) -> BootstrapAction {
+        let mut flight = self.bootstrap_flight.lock();
+        let receiver = flight.as_ref().map(|sender| sender.subscribe());
+        if let Some(receiver) = receiver {
+            if *receiver.borrow() == BootstrapFlightState::Running {
+                return BootstrapAction::Wait(receiver);
+            }
+        }
+        BootstrapAction::Lead(Self::claim_bootstrap_locked(&mut flight))
+    }
+
+    fn try_claim_bootstrap(&self) -> Option<BootstrapCompletion> {
+        let mut flight = self.bootstrap_flight.lock();
+        if let Some(sender) = flight.as_ref() {
+            let receiver = sender.subscribe();
+            if *receiver.borrow() == BootstrapFlightState::Running {
+                return None;
+            }
+        }
+        Some(Self::claim_bootstrap_locked(&mut flight))
+    }
+
+    fn claim_bootstrap_locked(
+        flight: &mut Option<tokio::sync::watch::Sender<BootstrapFlightState>>,
+    ) -> BootstrapCompletion {
+        let (sender, receiver) = tokio::sync::watch::channel(BootstrapFlightState::Running);
+        drop(receiver);
+        *flight = Some(sender.clone());
+        BootstrapCompletion {
+            sender,
+            completed: false,
+        }
+    }
+}
+
+struct BootstrapCompletion {
+    sender: tokio::sync::watch::Sender<BootstrapFlightState>,
+    completed: bool,
+}
+
+impl BootstrapCompletion {
+    fn finish(&mut self) {
+        self.sender.send_replace(BootstrapFlightState::Completed);
+        self.completed = true;
+    }
+}
+
+impl Drop for BootstrapCompletion {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.sender.send_replace(BootstrapFlightState::Cancelled);
         }
     }
 }

@@ -30,6 +30,7 @@ impl ListModelsError {
     ///
     /// Request failures, malformed responses, and provider error payloads do
     /// not carry a status, even if their message or body mentions one.
+    #[must_use]
     pub fn http_status(&self) -> Option<u16> {
         self.http_status
     }

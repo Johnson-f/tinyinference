@@ -239,7 +239,14 @@ pub fn build_local_runtime_chat_model(
             "options": { "num_ctx": value }
         })
     });
-    build_openai_model_with(
+    // Local chat templates commonly reject a `system` turn anywhere but first
+    // (tinyhumansai/openhuman#7440), so every system message goes out as one.
+    let chat = OpenAiModel::compatible_provider(provider_name, api_key, endpoint, model)
+        .with_auth_style(auth_style.clone())
+        .with_anthropic_cache_control(false)
+        .with_single_system_message();
+    let chat = configure_openai_model(
+        chat,
         OpenAiConfig {
             provider_name,
             endpoint,
@@ -259,7 +266,7 @@ pub fn build_local_runtime_chat_model(
             user_agent: None,
             explicit_cache_control: false,
         },
-        false,
         None,
-    )
+    );
+    Arc::new(chat)
 }

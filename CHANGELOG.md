@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Local OpenAI-compatible runtimes (`build_local_runtime_chat_model`, and
+  `OpenAiModel::ollama_at` / `llama_cpp` / `vllm` / local `ProviderSpec`s) send
+  every system message as one leading `system` message. Strict chat templates
+  (Qwen-family on LM Studio / llama.cpp) reject a second or mid-transcript
+  `system` turn with "System message must be at the beginning."
+  (tinyhumansai/openhuman#7440). New `OpenAiModel::with_single_system_message`;
+  its profile reports `hoists_system_messages` and no
+  `mid_conversation_system_messages`. Hosted routes are unchanged.
 - OpenAI-compatible provider: a streamed response now keeps the vendor fields
   of `usage` (OpenRouter's `cost`, `cost_details`, `is_byok`) on `raw`, under
   `usage`, where the non-streaming response already has them in its wire

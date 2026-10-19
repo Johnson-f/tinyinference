@@ -58,13 +58,22 @@ pub mod probe;
 pub mod rerank;
 pub mod served_models;
 mod types;
+pub mod verify;
 
 pub use error::{Error, Result};
+pub use factory::{
+    CredentialResolver, EmbeddingFactorySettings, ManagedModelFactory,
+    create_configured_embedding_model,
+};
 pub use rerank::{
     RerankCancellation, RerankError, RerankRequest, RerankResponse, RerankResult, RerankUsage,
     Reranker, VoyageRerankConfig, VoyageReranker,
 };
 pub use types::*;
+pub use verify::{
+    ConnectionTestResult, UnavailableEmbeddingModel, VerifiedDims, VerifyRejection,
+    effective_embedder_slug, test_embedding_connection, verify_custom_endpoint,
+};
 
 use async_trait::async_trait;
 use serde_json::Value;

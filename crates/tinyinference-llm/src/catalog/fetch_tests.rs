@@ -80,6 +80,7 @@ async fn codex_oauth_discovery_request_fetches_models_with_protocol_headers() {
     assert_eq!(headers["authorization"], "Bearer oauth-test-token");
     assert_eq!(headers["chatgpt-account-id"], "account-123");
     assert_eq!(headers["originator"], "codex_cli_rs");
+    assert_eq!(headers["openai-beta"], "responses=experimental");
     assert_eq!(headers["user-agent"], "codex_cli_rs/0.0.0 (Fixture 1.0)");
     task.abort();
 }

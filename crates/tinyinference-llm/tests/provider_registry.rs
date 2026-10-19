@@ -89,7 +89,7 @@ async fn registry_routes_send_the_configured_wire_request() {
         let route = OpenAiCodexRouting {
             endpoint: spec.base_url.clone(),
             using_oauth: oauth,
-            account_id: None,
+            account_id: oauth.then(|| "account-example".into()),
         };
         let headers = vec![("X-Host".into(), "test-host".into())];
         let query = vec![("client_version".into(), "test-version".into())];
@@ -120,6 +120,7 @@ async fn registry_routes_send_the_configured_wire_request() {
                     codex: oauth.then_some(&route),
                     extra_headers: &headers,
                     extra_query_params: &query,
+                    user_agent: oauth.then_some("codex_cli_rs/0.0.0 (Fixture 1.0)"),
                     http: Some(
                         reqwest::Client::builder()
                             .no_proxy()
@@ -159,6 +160,10 @@ async fn registry_routes_send_the_configured_wire_request() {
         if oauth {
             assert!(header.starts_with("POST /v1/responses?"));
             assert!(header.contains("authorization: Bearer test-key"));
+            assert!(header.contains("chatgpt-account-id: account-example"));
+            assert!(header.contains("originator: codex_cli_rs"));
+            assert!(header.contains("openai-beta: responses=experimental"));
+            assert!(header.contains("user-agent: codex_cli_rs/0.0.0 (Fixture 1.0)"));
             assert!(body.get("max_output_tokens").is_none());
         } else {
             assert!(header.starts_with("POST /v1/chat/completions?"));

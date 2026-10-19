@@ -10,6 +10,10 @@ pub const OPENAI_CODEX_BACKEND_BASE_URL: &str = "https://chatgpt.com/backend-api
 pub const OPENAI_CODEX_ORIGINATOR_HEADER: &str = "originator";
 /// Originator value used by this adapter.
 pub const OPENAI_CODEX_ORIGINATOR: &str = "codex_cli_rs";
+/// Codex Responses API beta header.
+pub const OPENAI_CODEX_BETA_HEADER: &str = "OpenAI-Beta";
+/// Codex Responses API beta header value.
+pub const OPENAI_CODEX_BETA_VALUE: &str = "responses=experimental";
 /// Model hints advertised by the Codex backend.
 pub const OPENAI_CODEX_MODEL_HINTS: &[&str] =
     &["gpt-5.5", "gpt-5.4", "gpt-5.3-codex-spark", "gpt-5.3-codex"];
@@ -57,6 +61,65 @@ impl OpenAiCodexRouting {
             using_oauth: false,
             account_id: None,
         }
+    }
+
+    /// Returns protocol headers required by Codex OAuth requests.
+    ///
+    /// The optional account identifier is omitted when unavailable. Standard
+    /// OpenAI-compatible routes receive no Codex headers.
+    #[must_use]
+    pub fn headers(&self) -> Vec<(String, String)> {
+        if !self.using_oauth {
+            return Vec::new();
+        }
+        let mut headers = Vec::with_capacity(3);
+        if let Some(account_id) = &self.account_id {
+            headers.push((OPENAI_CODEX_ACCOUNT_HEADER.into(), account_id.clone()));
+        }
+        headers.push((
+            OPENAI_CODEX_ORIGINATOR_HEADER.into(),
+            OPENAI_CODEX_ORIGINATOR.into(),
+        ));
+        headers.push((
+            OPENAI_CODEX_BETA_HEADER.into(),
+            OPENAI_CODEX_BETA_VALUE.into(),
+        ));
+        headers
+    }
+
+    /// Returns Codex's listing query parameter when OAuth routing is active.
+    #[must_use]
+    pub fn client_version_query(&self, client_version: &str) -> Vec<(String, String)> {
+        if self.using_oauth {
+            vec![("client_version".into(), client_version.to_owned())]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// Selects Codex OAuth routing only for an OpenAI slug with a host-confirmed
+/// OAuth bearer. Credential selection and lookup remain host responsibilities.
+///
+/// # Examples
+///
+/// ```
+/// use tinyinference_llm::providers::openai::codex::resolve_codex_routing;
+///
+/// let route = resolve_codex_routing("openai", "https://api.openai.com/v1", true, None);
+/// assert!(route.using_oauth);
+/// ```
+#[must_use]
+pub fn resolve_codex_routing(
+    slug: &str,
+    endpoint: &str,
+    bearer_is_oauth: bool,
+    account_id: Option<&str>,
+) -> OpenAiCodexRouting {
+    if slug == "openai" && bearer_is_oauth {
+        OpenAiCodexRouting::oauth(account_id)
+    } else {
+        OpenAiCodexRouting::standard(endpoint)
     }
 }
 

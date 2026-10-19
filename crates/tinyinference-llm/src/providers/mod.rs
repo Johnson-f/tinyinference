@@ -44,6 +44,7 @@ mod types;
 // OpenAI-compatible endpoint. Providers with a different wire protocol would be
 // added behind their own Cargo feature.
 pub mod anthropic;
+pub mod http;
 pub mod omission;
 pub mod openai;
 pub mod tinyhumans;

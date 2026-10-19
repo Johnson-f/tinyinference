@@ -131,13 +131,15 @@ where
 }
 
 fn sanitize_extension(extension: Option<&str>) -> Result<String, String> {
+    let Some(extension) = extension else {
+        return Ok("webm".to_string());
+    };
     let extension = extension
-        .unwrap_or_default()
         .trim()
         .trim_start_matches('.')
         .to_ascii_lowercase();
     if extension.is_empty() {
-        return Ok("webm".to_string());
+        return Err("[voice-stt] invalid audio extension".to_string());
     }
     if !extension
         .chars()

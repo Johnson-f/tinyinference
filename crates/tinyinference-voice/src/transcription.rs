@@ -78,8 +78,9 @@ where
 /// removes the file on success, error, or cancellation.
 ///
 /// `extension` may include a leading dot and surrounding whitespace. An
-/// omitted or blank extension defaults to `webm`; other values must contain
-/// only ASCII letters and digits after normalization.
+/// omitted extension defaults to `webm`; explicit values must contain only
+/// ASCII letters and digits after normalization, so blank and dots-only values
+/// are rejected.
 ///
 /// # Errors
 ///

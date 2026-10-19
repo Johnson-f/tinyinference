@@ -165,6 +165,15 @@ async fn transcribe_bytes_rejects_empty_audio_and_traversal_extensions() {
             .unwrap_err()
             .contains("extension")
     );
+    for extension in ["", "   ", "...", " . "] {
+        assert!(
+            transcribe_bytes(b"voice", Some(extension), &provider)
+                .await
+                .unwrap_err()
+                .contains("extension"),
+            "explicit extension {extension:?} should be rejected"
+        );
+    }
 }
 
 struct PendingProvider {

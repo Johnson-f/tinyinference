@@ -2,7 +2,7 @@
 //! endpoint reports on `/models`.
 
 /// Portable rejection returned when an endpoint does not serve a requested model.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ModelNotServed {
     /// Stable machine-readable error code.
     pub error: &'static str,

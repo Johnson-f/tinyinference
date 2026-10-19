@@ -6,7 +6,7 @@ use crate::{Error, Result, model_supports_dimensions};
 const MAX_PROBE_RESPONSE_BYTES: usize = 64 * 1024;
 
 /// A portable rejection returned by embedding endpoint validation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct EmbeddingProbeRejection {
     /// Stable machine-readable error code.
     pub error: &'static str,
@@ -157,6 +157,11 @@ fn embeddings_probe_url(endpoint: &str) -> Result<url::Url> {
     };
     url.set_path(&path);
     Ok(url)
+}
+
+/// Validate the endpoint policy before any auxiliary `/models` request is attempted.
+pub fn validate_custom_embeddings_endpoint(endpoint: &str) -> Result<()> {
+    embeddings_probe_url(endpoint).map(|_| ())
 }
 
 async fn bounded_response_body(mut response: reqwest::Response) -> Result<String> {

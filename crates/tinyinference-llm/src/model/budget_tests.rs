@@ -972,7 +972,9 @@ struct AttemptThenInvoke {
 
 impl std::fmt::Debug for AttemptThenInvoke {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("AttemptThenInvoke").finish_non_exhaustive()
+        formatter
+            .debug_struct("AttemptThenInvoke")
+            .finish_non_exhaustive()
     }
 }
 
@@ -1014,7 +1016,10 @@ async fn denied_outer_retry_reservation_refunds_unsent_inner_budget() {
         model.invoke(&(), request()).await,
         Err(crate::Error::BudgetExceeded(_))
     ));
-    assert_eq!(outer_budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+    assert_eq!(
+        outer_budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros
+    );
     assert_eq!(inner_budget.snapshot(), BudgetSnapshot::default());
 }
 
@@ -1103,7 +1108,8 @@ impl ChatModel<()> for PhysicalDeferredModel {
         _: &crate::model::DeferredHandle,
     ) -> crate::Result<crate::model::DeferredStatus> {
         super::before_physical_attempt()?;
-        self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.fetches
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(crate::model::DeferredStatus::Pending)
     }
 }
@@ -1125,7 +1131,8 @@ async fn dispatch_checked_model_rechecks_policy_for_deferred_provider_polls() {
         ModelStreamItem::Deferred(handle) => handle,
         item => panic!("expected deferred item, got {item:?}"),
     };
-    hook.allowed.store(false, std::sync::atomic::Ordering::SeqCst);
+    hook.allowed
+        .store(false, std::sync::atomic::Ordering::SeqCst);
 
     assert!(matches!(
         model.fetch_deferred(&handle).await,
@@ -1560,6 +1567,40 @@ async fn before_dispatch_is_rechecked_before_each_physical_retry() {
     ));
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(budget.snapshot().reserved, Spend::default());
+    assert_eq!(
+        budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros
+    );
+}
+
+#[tokio::test]
+async fn nested_dispatch_and_budget_wrappers_recheck_revoked_retry_policy() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook = Arc::new(RevocableDispatchCheck {
+        allowed: std::sync::atomic::AtomicBool::new(true),
+        checks: Default::default(),
+    });
+    let budget = Budget::new(SpendLimits::default());
+    let budgeted = Arc::new(
+        BudgetedModel::new(
+            Arc::new(RevocableRetryModel {
+                calls: Arc::clone(&calls),
+                hook: Arc::clone(&hook),
+            }),
+            budget.clone(),
+            call_policy(),
+        )
+        .before_dispatch(hook.clone()),
+    );
+    let model = super::super::DispatchCheckedModel::new(budgeted, hook.clone());
+
+    assert!(matches!(
+        model.invoke(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 5);
     assert_eq!(budget.snapshot().reserved, Spend::default());
     assert_eq!(
         budget.snapshot().spent.cost_micros,

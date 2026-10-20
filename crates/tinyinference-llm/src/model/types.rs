@@ -1335,6 +1335,14 @@ pub trait ChatModel<State: Send + Sync>: Send + Sync {
         false
     }
 
+    /// Whether this model wrapper performs a known admission gate before
+    /// invoking its inner model. Budget wrappers use this to avoid treating a
+    /// wrapper's pre-invocation refusal as an untracked provider invocation.
+    #[doc(hidden)]
+    fn has_pre_invocation_admission_gate(&self) -> bool {
+        false
+    }
+
     /// Invokes the model and returns a complete response.
     async fn invoke(&self, state: &State, request: ModelRequest) -> Result<ModelResponse>;
 

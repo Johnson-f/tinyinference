@@ -597,12 +597,13 @@ async fn before_dispatch_is_rechecked_before_each_physical_retry() {
         allowed: std::sync::atomic::AtomicBool::new(true),
         checks: Default::default(),
     });
+    let budget = Budget::new(SpendLimits::default());
     let model = BudgetedModel::new(
         Arc::new(RevocableRetryModel {
             calls: Arc::clone(&calls),
             hook: Arc::clone(&hook),
         }),
-        Budget::new(SpendLimits::default()),
+        budget.clone(),
         call_policy(),
     )
     .before_dispatch(hook.clone());
@@ -613,6 +614,8 @@ async fn before_dispatch_is_rechecked_before_each_physical_retry() {
     ));
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(budget.snapshot().reserved, Spend::default());
+    assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
 }
 
 #[derive(Debug)]
@@ -646,9 +649,10 @@ async fn before_dispatch_is_rechecked_when_a_lazy_stream_is_first_polled() {
         allowed: std::sync::atomic::AtomicBool::new(true),
         checks: Default::default(),
     });
+    let budget = Budget::new(SpendLimits::default());
     let model = BudgetedModel::new(
         Arc::new(RevocableLazyStreamModel(Arc::clone(&calls))),
-        Budget::new(SpendLimits::default()),
+        budget.clone(),
         call_policy(),
     )
     .before_dispatch(hook.clone());
@@ -662,6 +666,7 @@ async fn before_dispatch_is_rechecked_when_a_lazy_stream_is_first_polled() {
     ));
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(budget.snapshot(), BudgetSnapshot::default());
 }
 
 #[derive(Debug)]

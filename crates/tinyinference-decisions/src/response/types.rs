@@ -39,8 +39,8 @@ fn deserialize_usd_micros<'de, D>(deserializer: D) -> Result<Option<i64>, D::Err
 where
     D: serde::Deserializer<'de>,
 {
-    let value = Option::<serde_json::Number>::deserialize(deserializer)?;
-    let Some(value) = value.and_then(|number| number.as_f64()) else {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value.and_then(|value| value.as_number()?.as_f64()) else {
         return Ok(None);
     };
     if !value.is_finite() || value < 0.0 || value > (i64::MAX as f64 / 1_000_000.0) {

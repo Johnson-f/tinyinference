@@ -113,6 +113,30 @@ fn usage_fields_remain_optional() {
 }
 
 #[test]
+fn usage_preserves_cached_tokens_and_reported_openrouter_cost() {
+    let usage: Usage = serde_json::from_value(json!({
+        "input_tokens": 100,
+        "cached_input_tokens": 40,
+        "output_tokens": 15,
+        "cost": 0.0000125
+    }))
+    .unwrap();
+    assert_eq!(usage.input_tokens, Some(100));
+    assert_eq!(usage.cached_input_tokens, Some(40));
+    assert_eq!(usage.output_tokens, Some(15));
+    assert_eq!(usage.cost_usd_micros, Some(13));
+
+    let unknown: Usage = serde_json::from_value(json!({
+        "input_tokens": 2,
+        "output_tokens": 1,
+        "cost": "unknown"
+    }))
+    .unwrap();
+    assert_eq!(unknown.cost_usd_micros, None);
+    assert_eq!(unknown.cached_input_tokens, None);
+}
+
+#[test]
 fn rejects_missing_extra_or_wrongly_typed_answers() {
     let mut missing = response();
     missing.answers.remove("safe");

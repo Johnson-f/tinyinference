@@ -41,8 +41,47 @@ pub enum TinyHumansOperation {
     Readiness,
 }
 
+/// The HTTP-authentication classification for a managed gateway failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TinyHumansAuthFailureKind {
+    /// The gateway returned HTTP 401.
+    Unauthorized,
+    /// The gateway returned HTTP 403.
+    Forbidden,
+    /// Authentication failed without a matching HTTP 401 or 403 status.
+    Other,
+}
+
+/// Typed provenance for an authentication failure observed by the managed model.
+///
+/// Values can only be created by [`TinyHumansModel`] after it recognizes an
+/// authentication failure from the managed endpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TinyHumansAuthFailure {
+    operation: TinyHumansOperation,
+    kind: TinyHumansAuthFailureKind,
+}
+
+impl TinyHumansAuthFailure {
+    /// The managed inference operation that observed the failure.
+    #[must_use]
+    pub fn operation(self) -> TinyHumansOperation {
+        self.operation
+    }
+
+    /// The HTTP-authentication category supplied by the managed endpoint.
+    #[must_use]
+    pub fn kind(self) -> TinyHumansAuthFailureKind {
+        self.kind
+    }
+}
+
 /// Handles authentication failures from a managed endpoint.
 pub type AuthFailureHandler = Arc<dyn Fn(&ProviderError, TinyHumansOperation) + Send + Sync>;
+
+/// Handles authentication failures with explicit managed-endpoint provenance.
+pub type ManagedAuthFailureHandler =
+    Arc<dyn Fn(&ProviderError, TinyHumansAuthFailure) + Send + Sync>;
 
 /// An OpenAI-compatible model for the TinyHumans managed gateway.
 pub struct TinyHumansModel {
@@ -51,6 +90,7 @@ pub struct TinyHumansModel {
     default_model: String,
     thread_id: Option<String>,
     auth_failure_handler: Option<AuthFailureHandler>,
+    managed_auth_failure_handler: Option<ManagedAuthFailureHandler>,
 }
 
 impl std::fmt::Debug for TinyHumansModel {
@@ -63,6 +103,10 @@ impl std::fmt::Debug for TinyHumansModel {
             .field(
                 "auth_failure_handler",
                 &self.auth_failure_handler.as_ref().map(|_| "<fn>"),
+            )
+            .field(
+                "managed_auth_failure_handler",
+                &self.managed_auth_failure_handler.as_ref().map(|_| "<fn>"),
             )
             .finish_non_exhaustive()
     }
@@ -116,6 +160,7 @@ impl TinyHumansModel {
             default_model,
             thread_id: None,
             auth_failure_handler: None,
+            managed_auth_failure_handler: None,
         })
     }
 
@@ -162,6 +207,16 @@ impl TinyHumansModel {
         handler: impl Fn(&ProviderError, TinyHumansOperation) + Send + Sync + 'static,
     ) -> Self {
         self.auth_failure_handler = Some(Arc::new(handler));
+        self
+    }
+
+    /// Installs a callback carrying typed provenance for managed auth failures.
+    #[must_use]
+    pub fn with_managed_auth_failure_handler(
+        mut self,
+        handler: impl Fn(&ProviderError, TinyHumansAuthFailure) + Send + Sync + 'static,
+    ) -> Self {
+        self.managed_auth_failure_handler = Some(Arc::new(handler));
         self
     }
 
@@ -216,13 +271,25 @@ impl TinyHumansModel {
     }
 
     fn observe_auth_error(&self, error: &Error, operation: TinyHumansOperation) {
-        let Some(handler) = &self.auth_failure_handler else {
-            return;
-        };
         if let Error::Provider(provider_error) = error
             && is_auth_failure(provider_error)
         {
-            handler(provider_error, operation);
+            self.notify_auth_failure(provider_error, operation);
+        }
+    }
+
+    fn notify_auth_failure(&self, error: &ProviderError, operation: TinyHumansOperation) {
+        if let Some(handler) = &self.auth_failure_handler {
+            handler(error, operation);
+        }
+        if let Some(handler) = &self.managed_auth_failure_handler {
+            handler(
+                error,
+                TinyHumansAuthFailure {
+                    operation,
+                    kind: auth_failure_kind(error),
+                },
+            );
         }
     }
 }
@@ -257,16 +324,27 @@ impl ChatModel<()> for TinyHumansModel {
                 return Err(error);
             }
         };
-        let handler = self.auth_failure_handler.clone();
+        let legacy_handler = self.auth_failure_handler.clone();
+        let managed_handler = self.managed_auth_failure_handler.clone();
         Ok(stream.map_items(move |item| match item {
             ModelStreamItem::Completed(response) => {
                 ModelStreamItem::Completed(project_tinyhumans_envelope(response))
             }
             ModelStreamItem::ProviderFailed(error) => {
                 if is_auth_failure(&error)
-                    && let Some(handler) = &handler
                 {
-                    handler(&error, TinyHumansOperation::Stream);
+                    if let Some(handler) = &legacy_handler {
+                        handler(&error, TinyHumansOperation::Stream);
+                    }
+                    if let Some(handler) = &managed_handler {
+                        handler(
+                            &error,
+                            TinyHumansAuthFailure {
+                                operation: TinyHumansOperation::Stream,
+                                kind: auth_failure_kind(&error),
+                            },
+                        );
+                    }
                 }
                 ModelStreamItem::ProviderFailed(error)
             }
@@ -290,6 +368,14 @@ fn is_auth_failure(error: &ProviderError) -> bool {
         )
         || message.contains("unauthorized")
         || message.contains("invalid api key")
+}
+
+fn auth_failure_kind(error: &ProviderError) -> TinyHumansAuthFailureKind {
+    match error.status {
+        Some(401) => TinyHumansAuthFailureKind::Unauthorized,
+        Some(403) => TinyHumansAuthFailureKind::Forbidden,
+        _ => TinyHumansAuthFailureKind::Other,
+    }
 }
 
 fn is_provider_not_configured_error(error: &ProviderError) -> bool {

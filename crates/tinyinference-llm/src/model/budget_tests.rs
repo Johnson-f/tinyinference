@@ -912,6 +912,113 @@ async fn unknown_adapter_send_is_not_refunded_after_later_nested_refusal() {
     );
 }
 
+#[derive(Debug)]
+struct RefuseAfterWarmup(std::sync::atomic::AtomicUsize);
+
+impl super::BeforeDispatch for RefuseAfterWarmup {
+    fn check(&self) -> crate::Result<()> {
+        let check = self
+            .0
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if check < 2 {
+            Ok(())
+        } else {
+            Err(crate::Error::Validation("dispatch revoked".into()))
+        }
+    }
+}
+
+#[tokio::test]
+async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut warmup, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            listener.accept(),
+        )
+        .await
+        .expect("Ollama warm-up reaches the local server")
+        .unwrap();
+        let mut bytes = vec![0; 8192];
+        let read = warmup.read(&mut bytes).await.unwrap();
+        let warmup_request = String::from_utf8_lossy(&bytes[..read]);
+        assert!(warmup_request.starts_with("POST /api/chat "));
+        let warmup_response = "{}";
+        warmup
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    warmup_response.len(),
+                    warmup_response
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+
+        let mut requests = vec!["/api/chat".to_string()];
+        if let Ok(Ok((mut chat, _))) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::select! {
+                accepted = listener.accept() => accepted,
+                _ = finished_rx => return requests,
+            },
+        )
+        .await
+        {
+            let mut bytes = vec![0; 8192];
+            let read = chat.read(&mut bytes).await.unwrap();
+            let request = String::from_utf8_lossy(&bytes[..read]);
+            assert!(request.starts_with("POST /v1/chat/completions "));
+            requests.push("/v1/chat/completions".to_string());
+            let body = r#"{"id":"test","object":"chat.completion","created":1,"model":"llama3.2","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#;
+            chat.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        }
+        requests
+    });
+
+    let mut spec = crate::providers::ProviderSpec::for_kind(crate::providers::ProviderKind::Ollama);
+    spec.base_url = endpoint;
+    let provider = crate::providers::registry::ProviderRegistry::new(|_| Ok(String::new()))
+        .build_with(
+            &spec,
+            crate::providers::registry::ProviderBuildOptions {
+                num_ctx: Some(4096),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let budget = Budget::new(SpendLimits::default());
+    let hook = Arc::new(RefuseAfterWarmup(Default::default()));
+    let model = BudgetedModel::new(provider, budget.clone(), call_policy())
+        .before_dispatch(hook.clone());
+
+    let outcome = model.invoke(&(), request()).await;
+    let _ = finished_tx.send(());
+
+    assert!(matches!(
+        outcome,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+    assert_eq!(budget.snapshot().reserved, Spend::default());
+    assert_eq!(server.await.unwrap(), vec!["/api/chat"]);
+}
+
 #[tokio::test]
 async fn anthropic_fallback_rechecks_dispatch_before_its_second_send() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -1020,9 +1020,9 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
         outcome,
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
-    assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
     assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
     assert_eq!(budget.snapshot().reserved, Spend::default());
+    assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
     assert_eq!(server.await.unwrap(), vec!["/api/chat"]);
 }
 

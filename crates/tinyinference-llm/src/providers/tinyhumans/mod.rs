@@ -41,6 +41,19 @@ pub enum TinyHumansOperation {
     Readiness,
 }
 
+/// Stage at which a managed-model operation failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TinyHumansFailurePoint {
+    /// A unary invocation failed before returning a response.
+    Invoke,
+    /// A stream could not be opened.
+    StreamOpen,
+    /// A failure was delivered inside an already-open stream.
+    StreamItem,
+    /// The lightweight readiness probe encountered an error.
+    Readiness,
+}
+
 /// The HTTP-authentication classification for a managed gateway failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TinyHumansAuthFailureKind {
@@ -83,6 +96,9 @@ pub type AuthFailureHandler = Arc<dyn Fn(&ProviderError, TinyHumansOperation) + 
 pub type ManagedAuthFailureHandler =
     Arc<dyn Fn(&ProviderError, TinyHumansAuthFailure) + Send + Sync>;
 
+/// Observes model failures without changing their returned or streamed values.
+pub type ErrorObserver = Arc<dyn Fn(&Error, TinyHumansFailurePoint) + Send + Sync>;
+
 /// An OpenAI-compatible model for the TinyHumans managed gateway.
 pub struct TinyHumansModel {
     model: OpenAiModel,
@@ -92,6 +108,7 @@ pub struct TinyHumansModel {
     thread_id: Option<String>,
     auth_failure_handler: Option<AuthFailureHandler>,
     managed_auth_failure_handler: Option<ManagedAuthFailureHandler>,
+    error_observer: Option<ErrorObserver>,
 }
 
 impl std::fmt::Debug for TinyHumansModel {
@@ -108,6 +125,10 @@ impl std::fmt::Debug for TinyHumansModel {
             .field(
                 "managed_auth_failure_handler",
                 &self.managed_auth_failure_handler.as_ref().map(|_| "<fn>"),
+            )
+            .field(
+                "error_observer",
+                &self.error_observer.as_ref().map(|_| "<fn>"),
             )
             .finish_non_exhaustive()
     }
@@ -163,6 +184,7 @@ impl TinyHumansModel {
             thread_id: None,
             auth_failure_handler: None,
             managed_auth_failure_handler: None,
+            error_observer: None,
         })
     }
 
@@ -234,6 +256,20 @@ impl TinyHumansModel {
         self
     }
 
+    /// Installs an observer for failures at the model-call boundary.
+    ///
+    /// The observer receives the original normalized error and a typed failure
+    /// point. It does not alter returned errors or stream items, and is called
+    /// independently of the authentication-specific callbacks.
+    #[must_use]
+    pub fn with_error_observer(
+        mut self,
+        observer: impl Fn(&Error, TinyHumansFailurePoint) + Send + Sync + 'static,
+    ) -> Self {
+        self.error_observer = Some(Arc::new(observer));
+        self
+    }
+
     /// Performs a small completion to check whether an account has a provider
     /// configured. Only the definitive provider-not-configured response blocks;
     /// transport failures and unrelated provider errors fail open.
@@ -278,6 +314,12 @@ impl TinyHumansModel {
         match self.model.invoke(&(), self.prepare_request(request)).await {
             Ok(response) => Ok(project_tinyhumans_envelope(response)),
             Err(error) => {
+                let point = match operation {
+                    TinyHumansOperation::Readiness => TinyHumansFailurePoint::Readiness,
+                    TinyHumansOperation::Invoke => TinyHumansFailurePoint::Invoke,
+                    TinyHumansOperation::Stream => unreachable!("invoke operation is not stream"),
+                };
+                self.observe_error(&error, point);
                 self.observe_auth_error(&error, operation);
                 Err(error)
             }
@@ -289,6 +331,12 @@ impl TinyHumansModel {
             && is_auth_failure(provider_error)
         {
             self.notify_auth_failure(provider_error, operation);
+        }
+    }
+
+    fn observe_error(&self, error: &Error, point: TinyHumansFailurePoint) {
+        if let Some(observer) = &self.error_observer {
+            observer(error, point);
         }
     }
 
@@ -334,17 +382,25 @@ impl ChatModel<()> for TinyHumansModel {
         let stream = match self.model.stream(&(), self.prepare_request(request)).await {
             Ok(stream) => stream,
             Err(error) => {
+                self.observe_error(&error, TinyHumansFailurePoint::StreamOpen);
                 self.observe_auth_error(&error, TinyHumansOperation::Stream);
                 return Err(error);
             }
         };
         let legacy_handler = self.auth_failure_handler.clone();
         let managed_handler = self.managed_auth_failure_handler.clone();
+        let error_observer = self.error_observer.clone();
         Ok(stream.map_items(move |item| match item {
             ModelStreamItem::Completed(response) => {
                 ModelStreamItem::Completed(project_tinyhumans_envelope(response))
             }
             ModelStreamItem::ProviderFailed(error) => {
+                if let Some(observer) = &error_observer {
+                    observer(
+                        &Error::Provider(Box::new(error.clone())),
+                        TinyHumansFailurePoint::StreamItem,
+                    );
+                }
                 if is_auth_failure(&error) {
                     if let Some(handler) = &legacy_handler {
                         handler(&error, TinyHumansOperation::Stream);

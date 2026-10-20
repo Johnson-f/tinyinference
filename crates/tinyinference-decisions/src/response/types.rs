@@ -28,14 +28,13 @@ pub struct Usage {
     /// Cached input tokens, when the provider reports them.
     #[serde(default, alias = "cached_tokens")]
     pub cached_input_tokens: Option<u64>,
-    /// Provider-reported USD charge in integer micro-dollars. The provider's
-    /// decimal `cost` is rounded to the nearest micro-dollar; invalid or
+    /// Provider-reported USD charge in integer nanodollars. Invalid or
     /// unreported costs stay absent.
-    #[serde(default, rename = "cost", deserialize_with = "deserialize_usd_micros")]
-    pub cost_usd_micros: Option<i64>,
+    #[serde(default, rename = "cost", deserialize_with = "deserialize_usd_nanos")]
+    pub cost_usd_nanos: Option<i64>,
 }
 
-fn deserialize_usd_micros<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+fn deserialize_usd_nanos<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -43,10 +42,10 @@ where
     let Some(value) = value.and_then(|value| value.as_number()?.as_f64()) else {
         return Ok(None);
     };
-    if !value.is_finite() || value < 0.0 || value > (i64::MAX as f64 / 1_000_000.0) {
+    if !value.is_finite() || value < 0.0 || value > (i64::MAX as f64 / 1_000_000_000.0) {
         return Ok(None);
     }
-    Ok(Some((value * 1_000_000.0).round() as i64))
+    Ok(Some((value * 1_000_000_000.0).round() as i64))
 }
 
 /// One typed answer.

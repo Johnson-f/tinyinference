@@ -501,6 +501,10 @@ fn mark_physical_refused_before_attempt() {
 pub fn before_physical_attempt() -> crate::Result<()> {
     PHYSICAL_CALL
         .try_with(|scope| {
+            let _attempt = scope
+                .attempt_gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(hook) = &scope.before_dispatch
                 && let Err(error) = hook.check()
             {
@@ -510,22 +514,59 @@ pub fn before_physical_attempt() -> crate::Result<()> {
             // A DispatchCheckedModel may wrap this budgeted model. Its
             // independent admission scope must also be checked at every
             // physical send, including provider retries.
-            if let Err(error) = before_unbudgeted_physical_attempt() {
-                mark_physical_refused_before_attempt();
-                return Err(error);
-            }
-            if scope
+            let dispatch_scope = match checked_unbudgeted_physical_attempt() {
+                Ok(scope) => scope,
+                Err(error) => {
+                    mark_physical_refused_before_attempt();
+                    return Err(error);
+                }
+            };
+            // Reserve retry money before consuming a host call slot. A denied
+            // monetary reservation therefore never charges an unsent attempt.
+            let retry_reservation = if scope
                 .attempts
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .load(std::sync::atomic::Ordering::SeqCst)
                 == 0
             {
-                return Ok(());
+                None
+            } else {
+                Some(
+                    scope
+                        .budget
+                        .reserve(scope.requested)
+                        .map_err(crate::Error::BudgetExceeded)?,
+                )
+            };
+            if let Some(hook) = &scope.before_dispatch
+                && let Err(error) = hook.physical_attempt()
+            {
+                mark_physical_refused_before_attempt();
+                if let Some(reservation) = retry_reservation {
+                    reservation.settle(Spend::default());
+                }
+                return Err(error);
             }
-            let reservation = scope
-                .budget
-                .reserve(scope.requested)
-                .map_err(crate::Error::BudgetExceeded)?;
-            drop(reservation);
+            if let Some(dispatch_scope) = dispatch_scope {
+                let _dispatch_attempt = dispatch_scope
+                    .attempt_gate
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Err(error) = dispatch_scope.before_dispatch.physical_attempt() {
+                    mark_physical_refused_before_attempt();
+                    if let Some(reservation) = retry_reservation {
+                        reservation.settle(Spend::default());
+                    }
+                    return Err(error);
+                }
+                dispatch_scope
+                    .attempts
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            scope
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // An accepted attempt remains charged even if the HTTP send fails.
+            drop(retry_reservation);
             Ok(())
         })
         .unwrap_or_else(|_| before_unbudgeted_physical_attempt())

@@ -595,6 +595,15 @@ impl super::BeforeDispatch for RefuseRetrySend {
     }
 }
 
+fn assert_no_connection(listener: tokio::net::TcpListener) {
+    let listener = listener.into_std().unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "a refused dispatch must not open a provider connection"
+    );
+}
+
 #[tokio::test]
 async fn openai_unary_refusal_before_first_send_refunds_budget_reservation() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -605,17 +614,17 @@ async fn openai_unary_refusal_before_first_send_refunds_budget_reservation() {
     let model = BudgetedModel::new(Arc::new(provider), budget.clone(), call_policy())
         .before_dispatch(hook.clone());
 
+    let outcome = tokio::select! {
+        result = model.invoke(&(), request()) => result,
+        connection = listener.accept() => panic!("refused OpenAI call opened a connection: {connection:?}"),
+    };
     assert!(matches!(
-        model.invoke(&(), request()).await,
+        outcome,
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
     assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(budget.snapshot(), BudgetSnapshot::default());
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
-            .await
-            .is_err()
-    );
+    assert_no_connection(listener);
 }
 
 #[tokio::test]
@@ -628,17 +637,17 @@ async fn openai_stream_refusal_before_first_send_refunds_budget_reservation() {
     let model = BudgetedModel::new(Arc::new(provider), budget.clone(), call_policy())
         .before_dispatch(hook.clone());
 
+    let outcome = tokio::select! {
+        result = model.stream(&(), request()) => result,
+        connection = listener.accept() => panic!("refused OpenAI stream opened a connection: {connection:?}"),
+    };
     assert!(matches!(
-        model.stream(&(), request()).await,
+        outcome,
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
     assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(budget.snapshot(), BudgetSnapshot::default());
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
-            .await
-            .is_err()
-    );
+    assert_no_connection(listener);
 }
 
 #[tokio::test]
@@ -654,17 +663,17 @@ async fn nested_dispatch_checked_refusal_refunds_outer_budget_reservation() {
     ));
     let model = BudgetedModel::new(dispatch_checked, budget.clone(), call_policy());
 
+    let outcome = tokio::select! {
+        result = model.invoke(&(), request()) => result,
+        connection = listener.accept() => panic!("nested refusal opened an OpenAI connection: {connection:?}"),
+    };
     assert!(matches!(
-        model.invoke(&(), request()).await,
+        outcome,
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
     assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(budget.snapshot(), BudgetSnapshot::default());
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
-            .await
-            .is_err()
-    );
+    assert_no_connection(listener);
 }
 
 #[tokio::test]

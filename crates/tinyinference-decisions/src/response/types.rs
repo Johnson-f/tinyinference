@@ -26,11 +26,16 @@ pub struct Usage {
     #[serde(default)]
     pub output_tokens: Option<u64>,
     /// Cached input tokens, when the provider reports them.
-    #[serde(default, alias = "cached_tokens")]
+    #[serde(default, alias = "cached_tokens", skip_serializing_if = "Option::is_none")]
     pub cached_input_tokens: Option<u64>,
     /// Provider-reported USD charge in integer nanodollars. Invalid or
     /// unreported costs stay absent.
-    #[serde(default, rename = "cost", deserialize_with = "deserialize_usd_nanos")]
+    #[serde(
+        default,
+        rename = "cost",
+        deserialize_with = "deserialize_usd_nanos",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cost_usd_nanos: Option<i64>,
 }
 

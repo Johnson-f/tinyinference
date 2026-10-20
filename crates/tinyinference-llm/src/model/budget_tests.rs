@@ -273,19 +273,38 @@ impl ChatModel<()> for InternalRetryModel {
         Ok(ModelResponse::assistant("ok"))
     }
 }
+#[derive(Default)]
+struct CountPhysicalAdmission(std::sync::atomic::AtomicUsize);
+impl super::BeforeDispatch for CountPhysicalAdmission {
+    fn check(&self) -> crate::Result<()> {
+        Ok(())
+    }
+
+    fn physical_attempt(&self) -> crate::Result<()> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
 #[tokio::test]
 async fn provider_internal_retry_cannot_reuse_the_first_attempt_reservation() {
     let budget = Budget::new(SpendLimits {
         tokens: None,
         cost_micros: Some(100),
     });
-    let model = BudgetedModel::new(Arc::new(InternalRetryModel), budget.clone(), call_policy());
+    let admission = Arc::new(CountPhysicalAdmission::default());
+    let model = BudgetedModel::new(Arc::new(InternalRetryModel), budget.clone(), call_policy())
+        .before_dispatch(admission.clone());
     assert!(matches!(
         model.invoke(&(), request()).await,
         Err(crate::Error::BudgetExceeded(_))
     ));
     assert_eq!(budget.snapshot().spent.cost_micros, 100);
     assert_eq!(budget.snapshot().reserved.cost_micros, 0);
+    assert_eq!(
+        admission.0.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "a retry refused by the money ledger must not consume a host call slot"
+    );
 }
 
 #[derive(Debug)]

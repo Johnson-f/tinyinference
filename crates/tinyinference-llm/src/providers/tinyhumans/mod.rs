@@ -88,6 +88,7 @@ pub struct TinyHumansModel {
     model: OpenAiModel,
     base_url: String,
     default_model: String,
+    cache_namespace: String,
     thread_id: Option<String>,
     auth_failure_handler: Option<AuthFailureHandler>,
     managed_auth_failure_handler: Option<ManagedAuthFailureHandler>,
@@ -158,6 +159,7 @@ impl TinyHumansModel {
             model: wire,
             base_url: endpoint,
             default_model,
+            cache_namespace: "tinyhumans".to_owned(),
             thread_id: None,
             auth_failure_handler: None,
             managed_auth_failure_handler: None,
@@ -197,6 +199,18 @@ impl TinyHumansModel {
             let value = value.as_ref().trim();
             (!value.is_empty()).then(|| value.to_owned())
         });
+        self
+    }
+
+    /// Sets the stable, credential-free host namespace used for response-cache
+    /// identity. This does not change the wire provider label or auth provenance.
+    /// Blank input leaves the current namespace unchanged.
+    #[must_use]
+    pub fn with_cache_namespace(mut self, namespace: impl AsRef<str>) -> Self {
+        let namespace = namespace.as_ref().trim();
+        if !namespace.is_empty() {
+            self.cache_namespace = namespace.to_owned();
+        }
         self
     }
 
@@ -306,8 +320,8 @@ impl ChatModel<()> for TinyHumansModel {
 
     fn cache_identity(&self) -> Option<String> {
         Some(format!(
-            "tinyhumans:{}:{}",
-            self.base_url, self.default_model
+            "{}:{}:{}",
+            self.cache_namespace, self.base_url, self.default_model
         ))
     }
 

@@ -409,6 +409,11 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
             mark_dispatch_refused_before_invocation();
             return Err(error);
         }
+        if !self.inner.tracks_physical_attempts()
+            && !self.inner.has_pre_invocation_admission_gate()
+        {
+            mark_untracked_inner_invoked();
+        }
         let scope = Arc::new(DispatchHookScope {
             before_dispatch: self.before_dispatch.clone(),
             attempt_gate: std::sync::Mutex::new(()),
@@ -426,6 +431,11 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
         if let Err(error) = self.before_dispatch.check() {
             mark_dispatch_refused_before_invocation();
             return Err(error);
+        }
+        if !self.inner.tracks_physical_attempts()
+            && !self.inner.has_pre_invocation_admission_gate()
+        {
+            mark_untracked_inner_invoked();
         }
         let scope = Arc::new(DispatchHookScope {
             before_dispatch: self.before_dispatch.clone(),
@@ -445,7 +455,6 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
         let metadata = stream.metadata().clone();
         let mut stream = Box::pin(stream);
         let mut scope = Some(scope);
-        let mut checked_generic_lazy_stream = false;
         let guarded = futures::stream::poll_fn(move |cx| {
             let Some(current_scope) = scope.as_ref().cloned() else {
                 return std::task::Poll::Ready(None);
@@ -460,27 +469,6 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
                 current_scopes.push(current_scope);
             }
             let item = DISPATCH_HOOK.sync_scope(current_scopes, || {
-                if !checked_generic_lazy_stream
-                    && scope
-                        .as_ref()
-                        .expect("scope remains while stream is polled")
-                        .attempts
-                        .load(std::sync::atomic::Ordering::SeqCst)
-                        == 0
-                {
-                    checked_generic_lazy_stream = true;
-                    if let Err(error) = scope
-                        .as_ref()
-                        .expect("scope remains while stream is polled")
-                        .before_dispatch
-                        .check()
-                    {
-                        mark_physical_refused_before_attempt();
-                        return std::task::Poll::Ready(Some(ModelStreamItem::Failed(
-                            error.to_string(),
-                        )));
-                    }
-                }
                 futures::Stream::poll_next(stream.as_mut(), cx)
             });
             if matches!(
@@ -542,11 +530,16 @@ fn mark_dispatch_refused_before_invocation() {
             scope
                 .refused_before_attempt
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            if scope.attempts.load(std::sync::atomic::Ordering::SeqCst) == 0 {
-                scope
-                    .untracked_inner_invoked
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
-            }
+        }
+    });
+}
+
+fn mark_untracked_inner_invoked() {
+    let _ = PHYSICAL_CALL.try_with(|scopes| {
+        for scope in scopes {
+            scope
+                .untracked_inner_invoked
+                .store(true, std::sync::atomic::Ordering::SeqCst);
         }
     });
 }
@@ -786,6 +779,10 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
     fn tracks_physical_attempts(&self) -> bool {
         self.inner.tracks_physical_attempts()
     }
+
+    fn has_pre_invocation_admission_gate(&self) -> bool {
+        true
+    }
     async fn invoke(
         &self,
         state: &State,
@@ -807,7 +804,9 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             reservation.settle(Spend::default());
             return Err(error);
         }
-        if !self.inner.tracks_physical_attempts() {
+        if !self.inner.tracks_physical_attempts()
+            && !self.inner.has_pre_invocation_admission_gate()
+        {
             scope
                 .untracked_inner_invoked
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -846,7 +845,9 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             reservation.settle(Spend::default());
             return Err(error);
         }
-        if !self.inner.tracks_physical_attempts() {
+        if !self.inner.tracks_physical_attempts()
+            && !self.inner.has_pre_invocation_admission_gate()
+        {
             scope
                 .untracked_inner_invoked
                 .store(true, std::sync::atomic::Ordering::SeqCst);

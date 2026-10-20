@@ -656,7 +656,10 @@ async fn before_dispatch_is_rechecked_when_a_lazy_stream_is_first_polled() {
     let mut stream = model.stream(&(), request()).await.unwrap();
     hook.allowed
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    assert!(matches!(stream.next().await, Some(ModelStreamItem::Failed(_))));
+    assert!(matches!(
+        stream.next().await,
+        Some(ModelStreamItem::Failed(_))
+    ));
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 2);
 }

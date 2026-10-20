@@ -458,12 +458,16 @@ fn mark_physical_refused_before_attempt() {
 pub(crate) fn before_physical_attempt() -> crate::Result<()> {
     PHYSICAL_CALL
         .try_with(|scope| {
-            if let Some(hook) = &scope.before_dispatch {
-                if let Err(error) = hook.check() {
-                    mark_physical_refused_before_attempt();
-                    return Err(error);
-                }
-            } else if let Err(error) = before_unbudgeted_physical_attempt() {
+            if let Some(hook) = &scope.before_dispatch
+                && let Err(error) = hook.check()
+            {
+                mark_physical_refused_before_attempt();
+                return Err(error);
+            }
+            // A DispatchCheckedModel may wrap this budgeted model. Its
+            // independent admission scope must also be checked at every
+            // physical send, including provider retries.
+            if let Err(error) = before_unbudgeted_physical_attempt() {
                 mark_physical_refused_before_attempt();
                 return Err(error);
             }

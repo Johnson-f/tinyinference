@@ -600,7 +600,7 @@ pub(super) fn convert_usage(wire: UsageWire) -> Usage {
             .completion_tokens_details
             .map(|d| d.reasoning_tokens)
             .unwrap_or(0),
-        charged_amount: wire.cost.as_ref().and_then(|cost| usd_cost_micros(cost)),
+        charged_amount: wire.cost.as_ref().and_then(usd_cost_micros),
         context_window_tokens: None,
     }
 }

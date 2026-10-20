@@ -23,6 +23,7 @@ fn add_accumulates_all_fields() {
         cache_creation_tokens: 5,
         reasoning_tokens: 6,
         charged_amount: Some(ChargedAmount::usd_micros(42)),
+        charged_amount_nanos: Some(42_000),
         context_window_tokens: Some(8_192),
     };
     let b = a;
@@ -31,6 +32,7 @@ fn add_accumulates_all_fields() {
     assert_eq!(sum.cache_read_tokens, 8);
     assert_eq!(sum.reasoning_tokens, 12);
     assert_eq!(sum.charged_amount, Some(ChargedAmount::usd_micros(84)));
+    assert_eq!(sum.charged_amount_nanos, Some(84_000));
     assert_eq!(sum.context_window_tokens, Some(8_192));
 }
 

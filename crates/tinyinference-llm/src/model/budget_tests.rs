@@ -988,15 +988,17 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
 
     let mut spec = crate::providers::ProviderSpec::for_kind(crate::providers::ProviderKind::Ollama);
     spec.base_url = endpoint;
-    let provider = crate::providers::registry::ProviderRegistry::new(|_| Ok(String::new()))
-        .build_with(
-            &spec,
-            crate::providers::registry::ProviderBuildOptions {
-                num_ctx: Some(4096),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    let provider = crate::providers::registry::ProviderRegistry::new(
+        |_: &crate::providers::ProviderSpec| -> crate::Result<String> { Ok(String::new()) },
+    )
+    .build_with(
+        &spec,
+        crate::providers::registry::ProviderBuildOptions {
+            num_ctx: Some(4096),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let budget = Budget::new(SpendLimits::default());
     let hook = Arc::new(RefuseAfterWarmup(Default::default()));
     let model = BudgetedModel::new(provider, budget.clone(), call_policy())

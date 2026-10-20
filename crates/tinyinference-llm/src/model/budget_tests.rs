@@ -583,6 +583,22 @@ impl super::BeforeDispatch for RefuseAtPhysicalSend {
     }
 }
 
+#[derive(Debug)]
+struct RefuseRetrySend(std::sync::atomic::AtomicUsize);
+impl super::BeforeDispatch for RefuseRetrySend {
+    fn check(&self) -> crate::Result<()> {
+        if self
+            .0
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            < 2
+        {
+            Ok(())
+        } else {
+            Err(crate::Error::Validation("dispatch revoked".into()))
+        }
+    }
+}
+
 #[tokio::test]
 async fn openai_unary_refusal_before_first_send_refunds_budget_reservation() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -635,8 +651,15 @@ async fn openai_retry_refusal_keeps_charge_for_the_first_physical_send() {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let (invoke_finished, finished) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
+        let (mut socket, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            listener.accept(),
+        )
+        .await
+        .expect("first OpenAI physical send reaches the local server")
+        .unwrap();
         let mut request = vec![0; 16 * 1024];
         let read = socket.read(&mut request).await.unwrap();
         assert!(request[..read].starts_with(b"POST /v1/chat/completions"));
@@ -647,12 +670,20 @@ async fn openai_retry_refusal_keeps_charge_for_the_first_physical_send() {
             body
         );
         socket.write_all(response.as_bytes()).await.unwrap();
+        drop(socket);
+        finished.await.unwrap();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            listener.accept()
+        )
+        .await
+        .is_err());
     });
 
     let provider = crate::providers::openai::OpenAiModel::new("fixture")
         .with_base_url(format!("http://{addr}/v1"));
     let budget = Budget::new(SpendLimits::default());
-    let hook = Arc::new(RefuseAtPhysicalSend(Default::default()));
+    let hook = Arc::new(RefuseRetrySend(Default::default()));
     let model = BudgetedModel::new(Arc::new(provider), budget.clone(), call_policy())
         .before_dispatch(hook.clone());
     let mut request = request();
@@ -662,6 +693,7 @@ async fn openai_retry_refusal_keeps_charge_for_the_first_physical_send() {
         model.invoke(&(), request).await,
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
+    invoke_finished.send(()).unwrap();
     server.await.unwrap();
     assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 3);
     assert_eq!(budget.snapshot().reserved, Spend::default());

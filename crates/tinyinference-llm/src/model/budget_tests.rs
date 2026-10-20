@@ -575,11 +575,7 @@ impl super::BeforeDispatch for RevocableDispatchCheck {
 struct RefuseAtPhysicalSend(std::sync::atomic::AtomicUsize);
 impl super::BeforeDispatch for RefuseAtPhysicalSend {
     fn check(&self) -> crate::Result<()> {
-        if self
-            .0
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            == 0
-        {
+        if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
             Ok(())
         } else {
             Err(crate::Error::Validation("dispatch revoked".into()))
@@ -603,9 +599,11 @@ async fn openai_unary_refusal_before_first_send_refunds_budget_reservation() {
     ));
     assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(budget.snapshot(), BudgetSnapshot::default());
-    assert!(tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
-        .await
-        .is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -624,9 +622,11 @@ async fn openai_stream_refusal_before_first_send_refunds_budget_reservation() {
     ));
     assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(budget.snapshot(), BudgetSnapshot::default());
-    assert!(tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
-        .await
-        .is_err());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -716,7 +716,10 @@ async fn before_dispatch_is_rechecked_before_each_physical_retry() {
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
     assert_eq!(budget.snapshot().reserved, Spend::default());
-    assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+    assert_eq!(
+        budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros
+    );
 }
 
 #[derive(Debug)]

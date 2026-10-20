@@ -125,6 +125,10 @@ fn usage_preserves_cached_tokens_and_reported_openrouter_cost() {
     assert_eq!(usage.cached_input_tokens, Some(40));
     assert_eq!(usage.output_tokens, Some(15));
     assert_eq!(usage.cost_usd_nanos, Some(12_500));
+    let encoded = serde_json::to_value(usage).unwrap();
+    assert_eq!(encoded["cost"], json!(0.000_012_5));
+    let decoded: Usage = serde_json::from_value(encoded).unwrap();
+    assert_eq!(decoded.cost_usd_nanos, Some(12_500));
 
     let unknown: Usage = serde_json::from_value(json!({
         "input_tokens": 2,

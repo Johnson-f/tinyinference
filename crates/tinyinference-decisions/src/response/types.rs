@@ -38,9 +38,20 @@ pub struct Usage {
         default,
         rename = "cost",
         deserialize_with = "deserialize_usd_nanos",
+        serialize_with = "serialize_usd_nanos",
         skip_serializing_if = "Option::is_none"
     )]
     pub cost_usd_nanos: Option<i64>,
+}
+
+fn serialize_usd_nanos<S>(value: &Option<i64>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(nanos) => serializer.serialize_f64(*nanos as f64 / 1_000_000_000.0),
+        None => serializer.serialize_none(),
+    }
 }
 
 fn deserialize_usd_nanos<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>

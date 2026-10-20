@@ -2867,8 +2867,7 @@ mod explicit_cache_control {
         );
 
         let unreported = convert_usage(
-            serde_json::from_value(json!({"prompt_tokens": 1, "completion_tokens": 1}))
-                .unwrap(),
+            serde_json::from_value(json!({"prompt_tokens": 1, "completion_tokens": 1})).unwrap(),
         );
         assert_eq!(unreported.charged_amount, None);
     }

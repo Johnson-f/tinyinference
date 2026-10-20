@@ -623,6 +623,7 @@ pub fn before_physical_attempt() -> crate::Result<()> {
                             for reservation in retry_reservations {
                                 reservation.settle(Spend::default());
                             }
+                            mark_physical_refused_before_attempt();
                             return Err(crate::Error::BudgetExceeded(error));
                         }
                     }

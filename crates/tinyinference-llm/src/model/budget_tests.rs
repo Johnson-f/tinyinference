@@ -1197,10 +1197,11 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
 
         let mut requests = vec!["/api/chat".to_string()];
         let second = tokio::select! {
-            accepted = listener.accept() => Some(accepted),
+            biased;
+            accepted = listener.accept() => Some(accepted.unwrap()),
             _ = finished_rx => None,
         };
-        if let Some(Ok((mut chat, _))) = second {
+        if let Some((mut chat, _)) = second {
             let mut bytes = vec![0; 8192];
             let read = chat.read(&mut bytes).await.unwrap();
             let request = String::from_utf8_lossy(&bytes[..read]);
@@ -1217,6 +1218,8 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
             )
             .await
             .unwrap();
+        } else {
+            assert_no_connection(listener);
         }
         requests
     });
@@ -1300,10 +1303,12 @@ async fn ollama_warmup_consumes_the_only_physical_call_slot() {
             .unwrap();
 
         let second = tokio::select! {
-            accepted = listener.accept() => Some(accepted),
+            biased;
+            accepted = listener.accept() => Some(accepted.unwrap()),
             _ = finished_rx => None,
         };
-        let Some(Ok((mut chat, _))) = second else {
+        let Some((mut chat, _)) = second else {
+            assert_no_connection(listener);
             return vec!["/api/chat"];
         };
         let mut bytes = vec![0; 8192];

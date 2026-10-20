@@ -701,11 +701,7 @@ async fn openai_retry_refusal_keeps_charge_for_the_first_physical_send() {
         socket.write_all(response.as_bytes()).await.unwrap();
         drop(socket);
         finished.await.unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept())
-                .await
-                .is_err()
-        );
+        assert_no_connection(listener);
     });
 
     let provider = crate::providers::openai::OpenAiModel::new("fixture")
@@ -730,6 +726,80 @@ async fn openai_retry_refusal_keeps_charge_for_the_first_physical_send() {
         call_policy().cost_micros,
         "a refused retry cannot refund a call after the first request was sent"
     );
+}
+
+#[tokio::test]
+async fn nested_hooks_both_recheck_a_real_openai_retry() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let outer_hook = Arc::new(RevocableDispatchCheck {
+        allowed: std::sync::atomic::AtomicBool::new(true),
+        checks: Default::default(),
+    });
+    let server_hook = Arc::clone(&outer_hook);
+    let (invoke_finished, finished) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+                .await
+                .expect("first OpenAI physical send reaches the local server")
+                .unwrap();
+        let mut request = vec![0; 16 * 1024];
+        let read = socket.read(&mut request).await.unwrap();
+        assert!(request[..read].starts_with(b"POST /v1/chat/completions"));
+        server_hook
+            .allowed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let body = r#"{"error":{"message":"response_format json_object unsupported"}}"#;
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+        drop(socket);
+        let retried = tokio::select! {
+            biased;
+            connection = listener.accept() => {
+                drop(connection.unwrap());
+                true
+            }
+            _ = finished => false,
+        };
+        assert_no_connection(listener);
+        retried
+    });
+
+    let provider = crate::providers::openai::OpenAiModel::new("fixture")
+        .with_base_url(format!("http://{addr}/v1"));
+    let budget = Budget::new(SpendLimits::default());
+    let budget_hook = Arc::new(DispatchCheck {
+        allowed: true,
+        checks: Default::default(),
+    });
+    let budgeted = BudgetedModel::new(Arc::new(provider), budget.clone(), call_policy())
+        .before_dispatch(budget_hook.clone());
+    let model = super::super::DispatchCheckedModel::new(Arc::new(budgeted), outer_hook.clone());
+    let mut request = request();
+    request.response_format = Some(crate::model::ResponseFormat::JsonObject);
+
+    let outcome = model.invoke(&(), request).await;
+    invoke_finished.send(()).unwrap();
+    assert!(matches!(
+        outcome,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    assert!(!server.await.unwrap(), "outer admission allowed the retry through");
+    assert_eq!(
+        outer_hook.checks.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "the outer gate is checked before the call, first send, and retry"
+    );
+    assert_eq!(budget_hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(budget.snapshot().reserved, Spend::default());
+    assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
 }
 
 #[derive(Debug)]

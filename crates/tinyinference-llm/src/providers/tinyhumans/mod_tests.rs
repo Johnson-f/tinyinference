@@ -274,26 +274,30 @@ async fn managed_auth_callback_reports_typed_provenance_for_each_operation() {
         content_type: "application/json",
         body: json!({ "error": { "message": "Unauthorized" } }).to_string(),
     };
-    assert!(model
-        .invoke(
-            &(),
-            ModelRequest::new(vec![crate::message::Message::user("invoke")]),
-        )
-        .await;
-        .is_err());
+    assert!(
+        model
+            .invoke(
+                &(),
+                ModelRequest::new(vec![crate::message::Message::user("invoke")]),
+            )
+            .await
+            .is_err()
+    );
 
     *fixture.response.lock().unwrap() = FixtureResponse {
         status: StatusCode::FORBIDDEN,
         content_type: "application/json",
         body: json!({ "error": { "message": "Forbidden" } }).to_string(),
     };
-    assert!(model
-        .stream(
-            &(),
-            ModelRequest::new(vec![crate::message::Message::user("stream open")]),
-        )
-        .await
-        .is_err());
+    assert!(
+        model
+            .stream(
+                &(),
+                ModelRequest::new(vec![crate::message::Message::user("stream open")]),
+            )
+            .await
+            .is_err()
+    );
 
     *fixture.response.lock().unwrap() = FixtureResponse {
         status: StatusCode::OK,
@@ -392,13 +396,15 @@ async fn managed_auth_callback_reports_typed_provenance_for_each_operation() {
         content_type: "application/json",
         body: json!({ "error": { "message": "Bad request" } }).to_string(),
     };
-    assert!(model
-        .invoke(
-            &(),
-            ModelRequest::new(vec![crate::message::Message::user("not auth")]),
-        )
-        .await
-        .is_err());
+    assert!(
+        model
+            .invoke(
+                &(),
+                ModelRequest::new(vec![crate::message::Message::user("not auth")]),
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(typed.lock().unwrap().len(), 5);
     assert_eq!(legacy.lock().unwrap().len(), 5);
 }

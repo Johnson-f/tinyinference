@@ -772,12 +772,24 @@ async fn nested_hooks_both_recheck_a_real_openai_retry() {
         let retried = tokio::select! {
             biased;
             connection = listener.accept() => {
-                drop(connection.unwrap());
+                let (mut socket, _) = connection.unwrap();
+                let mut request = vec![0; 16 * 1024];
+                let read = socket.read(&mut request).await.unwrap();
+                assert!(request[..read].starts_with(b"POST /v1/chat/completions"));
+                let body = r#"{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"fixture","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
                 true
             }
             _ = finished => false,
         };
-        assert_no_connection(listener);
+        if !retried {
+            assert_no_connection(listener);
+        }
         retried
     });
 

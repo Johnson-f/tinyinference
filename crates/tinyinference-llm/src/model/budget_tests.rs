@@ -973,6 +973,7 @@ async fn anthropic_fallback_rechecks_dispatch_before_its_second_send() {
     )
     .with_insecure_http(true);
     let fallback = super::super::FallbackModel::new(Arc::new(first), vec![Arc::new(second)]);
+    assert!(fallback.tracks_physical_attempts());
     let model = super::super::DispatchCheckedModel::new(Arc::new(fallback), hook.clone());
     let outcome = model.invoke(&(), request()).await;
     let _ = invoke_finished.send(());

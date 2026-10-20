@@ -282,6 +282,7 @@ pub trait BeforeDispatch: Send + Sync {
 struct AttemptScope {
     budget: Budget,
     requested: Spend,
+    before_dispatch: Option<Arc<dyn BeforeDispatch>>,
     attempts: std::sync::atomic::AtomicUsize,
 }
 tokio::task_local! { static PHYSICAL_CALL: Arc<AttemptScope>; }
@@ -292,6 +293,9 @@ tokio::task_local! { static PHYSICAL_CALL: Arc<AttemptScope>; }
 pub(crate) fn before_physical_attempt() -> crate::Result<()> {
     PHYSICAL_CALL
         .try_with(|scope| {
+            if let Some(hook) = &scope.before_dispatch {
+                hook.check()?;
+            }
             if scope
                 .attempts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -441,6 +445,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
         let scope = Arc::new(AttemptScope {
             budget: self.budget.clone(),
             requested: reservation.requested,
+            before_dispatch: self.before_dispatch.clone(),
             attempts: std::sync::atomic::AtomicUsize::new(0),
         });
         if let Some(hook) = &self.before_dispatch
@@ -460,6 +465,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
         let scope = Arc::new(AttemptScope {
             budget: self.budget.clone(),
             requested: reservation.requested,
+            before_dispatch: self.before_dispatch.clone(),
             attempts: std::sync::atomic::AtomicUsize::new(0),
         });
         if let Some(hook) = &self.before_dispatch

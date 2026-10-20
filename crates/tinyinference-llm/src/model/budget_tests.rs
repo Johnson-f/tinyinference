@@ -263,6 +263,10 @@ async fn passthrough_output_cap_cannot_override_the_budgeted_cap() {
 struct InternalRetryModel;
 #[async_trait]
 impl ChatModel<()> for InternalRetryModel {
+    fn tracks_physical_attempts(&self) -> bool {
+        true
+    }
+
     async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
         before_physical_attempt()?;
         before_physical_attempt()?;
@@ -995,6 +999,10 @@ struct RevocableRetryModel {
 }
 #[async_trait]
 impl ChatModel<()> for RevocableRetryModel {
+    fn tracks_physical_attempts(&self) -> bool {
+        true
+    }
+
     async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
         before_physical_attempt()?;
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1042,6 +1050,10 @@ async fn before_dispatch_is_rechecked_before_each_physical_retry() {
 struct RevocableLazyStreamModel(Arc<std::sync::atomic::AtomicUsize>);
 #[async_trait]
 impl ChatModel<()> for RevocableLazyStreamModel {
+    fn tracks_physical_attempts(&self) -> bool {
+        true
+    }
+
     async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
         unreachable!()
     }
@@ -1093,6 +1105,10 @@ async fn before_dispatch_is_rechecked_when_a_lazy_stream_is_first_polled() {
 struct LazyRetryStreamModel(Arc<std::sync::atomic::AtomicUsize>);
 #[async_trait]
 impl ChatModel<()> for LazyRetryStreamModel {
+    fn tracks_physical_attempts(&self) -> bool {
+        true
+    }
+
     async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
         unreachable!()
     }

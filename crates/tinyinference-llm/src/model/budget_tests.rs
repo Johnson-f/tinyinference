@@ -855,6 +855,146 @@ async fn nested_hooks_both_recheck_a_real_openai_retry() {
     );
 }
 
+#[tokio::test]
+async fn nested_budgeted_models_recheck_every_policy_on_a_real_retry() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let outer_hook = Arc::new(RevocableDispatchCheck {
+        allowed: true.into(),
+        checks: Default::default(),
+    });
+    let server_hook = Arc::clone(&outer_hook);
+    let (invoke_finished, finished) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+            .await
+            .expect("first OpenAI send reaches the local server")
+            .unwrap();
+        let mut request = vec![0; 16 * 1024];
+        let read = socket.read(&mut request).await.unwrap();
+        assert!(request[..read].starts_with(b"POST /v1/chat/completions"));
+        server_hook.allowed.store(false, std::sync::atomic::Ordering::SeqCst);
+        let body = r#"{"error":{"message":"response_format json_object unsupported"}}"#;
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 400 Bad Request\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        drop(socket);
+        tokio::select! {
+            biased;
+            connection = listener.accept() => {
+                let (mut socket, _) = connection.unwrap();
+                let mut request = vec![0; 16 * 1024];
+                let read = socket.read(&mut request).await.unwrap();
+                assert!(request[..read].starts_with(b"POST /v1/chat/completions"));
+                true
+            }
+            _ = finished => false,
+        }
+    });
+
+    let provider = crate::providers::openai::OpenAiModel::new("fixture")
+        .with_base_url(format!("http://{addr}/v1"));
+    let inner_budget = Budget::new(SpendLimits::default());
+    let inner_hook = Arc::new(DispatchCheck {
+        allowed: true,
+        checks: Default::default(),
+    });
+    let inner = BudgetedModel::new(Arc::new(provider), inner_budget.clone(), call_policy())
+        .before_dispatch(inner_hook.clone());
+    let outer_budget = Budget::new(SpendLimits::default());
+    let model = BudgetedModel::new(Arc::new(inner), outer_budget.clone(), call_policy())
+        .before_dispatch(outer_hook.clone());
+    let mut request = request();
+    request.response_format = Some(crate::model::ResponseFormat::JsonObject);
+
+    let outcome = model.invoke(&(), request).await;
+    let _ = invoke_finished.send(());
+    assert!(matches!(
+        outcome,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    assert!(!server.await.unwrap(), "outer hook refused the real retry");
+    assert_eq!(outer_hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(inner_hook.checks.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(outer_budget.snapshot().reserved, Spend::default());
+    assert_eq!(inner_budget.snapshot().reserved, Spend::default());
+    assert_eq!(outer_budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+    assert_eq!(inner_budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+}
+
+#[tokio::test]
+async fn refused_dispatch_wrapper_does_not_charge_an_untracked_inner_model() {
+    let inner = probe_model();
+    let dispatch = Arc::new(super::super::DispatchCheckedModel::new(
+        inner.clone(),
+        Arc::new(DispatchCheck {
+            allowed: false,
+            checks: Default::default(),
+        }),
+    ));
+    let budget = Budget::new(SpendLimits::default());
+    let model = BudgetedModel::new(dispatch, budget.clone(), call_policy());
+
+    assert!(matches!(
+        model.invoke(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch refused"
+    ));
+    assert_eq!(inner.invokes.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(budget.snapshot(), BudgetSnapshot::default());
+}
+
+#[derive(Debug)]
+struct DeferredModel;
+
+#[async_trait]
+impl ChatModel<()> for DeferredModel {
+    async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
+        unreachable!()
+    }
+
+    async fn stream(&self, _: &(), _: ModelRequest) -> crate::Result<ModelStream> {
+        Ok(ModelStream::new(Box::pin(futures::stream::iter([
+            ModelStreamItem::Deferred(crate::model::DeferredHandle::new("fixture", "job-1")),
+        ]))))
+    }
+
+    async fn fetch_deferred(
+        &self,
+        _: &crate::model::DeferredHandle,
+    ) -> crate::Result<crate::model::DeferredStatus> {
+        Ok(crate::model::DeferredStatus::Pending)
+    }
+}
+
+#[tokio::test]
+async fn dispatch_checked_model_delegates_deferred_fetches() {
+    let model = super::super::DispatchCheckedModel::new(
+        Arc::new(DeferredModel),
+        Arc::new(DispatchCheck {
+            allowed: true,
+            checks: Default::default(),
+        }),
+    );
+
+    assert!(matches!(
+        model
+            .fetch_deferred(&crate::model::DeferredHandle::new("fixture", "job-1"))
+            .await
+            .unwrap(),
+        crate::model::DeferredStatus::Pending
+    ));
+}
+
 #[derive(Debug)]
 struct UntrackedPaidModel {
     endpoint: String,

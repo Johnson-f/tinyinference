@@ -284,6 +284,9 @@ pub trait BeforeDispatch: Send + Sync {
     /// This is called once per transport send, including warm-up and retry
     /// requests. The default keeps existing host adapters source compatible;
     /// hosts that enforce a physical-send ceiling should override it.
+    /// With independent nested policies, an earlier policy can conservatively
+    /// admit an attempt before a later policy refuses it. These values bound
+    /// admitted sends and are not exact wire-send metrics.
     ///
     /// # Errors
     ///

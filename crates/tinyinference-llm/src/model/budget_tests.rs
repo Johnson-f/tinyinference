@@ -947,6 +947,72 @@ async fn nested_budgeted_models_recheck_every_policy_on_a_real_retry() {
     );
 }
 
+#[derive(Debug)]
+struct PhysicalAttemptModel;
+
+#[async_trait]
+impl ChatModel<()> for PhysicalAttemptModel {
+    fn tracks_physical_attempts(&self) -> bool {
+        true
+    }
+
+    async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
+        super::before_physical_attempt()?;
+        Ok(ModelResponse::assistant("ok"))
+    }
+
+    async fn stream(&self, _: &(), _: ModelRequest) -> crate::Result<ModelStream> {
+        unreachable!()
+    }
+}
+
+#[derive(Debug)]
+struct AttemptThenInvoke {
+    inner: Arc<dyn ChatModel<()>>,
+}
+
+#[async_trait]
+impl ChatModel<()> for AttemptThenInvoke {
+    fn tracks_physical_attempts(&self) -> bool {
+        true
+    }
+
+    async fn invoke(&self, state: &(), request: ModelRequest) -> crate::Result<ModelResponse> {
+        super::before_physical_attempt()?;
+        self.inner.invoke(state, request).await
+    }
+
+    async fn stream(&self, _: &(), _: ModelRequest) -> crate::Result<ModelStream> {
+        unreachable!()
+    }
+}
+
+#[tokio::test]
+async fn denied_outer_retry_reservation_refunds_unsent_inner_budget() {
+    let outer_budget = Budget::new(SpendLimits {
+        tokens: None,
+        cost_micros: Some(call_policy().cost_micros),
+    });
+    let inner_budget = Budget::new(SpendLimits::default());
+    let inner = Arc::new(BudgetedModel::new(
+        Arc::new(PhysicalAttemptModel),
+        inner_budget.clone(),
+        call_policy(),
+    ));
+    let model = BudgetedModel::new(
+        Arc::new(AttemptThenInvoke { inner }),
+        outer_budget.clone(),
+        call_policy(),
+    );
+
+    assert!(matches!(
+        model.invoke(&(), request()).await,
+        Err(crate::Error::BudgetExceeded(_))
+    ));
+    assert_eq!(outer_budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+    assert_eq!(inner_budget.snapshot(), BudgetSnapshot::default());
+}
+
 #[tokio::test]
 async fn refused_dispatch_wrapper_does_not_charge_an_untracked_inner_model() {
     let inner = probe_model();

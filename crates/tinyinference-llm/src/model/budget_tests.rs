@@ -657,11 +657,16 @@ async fn nested_dispatch_checked_refusal_refunds_outer_budget_reservation() {
         .with_base_url(format!("http://{}/v1", listener.local_addr().unwrap()));
     let budget = Budget::new(SpendLimits::default());
     let hook = Arc::new(RefuseAtPhysicalSend(Default::default()));
+    let budget_hook = Arc::new(DispatchCheck {
+        allowed: true,
+        checks: Default::default(),
+    });
     let dispatch_checked = Arc::new(super::super::DispatchCheckedModel::new(
         Arc::new(provider),
         hook.clone(),
     ));
-    let model = BudgetedModel::new(dispatch_checked, budget.clone(), call_policy());
+    let model = BudgetedModel::new(dispatch_checked, budget.clone(), call_policy())
+        .before_dispatch(budget_hook.clone());
 
     let outcome = tokio::select! {
         result = model.invoke(&(), request()) => result,
@@ -672,6 +677,7 @@ async fn nested_dispatch_checked_refusal_refunds_outer_budget_reservation() {
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
     assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(budget_hook.checks.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(budget.snapshot(), BudgetSnapshot::default());
     assert_no_connection(listener);
 }

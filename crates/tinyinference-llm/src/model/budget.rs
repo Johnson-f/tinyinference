@@ -462,8 +462,9 @@ fn mark_physical_refused_before_attempt() {
 /// Admit an extra physical attempt made internally by a concrete provider.
 ///
 /// The first attempt uses the invocation reservation; later attempts must
-/// atomically reserve again. Checks active dispatch and budget scopes immediately before a physical
-/// provider send. Provider implementations should call this for every send,
+/// atomically reserve again. Checks active dispatch and budget scopes
+/// immediately before a physical provider send. Provider implementations
+/// should call this for every send,
 /// including retries, and report [`ChatModel::tracks_physical_attempts`] as
 /// true only when every send is covered.
 ///

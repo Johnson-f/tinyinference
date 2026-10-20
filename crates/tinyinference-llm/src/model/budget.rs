@@ -811,6 +811,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
         if !self.inner.tracks_physical_attempts()
             && !self.inner.has_pre_invocation_admission_gate()
         {
+            mark_untracked_inner_invoked();
             scope
                 .untracked_inner_invoked
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -852,6 +853,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
         if !self.inner.tracks_physical_attempts()
             && !self.inner.has_pre_invocation_admission_gate()
         {
+            mark_untracked_inner_invoked();
             scope
                 .untracked_inner_invoked
                 .store(true, std::sync::atomic::Ordering::SeqCst);

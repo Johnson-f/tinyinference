@@ -331,8 +331,7 @@ impl ChatModel<()> for TinyHumansModel {
                 ModelStreamItem::Completed(project_tinyhumans_envelope(response))
             }
             ModelStreamItem::ProviderFailed(error) => {
-                if is_auth_failure(&error)
-                {
+                if is_auth_failure(&error) {
                     if let Some(handler) = &legacy_handler {
                         handler(&error, TinyHumansOperation::Stream);
                     }

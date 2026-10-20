@@ -266,10 +266,7 @@ async fn managed_auth_callback_reports_typed_provenance_for_each_operation() {
             ));
         })
         .with_auth_failure_handler(move |error, operation| {
-            legacy_seen
-                .lock()
-                .unwrap()
-                .push((error.status, operation));
+            legacy_seen.lock().unwrap().push((error.status, operation));
         });
 
     *fixture.response.lock().unwrap() = FixtureResponse {
@@ -277,23 +274,56 @@ async fn managed_auth_callback_reports_typed_provenance_for_each_operation() {
         content_type: "application/json",
         body: json!({ "error": { "message": "Unauthorized" } }).to_string(),
     };
-    let _ = model
+    assert!(model
         .invoke(
             &(),
             ModelRequest::new(vec![crate::message::Message::user("invoke")]),
         )
         .await;
+        .is_err());
+
+    *fixture.response.lock().unwrap() = FixtureResponse {
+        status: StatusCode::FORBIDDEN,
+        content_type: "application/json",
+        body: json!({ "error": { "message": "Forbidden" } }).to_string(),
+    };
+    assert!(model
+        .stream(
+            &(),
+            ModelRequest::new(vec![crate::message::Message::user("stream open")]),
+        )
+        .await
+        .is_err());
 
     *fixture.response.lock().unwrap() = FixtureResponse {
         status: StatusCode::OK,
         content_type: "text/event-stream",
-        body: "data: {\"error\":{\"message\":\"Unauthorized\",\"code\":\"unauthorized\"}}\n\n"
+        body: "data: {\"error\":{\"message\":\"Unauthorized: session expired\",\"code\":\"unauthorized\"}}\n\n"
             .into(),
     };
     let items = model
         .stream(
             &(),
             ModelRequest::new(vec![crate::message::Message::user("stream")]),
+        )
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(matches!(
+        items.last(),
+        Some(ModelStreamItem::ProviderFailed(_))
+    ));
+
+    *fixture.response.lock().unwrap() = FixtureResponse {
+        status: StatusCode::OK,
+        content_type: "text/event-stream",
+        body: "data: {\"error\":{\"message\":\"Unauthorized\",\"code\":401}}\n\n".into(),
+    };
+    let items = model
+        .stream(
+            &(),
+            ModelRequest::new(vec![crate::message::Message::user("stream status")]),
         )
         .await
         .unwrap()
@@ -322,9 +352,21 @@ async fn managed_auth_callback_reports_typed_provenance_for_each_operation() {
             ),
             (
                 "tinyhumans".to_owned(),
+                Some(403),
+                TinyHumansOperation::Stream,
+                TinyHumansAuthFailureKind::Forbidden,
+            ),
+            (
+                "tinyhumans".to_owned(),
                 None,
                 TinyHumansOperation::Stream,
                 TinyHumansAuthFailureKind::Other,
+            ),
+            (
+                "tinyhumans".to_owned(),
+                Some(401),
+                TinyHumansOperation::Stream,
+                TinyHumansAuthFailureKind::Unauthorized,
             ),
             (
                 "tinyhumans".to_owned(),
@@ -338,7 +380,9 @@ async fn managed_auth_callback_reports_typed_provenance_for_each_operation() {
         *legacy.lock().unwrap(),
         vec![
             (Some(401), TinyHumansOperation::Invoke),
+            (Some(403), TinyHumansOperation::Stream),
             (None, TinyHumansOperation::Stream),
+            (Some(401), TinyHumansOperation::Stream),
             (Some(403), TinyHumansOperation::Readiness),
         ]
     );
@@ -348,14 +392,15 @@ async fn managed_auth_callback_reports_typed_provenance_for_each_operation() {
         content_type: "application/json",
         body: json!({ "error": { "message": "Bad request" } }).to_string(),
     };
-    let _ = model
+    assert!(model
         .invoke(
             &(),
             ModelRequest::new(vec![crate::message::Message::user("not auth")]),
         )
-        .await;
-    assert_eq!(typed.lock().unwrap().len(), 3);
-    assert_eq!(legacy.lock().unwrap().len(), 3);
+        .await
+        .is_err());
+    assert_eq!(typed.lock().unwrap().len(), 5);
+    assert_eq!(legacy.lock().unwrap().len(), 5);
 }
 
 #[tokio::test]

@@ -2874,6 +2874,18 @@ mod explicit_cache_control {
             serde_json::from_value(json!({"prompt_tokens": 1, "completion_tokens": 1})).unwrap(),
         );
         assert_eq!(unreported.charged_amount, None);
+
+        let malformed = convert_usage(
+            serde_json::from_value(json!({
+                "prompt_tokens": 9,
+                "completion_tokens": 2,
+                "cost": {"unexpected": "object"}
+            }))
+            .unwrap(),
+        );
+        assert_eq!(malformed.input_tokens, 9);
+        assert_eq!(malformed.output_tokens, 2);
+        assert_eq!(malformed.charged_amount_nanos, None);
     }
 }
 

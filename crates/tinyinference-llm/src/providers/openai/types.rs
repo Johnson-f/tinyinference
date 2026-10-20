@@ -418,7 +418,7 @@ pub struct UsageWire {
     /// Provider-reported charge in USD, as OpenRouter includes it in its
     /// usage extension. Other OpenAI-compatible providers omit this field.
     #[serde(default)]
-    pub cost: Option<serde_json::Number>,
+    pub cost: Option<serde_json::Value>,
     /// Optional input-token breakdown (carries cached tokens).
     #[serde(default)]
     pub prompt_tokens_details: Option<PromptTokensDetailsWire>,

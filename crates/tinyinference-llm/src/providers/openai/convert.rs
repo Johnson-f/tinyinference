@@ -611,8 +611,8 @@ pub(super) fn convert_usage(wire: UsageWire) -> Usage {
 /// Converts a decimal USD amount to the crate's integer micro-dollar unit.
 /// Invalid, negative, non-finite, or out-of-range provider values stay
 /// unknown instead of being turned into a fabricated zero.
-fn usd_cost_nanos(cost: &serde_json::Number) -> Option<i64> {
-    let value = cost.as_f64()?;
+fn usd_cost_nanos(cost: &serde_json::Value) -> Option<i64> {
+    let value = cost.as_number()?.as_f64()?;
     if !value.is_finite() || value < 0.0 || value > (i64::MAX as f64 / 1_000_000_000.0) {
         return None;
     }

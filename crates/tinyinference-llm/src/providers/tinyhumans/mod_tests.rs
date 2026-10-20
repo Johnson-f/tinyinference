@@ -249,6 +249,116 @@ async fn auth_failure_callback_receives_in_band_stream_failure() {
 }
 
 #[tokio::test]
+async fn managed_auth_callback_reports_typed_provenance_for_each_operation() {
+    let fixture = Fixture::default();
+    let base = serve(fixture.clone()).await;
+    let typed = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let typed_seen = typed.clone();
+    let legacy = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let legacy_seen = legacy.clone();
+    let model = fixture_model(&base)
+        .with_managed_auth_failure_handler(move |error, failure| {
+            typed_seen.lock().unwrap().push((
+                error.provider.clone(),
+                error.status,
+                failure.operation(),
+                failure.kind(),
+            ));
+        })
+        .with_auth_failure_handler(move |error, operation| {
+            legacy_seen
+                .lock()
+                .unwrap()
+                .push((error.status, operation));
+        });
+
+    *fixture.response.lock().unwrap() = FixtureResponse {
+        status: StatusCode::UNAUTHORIZED,
+        content_type: "application/json",
+        body: json!({ "error": { "message": "Unauthorized" } }).to_string(),
+    };
+    let _ = model
+        .invoke(
+            &(),
+            ModelRequest::new(vec![crate::message::Message::user("invoke")]),
+        )
+        .await;
+
+    *fixture.response.lock().unwrap() = FixtureResponse {
+        status: StatusCode::OK,
+        content_type: "text/event-stream",
+        body: "data: {\"error\":{\"message\":\"Unauthorized\",\"code\":\"unauthorized\"}}\n\n"
+            .into(),
+    };
+    let items = model
+        .stream(
+            &(),
+            ModelRequest::new(vec![crate::message::Message::user("stream")]),
+        )
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(matches!(
+        items.last(),
+        Some(ModelStreamItem::ProviderFailed(_))
+    ));
+
+    *fixture.response.lock().unwrap() = FixtureResponse {
+        status: StatusCode::FORBIDDEN,
+        content_type: "application/json",
+        body: json!({ "error": { "message": "Forbidden" } }).to_string(),
+    };
+    model.probe_readiness().await.unwrap();
+
+    assert_eq!(
+        *typed.lock().unwrap(),
+        vec![
+            (
+                "tinyhumans".to_owned(),
+                Some(401),
+                TinyHumansOperation::Invoke,
+                TinyHumansAuthFailureKind::Unauthorized,
+            ),
+            (
+                "tinyhumans".to_owned(),
+                None,
+                TinyHumansOperation::Stream,
+                TinyHumansAuthFailureKind::Other,
+            ),
+            (
+                "tinyhumans".to_owned(),
+                Some(403),
+                TinyHumansOperation::Readiness,
+                TinyHumansAuthFailureKind::Forbidden,
+            ),
+        ]
+    );
+    assert_eq!(
+        *legacy.lock().unwrap(),
+        vec![
+            (Some(401), TinyHumansOperation::Invoke),
+            (None, TinyHumansOperation::Stream),
+            (Some(403), TinyHumansOperation::Readiness),
+        ]
+    );
+
+    *fixture.response.lock().unwrap() = FixtureResponse {
+        status: StatusCode::BAD_REQUEST,
+        content_type: "application/json",
+        body: json!({ "error": { "message": "Bad request" } }).to_string(),
+    };
+    let _ = model
+        .invoke(
+            &(),
+            ModelRequest::new(vec![crate::message::Message::user("not auth")]),
+        )
+        .await;
+    assert_eq!(typed.lock().unwrap().len(), 3);
+    assert_eq!(legacy.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
 async fn stream_completed_projects_managed_usage() {
     let fixture = Fixture::default();
     let base = serve(fixture).await;

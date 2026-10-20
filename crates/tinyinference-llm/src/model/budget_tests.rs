@@ -966,9 +966,14 @@ impl ChatModel<()> for PhysicalAttemptModel {
     }
 }
 
-#[derive(Debug)]
 struct AttemptThenInvoke {
     inner: Arc<dyn ChatModel<()>>,
+}
+
+impl std::fmt::Debug for AttemptThenInvoke {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("AttemptThenInvoke").finish_non_exhaustive()
+    }
 }
 
 #[async_trait]

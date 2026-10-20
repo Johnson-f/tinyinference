@@ -335,7 +335,6 @@ fn before_unbudgeted_physical_attempt() -> crate::Result<()> {
     DISPATCH_HOOK
         .try_with(|scope| {
             scope.before_dispatch.check()?;
-            scope.before_dispatch.physical_attempt()?;
             scope
                 .attempts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -488,12 +487,6 @@ pub fn before_physical_attempt() -> crate::Result<()> {
         .try_with(|scope| {
             if let Some(hook) = &scope.before_dispatch
                 && let Err(error) = hook.check()
-            {
-                mark_physical_refused_before_attempt();
-                return Err(error);
-            }
-            if let Some(hook) = &scope.before_dispatch
-                && let Err(error) = hook.physical_attempt()
             {
                 mark_physical_refused_before_attempt();
                 return Err(error);

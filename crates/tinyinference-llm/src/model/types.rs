@@ -1325,6 +1325,16 @@ pub trait ChatModel<State: Send + Sync>: Send + Sync {
         None
     }
 
+    /// Whether every physical provider send made by this model checks the
+    /// scoped admission hook through [`crate::model::budget::before_physical_attempt`].
+    ///
+    /// The default is conservative: unknown implementations may send without
+    /// observing that hook, so a caller cannot safely infer that a refusal
+    /// after invocation began happened before any provider request.
+    fn tracks_physical_attempts(&self) -> bool {
+        false
+    }
+
     /// Invokes the model and returns a complete response.
     async fn invoke(&self, state: &State, request: ModelRequest) -> Result<ModelResponse>;
 

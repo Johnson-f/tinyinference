@@ -1024,6 +1024,38 @@ async fn denied_outer_retry_reservation_refunds_unsent_inner_budget() {
 }
 
 #[tokio::test]
+async fn budget_refunds_when_a_gated_fallback_refuses_before_any_child_invocation() {
+    let primary = probe_model();
+    let fallback = probe_model();
+    let chain = Arc::new(super::super::FallbackModel::new(
+        Arc::new(super::super::DispatchCheckedModel::new(
+            primary.clone(),
+            Arc::new(DispatchCheck {
+                allowed: false,
+                checks: Default::default(),
+            }),
+        )),
+        vec![Arc::new(super::super::DispatchCheckedModel::new(
+            fallback.clone(),
+            Arc::new(DispatchCheck {
+                allowed: true,
+                checks: Default::default(),
+            }),
+        ))],
+    ));
+    let budget = Budget::new(SpendLimits::default());
+    let model = BudgetedModel::new(chain, budget.clone(), call_policy());
+
+    assert!(matches!(
+        model.invoke(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch refused"
+    ));
+    assert_eq!(primary.invokes.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(fallback.invokes.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(budget.snapshot(), BudgetSnapshot::default());
+}
+
+#[tokio::test]
 async fn refused_dispatch_wrapper_does_not_charge_an_untracked_inner_model() {
     let inner = probe_model();
     let dispatch = Arc::new(super::super::DispatchCheckedModel::new(

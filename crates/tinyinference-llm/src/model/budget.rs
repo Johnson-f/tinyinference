@@ -896,24 +896,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
                 current_scopes.push(current_scope.clone());
             }
             let item = PHYSICAL_CALL.sync_scope(current_scopes, || {
-                let refused = if current_scope
-                    .attempts
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                    == 0
-                {
-                    current_scope
-                        .before_dispatch
-                        .as_ref()
-                        .and_then(|hook| hook.check().err())
-                } else {
-                    None
-                };
-                let item = if let Some(error) = refused {
-                    mark_physical_refused_before_attempt();
-                    std::task::Poll::Ready(Some(ModelStreamItem::Failed(error.to_string())))
-                } else {
-                    futures::Stream::poll_next(stream.as_mut(), cx)
-                };
+                let item = futures::Stream::poll_next(stream.as_mut(), cx);
                 match &item {
                     std::task::Poll::Ready(Some(ModelStreamItem::Completed(response))) => {
                         if let Some(permit) = reservation.take() {

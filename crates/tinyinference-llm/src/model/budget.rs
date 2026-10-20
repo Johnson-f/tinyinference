@@ -433,6 +433,7 @@ struct AttemptScope {
     before_dispatch: Option<Arc<dyn BeforeDispatch>>,
     attempts: std::sync::atomic::AtomicUsize,
     refused_before_attempt: std::sync::atomic::AtomicBool,
+    untracked_inner_invoked: std::sync::atomic::AtomicBool,
 }
 
 impl AttemptScope {
@@ -440,6 +441,9 @@ impl AttemptScope {
         self.refused_before_attempt
             .load(std::sync::atomic::Ordering::SeqCst)
             && self.attempts.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && !self
+                .untracked_inner_invoked
+                .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 tokio::task_local! { static PHYSICAL_CALL: Arc<AttemptScope>; }
@@ -455,7 +459,13 @@ fn mark_physical_refused_before_attempt() {
 ///
 /// Outside a budgeted invocation this is a no-op. The first attempt uses the
 /// invocation reservation; later attempts must atomically reserve again.
-pub(crate) fn before_physical_attempt() -> crate::Result<()> {
+/// Checks active dispatch and budget scopes immediately before a physical
+/// provider send. Provider implementations should call this for every send,
+/// including retries, and report [`ChatModel::tracks_physical_attempts`] as
+/// true only when every send is covered.
+///
+/// Outside an active budgeted or dispatch-checked invocation this is a no-op.
+pub fn before_physical_attempt() -> crate::Result<()> {
     PHYSICAL_CALL
         .try_with(|scope| {
             if let Some(hook) = &scope.before_dispatch
@@ -624,12 +634,18 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             before_dispatch: self.before_dispatch.clone(),
             attempts: std::sync::atomic::AtomicUsize::new(0),
             refused_before_attempt: std::sync::atomic::AtomicBool::new(false),
+            untracked_inner_invoked: std::sync::atomic::AtomicBool::new(false),
         });
         if let Some(hook) = &self.before_dispatch
             && let Err(error) = hook.check()
         {
             reservation.settle(Spend::default());
             return Err(error);
+        }
+        if !self.inner.tracks_physical_attempts() {
+            scope
+                .untracked_inner_invoked
+                .store(true, std::sync::atomic::Ordering::SeqCst);
         }
         let response = match PHYSICAL_CALL
             .scope(Arc::clone(&scope), self.inner.invoke(state, request))
@@ -653,12 +669,18 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             before_dispatch: self.before_dispatch.clone(),
             attempts: std::sync::atomic::AtomicUsize::new(0),
             refused_before_attempt: std::sync::atomic::AtomicBool::new(false),
+            untracked_inner_invoked: std::sync::atomic::AtomicBool::new(false),
         });
         if let Some(hook) = &self.before_dispatch
             && let Err(error) = hook.check()
         {
             reservation.settle(Spend::default());
             return Err(error);
+        }
+        if !self.inner.tracks_physical_attempts() {
+            scope
+                .untracked_inner_invoked
+                .store(true, std::sync::atomic::Ordering::SeqCst);
         }
         let stream = match PHYSICAL_CALL
             .scope(Arc::clone(&scope), self.inner.stream(state, request))

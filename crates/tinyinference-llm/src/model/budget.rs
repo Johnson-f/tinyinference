@@ -262,12 +262,14 @@ pub struct CallBudget {
     pub cost_micros: u64,
 }
 
-/// A synchronous, provider-neutral check immediately before dispatching a
-/// reserved model call.
+/// A synchronous, provider-neutral check before dispatching a reserved model
+/// call and before each physical provider attempt.
 ///
 /// The host can use this hook to recheck an absolute deadline or other
 /// admission policy after [`BudgetedModel`] has waited for monetary capacity.
-/// It must be quick and must not perform I/O.
+/// The check is repeated at each physical transport attempt, including a
+/// retry or a lazy stream's first poll. It must be quick and must not perform
+/// I/O.
 pub trait BeforeDispatch: Send + Sync {
     /// Returns an error when the reserved call must not reach the provider.
     ///
@@ -339,8 +341,9 @@ impl<State: Send + Sync> BudgetedModel<State> {
         }
     }
 
-    /// Install a synchronous policy check after monetary admission and before
-    /// each provider invocation or stream construction.
+    /// Install a synchronous policy check after monetary admission, before
+    /// provider invocation or stream construction, and before each physical
+    /// transport attempt.
     pub fn before_dispatch(mut self, hook: Arc<dyn BeforeDispatch>) -> Self {
         self.before_dispatch = Some(hook);
         self

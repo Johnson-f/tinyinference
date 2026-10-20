@@ -2851,6 +2851,27 @@ mod explicit_cache_control {
         );
         assert_eq!(both.cache_read_tokens, 960);
     }
+
+    #[test]
+    fn openrouter_cost_is_preserved_in_micro_dollars() {
+        let usage = convert_usage(
+            serde_json::from_value(json!({
+                "prompt_tokens": 100, "completion_tokens": 20,
+                "cost": 0.0000125
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            usage.charged_amount,
+            Some(crate::usage::ChargedAmount::usd_micros(13))
+        );
+
+        let unreported = convert_usage(
+            serde_json::from_value(json!({"prompt_tokens": 1, "completion_tokens": 1}))
+                .unwrap(),
+        );
+        assert_eq!(unreported.charged_amount, None);
+    }
 }
 
 #[test]

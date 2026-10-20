@@ -976,16 +976,14 @@ async fn anthropic_fallback_rechecks_dispatch_before_its_second_send() {
     let model = super::super::DispatchCheckedModel::new(Arc::new(fallback), hook.clone());
     let outcome = model.invoke(&(), request()).await;
     let _ = invoke_finished.send(());
+    let second_send = second_server.await.unwrap();
+    first_server.await.unwrap();
 
+    assert!(!second_send, "Anthropic fallback bypassed dispatch");
     assert!(matches!(
         outcome,
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
-    assert!(
-        !second_server.await.unwrap(),
-        "Anthropic fallback bypassed dispatch"
-    );
-    first_server.await.unwrap();
     assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
 

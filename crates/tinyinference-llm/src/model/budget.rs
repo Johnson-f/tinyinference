@@ -401,6 +401,13 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
         true
     }
 
+    async fn fetch_deferred(
+        &self,
+        handle: &super::DeferredHandle,
+    ) -> crate::Result<super::DeferredStatus> {
+        self.inner.fetch_deferred(handle).await
+    }
+
     async fn invoke(&self, state: &State, request: ModelRequest) -> crate::Result<ModelResponse> {
         if let Err(error) = self.before_dispatch.check() {
             mark_dispatch_refused_before_invocation();

@@ -415,7 +415,10 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
             attempts: std::sync::atomic::AtomicUsize::new(0),
         });
         DISPATCH_HOOK
-            .scope(nested_dispatch_scopes(scope), self.inner.invoke(state, request))
+            .scope(
+                nested_dispatch_scopes(scope),
+                self.inner.invoke(state, request),
+            )
             .await
     }
 
@@ -442,7 +445,10 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
                 return std::task::Poll::Ready(None);
             };
             let mut current_scopes = dispatch_scopes.clone();
-            if !current_scopes.iter().any(|scope| Arc::ptr_eq(scope, &current_scope)) {
+            if !current_scopes
+                .iter()
+                .any(|scope| Arc::ptr_eq(scope, &current_scope))
+            {
                 current_scopes.push(current_scope);
             }
             let item = DISPATCH_HOOK.sync_scope(current_scopes, || {
@@ -798,7 +804,10 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
         let response = match PHYSICAL_CALL
-            .scope(nested_attempt_scopes(Arc::clone(&scope)), self.inner.invoke(state, request))
+            .scope(
+                nested_attempt_scopes(Arc::clone(&scope)),
+                self.inner.invoke(state, request),
+            )
             .await
         {
             Ok(response) => response,
@@ -856,7 +865,10 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
                 return std::task::Poll::Ready(None);
             };
             let mut current_scopes = attempt_scopes.clone();
-            if !current_scopes.iter().any(|scope| Arc::ptr_eq(scope, &current_scope)) {
+            if !current_scopes
+                .iter()
+                .any(|scope| Arc::ptr_eq(scope, &current_scope))
+            {
                 current_scopes.push(current_scope.clone());
             }
             let item = PHYSICAL_CALL.sync_scope(current_scopes, || {

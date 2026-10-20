@@ -862,25 +862,28 @@ async fn nested_budgeted_models_recheck_every_policy_on_a_real_retry() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let outer_hook = Arc::new(RevocableDispatchCheck {
-        allowed: true.into(),
+        allowed: std::sync::atomic::AtomicBool::new(true),
         checks: Default::default(),
     });
     let server_hook = Arc::clone(&outer_hook);
     let (invoke_finished, finished) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
-        let (mut socket, _) = tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
-            .await
-            .expect("first OpenAI send reaches the local server")
-            .unwrap();
+        let (mut socket, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+                .await
+                .expect("first OpenAI send reaches the local server")
+                .unwrap();
         let mut request = vec![0; 16 * 1024];
         let read = socket.read(&mut request).await.unwrap();
         assert!(request[..read].starts_with(b"POST /v1/chat/completions"));
-        server_hook.allowed.store(false, std::sync::atomic::Ordering::SeqCst);
+        server_hook
+            .allowed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let body = r#"{"error":{"message":"response_format json_object unsupported"}}"#;
         socket
             .write_all(
                 format!(
-                    "HTTP/1.1 400 Bad Request\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}",
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 )
@@ -924,12 +927,24 @@ async fn nested_budgeted_models_recheck_every_policy_on_a_real_retry() {
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
     assert!(!server.await.unwrap(), "outer hook refused the real retry");
-    assert_eq!(outer_hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
-    assert_eq!(inner_hook.checks.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        outer_hook.checks.load(std::sync::atomic::Ordering::SeqCst),
+        3
+    );
+    assert_eq!(
+        inner_hook.checks.load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
     assert_eq!(outer_budget.snapshot().reserved, Spend::default());
     assert_eq!(inner_budget.snapshot().reserved, Spend::default());
-    assert_eq!(outer_budget.snapshot().spent.cost_micros, call_policy().cost_micros);
-    assert_eq!(inner_budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+    assert_eq!(
+        outer_budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros
+    );
+    assert_eq!(
+        inner_budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros
+    );
 }
 
 #[tokio::test]

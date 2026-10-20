@@ -403,7 +403,7 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
 
     async fn invoke(&self, state: &State, request: ModelRequest) -> crate::Result<ModelResponse> {
         if let Err(error) = self.before_dispatch.check() {
-            mark_physical_refused_before_attempt();
+            mark_dispatch_refused_before_invocation();
             return Err(error);
         }
         let scope = Arc::new(DispatchHookScope {
@@ -418,7 +418,7 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
 
     async fn stream(&self, state: &State, request: ModelRequest) -> crate::Result<ModelStream> {
         if let Err(error) = self.before_dispatch.check() {
-            mark_physical_refused_before_attempt();
+            mark_dispatch_refused_before_invocation();
             return Err(error);
         }
         let scope = Arc::new(DispatchHookScope {
@@ -511,9 +511,9 @@ tokio::task_local! { static PHYSICAL_CALL: Vec<Arc<AttemptScope>>; }
 fn mark_physical_refused_before_attempt() {
     let _ = PHYSICAL_CALL.try_with(|scopes| {
         for scope in scopes {
-        scope
-            .refused_before_attempt
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+            scope
+                .refused_before_attempt
+                .store(true, std::sync::atomic::Ordering::SeqCst);
         }
     });
 }
@@ -571,7 +571,7 @@ pub fn before_physical_attempt() -> crate::Result<()> {
             // A DispatchCheckedModel may wrap this budgeted model. Its
             // independent admission scope must also be checked at every
             // physical send, including provider retries.
-            let dispatch_scope = match checked_unbudgeted_physical_attempt() {
+            let dispatch_scopes = match checked_unbudgeted_physical_attempt() {
                 Ok(scope) => scope,
                 Err(error) => {
                     mark_physical_refused_before_attempt();
@@ -594,6 +594,15 @@ pub fn before_physical_attempt() -> crate::Result<()> {
                     }
                 }
             }
+            let _dispatch_attempts: Vec<_> = dispatch_scopes
+                .iter()
+                .map(|scope| {
+                    scope
+                        .attempt_gate
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                })
+                .collect();
             for scope in scopes {
                 if let Some(hook) = &scope.before_dispatch
                     && let Err(error) = hook.physical_attempt()

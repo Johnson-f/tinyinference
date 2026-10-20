@@ -549,9 +549,7 @@ fn mark_untracked_inner_invoked() {
 }
 
 fn nested_attempt_scopes(scope: Arc<AttemptScope>) -> Vec<Arc<AttemptScope>> {
-    let mut scopes = PHYSICAL_CALL.try_with(Clone::clone).unwrap_or_default();
-    scopes.push(scope);
-    scopes
+    vec![scope]
 }
 /// Admit an extra physical attempt made internally by a concrete provider.
 ///

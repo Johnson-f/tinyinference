@@ -283,7 +283,7 @@ pub trait BeforeDispatch: Send + Sync {
 /// Supplies a final dispatch policy to an existing provider without adding a
 /// monetary budget.
 ///
-/// Built-in transports call [`before_physical_attempt`] immediately before
+/// Built-in transports call `before_physical_attempt` immediately before
 /// each send. The wrapper scopes the hook across invocation and stream polling,
 /// and checks once before generic model work for compatibility with adapters
 /// that do not expose a separate physical-send seam.

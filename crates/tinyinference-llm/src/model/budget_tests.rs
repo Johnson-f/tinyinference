@@ -587,11 +587,7 @@ impl super::BeforeDispatch for RefuseAtPhysicalSend {
 struct RefuseRetrySend(std::sync::atomic::AtomicUsize);
 impl super::BeforeDispatch for RefuseRetrySend {
     fn check(&self) -> crate::Result<()> {
-        if self
-            .0
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            < 2
-        {
+        if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
             Ok(())
         } else {
             Err(crate::Error::Validation("dispatch revoked".into()))
@@ -679,13 +675,11 @@ async fn openai_retry_refusal_keeps_charge_for_the_first_physical_send() {
     let addr = listener.local_addr().unwrap();
     let (invoke_finished, finished) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
-        let (mut socket, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            listener.accept(),
-        )
-        .await
-        .expect("first OpenAI physical send reaches the local server")
-        .unwrap();
+        let (mut socket, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), listener.accept())
+                .await
+                .expect("first OpenAI physical send reaches the local server")
+                .unwrap();
         let mut request = vec![0; 16 * 1024];
         let read = socket.read(&mut request).await.unwrap();
         assert!(request[..read].starts_with(b"POST /v1/chat/completions"));
@@ -698,12 +692,11 @@ async fn openai_retry_refusal_keeps_charge_for_the_first_physical_send() {
         socket.write_all(response.as_bytes()).await.unwrap();
         drop(socket);
         finished.await.unwrap();
-        assert!(tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            listener.accept()
-        )
-        .await
-        .is_err());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept())
+                .await
+                .is_err()
+        );
     });
 
     let provider = crate::providers::openai::OpenAiModel::new("fixture")

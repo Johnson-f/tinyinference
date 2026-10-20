@@ -350,7 +350,10 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
     }
 
     async fn invoke(&self, state: &State, request: ModelRequest) -> crate::Result<ModelResponse> {
-        self.before_dispatch.check()?;
+        if let Err(error) = self.before_dispatch.check() {
+            mark_physical_refused_before_attempt();
+            return Err(error);
+        }
         let scope = Arc::new(DispatchHookScope {
             before_dispatch: self.before_dispatch.clone(),
             attempts: std::sync::atomic::AtomicUsize::new(0),
@@ -361,7 +364,10 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
     }
 
     async fn stream(&self, state: &State, request: ModelRequest) -> crate::Result<ModelStream> {
-        self.before_dispatch.check()?;
+        if let Err(error) = self.before_dispatch.check() {
+            mark_physical_refused_before_attempt();
+            return Err(error);
+        }
         let scope = Arc::new(DispatchHookScope {
             before_dispatch: self.before_dispatch.clone(),
             attempts: std::sync::atomic::AtomicUsize::new(0),
@@ -393,6 +399,7 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
                         .before_dispatch
                         .check()
                     {
+                        mark_physical_refused_before_attempt();
                         return std::task::Poll::Ready(Some(ModelStreamItem::Failed(
                             error.to_string(),
                         )));
@@ -436,6 +443,14 @@ impl AttemptScope {
     }
 }
 tokio::task_local! { static PHYSICAL_CALL: Arc<AttemptScope>; }
+
+fn mark_physical_refused_before_attempt() {
+    let _ = PHYSICAL_CALL.try_with(|scope| {
+        scope
+            .refused_before_attempt
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+}
 /// Admit an extra physical attempt made internally by a concrete provider.
 ///
 /// Outside a budgeted invocation this is a no-op. The first attempt uses the
@@ -445,15 +460,11 @@ pub(crate) fn before_physical_attempt() -> crate::Result<()> {
         .try_with(|scope| {
             if let Some(hook) = &scope.before_dispatch {
                 if let Err(error) = hook.check() {
-                    scope
-                        .refused_before_attempt
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    mark_physical_refused_before_attempt();
                     return Err(error);
                 }
             } else if let Err(error) = before_unbudgeted_physical_attempt() {
-                scope
-                    .refused_before_attempt
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                mark_physical_refused_before_attempt();
                 return Err(error);
             }
             if scope

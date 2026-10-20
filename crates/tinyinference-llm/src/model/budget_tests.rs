@@ -1036,11 +1036,7 @@ impl super::BeforeDispatch for LimitOnePhysicalAttempt {
     }
 
     fn physical_attempt(&self) -> crate::Result<()> {
-        if self
-            .0
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            == 0
-        {
+        if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
             Ok(())
         } else {
             Err(crate::Error::Validation("physical call limit".into()))
@@ -1085,8 +1081,7 @@ async fn ollama_warmup_consumes_the_only_physical_call_slot() {
         };
         let mut bytes = vec![0; 8192];
         let read = chat.read(&mut bytes).await.unwrap();
-        assert!(String::from_utf8_lossy(&bytes[..read])
-            .starts_with("POST /v1/chat/completions "));
+        assert!(String::from_utf8_lossy(&bytes[..read]).starts_with("POST /v1/chat/completions "));
         let body = r#"{"id":"test","object":"chat.completion","created":1,"model":"llama3.2","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#;
         chat.write_all(
             format!(
@@ -1129,7 +1124,10 @@ async fn ollama_warmup_consumes_the_only_physical_call_slot() {
     assert_eq!(requests, vec!["/api/chat"]);
     assert_eq!(admission.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(budget.snapshot().reserved, Spend::default());
-    assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+    assert_eq!(
+        budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros
+    );
 }
 
 #[tokio::test]

@@ -523,10 +523,7 @@ pub fn before_physical_attempt() -> crate::Result<()> {
             };
             // Reserve retry money before consuming a host call slot. A denied
             // monetary reservation therefore never charges an unsent attempt.
-            let retry_reservation = if scope
-                .attempts
-                .load(std::sync::atomic::Ordering::SeqCst)
-                == 0
+            let retry_reservation = if scope.attempts.load(std::sync::atomic::Ordering::SeqCst) == 0
             {
                 None
             } else {
@@ -776,10 +773,14 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
         let metadata = stream.metadata().clone();
         let mut stream = Box::pin(stream);
         let mut reservation = Some(reservation);
+        let mut scope = Some(scope);
         // Lazy providers can send/retry while polled; retain the same attempt
         // counter and admission scope over both construction and consumption.
         let stream = futures::stream::poll_fn(move |cx| {
-            PHYSICAL_CALL.sync_scope(Arc::clone(&scope), || {
+            let Some(current_scope) = scope.as_ref().cloned() else {
+                return std::task::Poll::Ready(None);
+            };
+            let item = PHYSICAL_CALL.sync_scope(current_scope.clone(), || {
                 let item = futures::Stream::poll_next(stream.as_mut(), cx);
                 match &item {
                     std::task::Poll::Ready(Some(ModelStreamItem::Completed(response))) => {
@@ -793,7 +794,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
                         | ModelStreamItem::Deferred(_),
                     ))
                     | std::task::Poll::Ready(None) => {
-                        if scope.can_refund_before_first_attempt() {
+                        if current_scope.can_refund_before_first_attempt() {
                             if let Some(reservation) = reservation.take() {
                                 reservation.settle(Spend::default());
                             }
@@ -804,7 +805,21 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
                     _ => (),
                 }
                 item
-            })
+            });
+            if matches!(
+                &item,
+                std::task::Poll::Ready(Some(
+                    ModelStreamItem::Completed(_)
+                        | ModelStreamItem::Failed(_)
+                        | ModelStreamItem::ProviderFailed(_)
+                        | ModelStreamItem::Deferred(_)
+                )) | std::task::Poll::Ready(None)
+            ) {
+                // Drop the host permit at terminal delivery, even if the
+                // caller retains the fused stream object for later polling.
+                scope.take();
+            }
+            item
         });
         Ok(ModelStream::new(Box::pin(stream)).with_metadata(metadata))
     }

@@ -808,7 +808,9 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             reservation.settle(Spend::default());
             return Err(error);
         }
-        if !self.inner.tracks_physical_attempts() {
+        if !self.inner.tracks_physical_attempts()
+            && !self.inner.has_pre_invocation_admission_gate()
+        {
             mark_untracked_inner_invoked();
             scope
                 .untracked_inner_invoked

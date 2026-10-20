@@ -943,13 +943,11 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
     });
     let server_hook = Arc::clone(&hook);
     let server = tokio::spawn(async move {
-        let (mut warmup, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            listener.accept(),
-        )
-        .await
-        .expect("Ollama warm-up reaches the local server")
-        .unwrap();
+        let (mut warmup, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+                .await
+                .expect("Ollama warm-up reaches the local server")
+                .unwrap();
         let mut bytes = vec![0; 8192];
         let read = warmup.read(&mut bytes).await.unwrap();
         let warmup_request = String::from_utf8_lossy(&bytes[..read]);
@@ -1010,8 +1008,8 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
     )
     .unwrap();
     let budget = Budget::new(SpendLimits::default());
-    let model = BudgetedModel::new(provider, budget.clone(), call_policy())
-        .before_dispatch(hook.clone());
+    let model =
+        BudgetedModel::new(provider, budget.clone(), call_policy()).before_dispatch(hook.clone());
 
     let outcome = model.invoke(&(), request()).await;
     let _ = finished_tx.send(());
@@ -1020,7 +1018,10 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
         outcome,
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
-    assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+    assert_eq!(
+        budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros
+    );
     assert_eq!(budget.snapshot().reserved, Spend::default());
     assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
     assert_eq!(server.await.unwrap(), vec!["/api/chat"]);

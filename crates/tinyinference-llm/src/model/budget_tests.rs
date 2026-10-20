@@ -555,6 +555,113 @@ async fn before_dispatch_success_checks_once_and_keeps_stream_settlement() {
 }
 
 #[derive(Debug)]
+struct RevocableDispatchCheck {
+    allowed: std::sync::atomic::AtomicBool,
+    checks: std::sync::atomic::AtomicUsize,
+}
+impl super::BeforeDispatch for RevocableDispatchCheck {
+    fn check(&self) -> crate::Result<()> {
+        self.checks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.allowed.load(std::sync::atomic::Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(crate::Error::Validation("dispatch revoked".into()))
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RevocableRetryModel {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    hook: Arc<RevocableDispatchCheck>,
+}
+#[async_trait]
+impl ChatModel<()> for RevocableRetryModel {
+    async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
+        before_physical_attempt()?;
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.hook
+            .allowed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        before_physical_attempt()?;
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(ModelResponse::assistant("unsafe retry"))
+    }
+}
+
+#[tokio::test]
+async fn before_dispatch_is_rechecked_before_each_physical_retry() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook = Arc::new(RevocableDispatchCheck {
+        allowed: std::sync::atomic::AtomicBool::new(true),
+        checks: Default::default(),
+    });
+    let model = BudgetedModel::new(
+        Arc::new(RevocableRetryModel {
+            calls: Arc::clone(&calls),
+            hook: Arc::clone(&hook),
+        }),
+        Budget::new(SpendLimits::default()),
+        call_policy(),
+    )
+    .before_dispatch(hook.clone());
+
+    assert!(matches!(
+        model.invoke(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+#[derive(Debug)]
+struct RevocableLazyStreamModel(Arc<std::sync::atomic::AtomicUsize>);
+#[async_trait]
+impl ChatModel<()> for RevocableLazyStreamModel {
+    async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
+        unreachable!()
+    }
+    async fn stream(&self, _: &(), _: ModelRequest) -> crate::Result<ModelStream> {
+        let calls = Arc::clone(&self.0);
+        Ok(ModelStream::new(Box::pin(futures::stream::poll_fn(
+            move |_| {
+                if let Err(error) = before_physical_attempt() {
+                    return std::task::Poll::Ready(Some(ModelStreamItem::Failed(
+                        error.to_string(),
+                    )));
+                }
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::task::Poll::Ready(None)
+            },
+        ))))
+    }
+}
+
+#[tokio::test]
+async fn before_dispatch_is_rechecked_when_a_lazy_stream_is_first_polled() {
+    use futures::StreamExt;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook = Arc::new(RevocableDispatchCheck {
+        allowed: std::sync::atomic::AtomicBool::new(true),
+        checks: Default::default(),
+    });
+    let model = BudgetedModel::new(
+        Arc::new(RevocableLazyStreamModel(Arc::clone(&calls))),
+        Budget::new(SpendLimits::default()),
+        call_policy(),
+    )
+    .before_dispatch(hook.clone());
+
+    let mut stream = model.stream(&(), request()).await.unwrap();
+    hook.allowed
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(matches!(stream.next().await, Some(ModelStreamItem::Failed(_))));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[derive(Debug)]
 struct LazyRetryStreamModel(Arc<std::sync::atomic::AtomicUsize>);
 #[async_trait]
 impl ChatModel<()> for LazyRetryStreamModel {

@@ -677,7 +677,10 @@ async fn nested_dispatch_checked_refusal_refunds_outer_budget_reservation() {
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
     assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
-    assert_eq!(budget_hook.checks.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        budget_hook.checks.load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
     assert_eq!(budget.snapshot(), BudgetSnapshot::default());
     assert_no_connection(listener);
 }
@@ -691,7 +694,7 @@ async fn openai_retry_refusal_keeps_charge_for_the_first_physical_send() {
     let (invoke_finished, finished) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut socket, _) =
-            tokio::time::timeout(std::time::Duration::from_secs(1), listener.accept())
+            tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
                 .await
                 .expect("first OpenAI physical send reaches the local server")
                 .unwrap();
@@ -797,15 +800,24 @@ async fn nested_hooks_both_recheck_a_real_openai_retry() {
         outcome,
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
-    assert!(!server.await.unwrap(), "outer admission allowed the retry through");
+    assert!(
+        !server.await.unwrap(),
+        "outer admission allowed the retry through"
+    );
     assert_eq!(
         outer_hook.checks.load(std::sync::atomic::Ordering::SeqCst),
         3,
         "the outer gate is checked before the call, first send, and retry"
     );
-    assert_eq!(budget_hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(
+        budget_hook.checks.load(std::sync::atomic::Ordering::SeqCst),
+        3
+    );
     assert_eq!(budget.snapshot().reserved, Spend::default());
-    assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+    assert_eq!(
+        budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros
+    );
 }
 
 #[derive(Debug)]

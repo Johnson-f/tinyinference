@@ -807,7 +807,7 @@ async fn nested_hooks_both_recheck_a_real_openai_retry() {
     request.response_format = Some(crate::model::ResponseFormat::JsonObject);
 
     let outcome = model.invoke(&(), request).await;
-    invoke_finished.send(()).unwrap();
+    let _ = invoke_finished.send(());
     assert!(matches!(
         outcome,
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"

@@ -405,7 +405,25 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
         &self,
         handle: &super::DeferredHandle,
     ) -> crate::Result<super::DeferredStatus> {
-        self.inner.fetch_deferred(handle).await
+        if let Err(error) = self.before_dispatch.check() {
+            mark_dispatch_refused_before_invocation();
+            return Err(error);
+        }
+        if !self.inner.tracks_physical_attempts() && !self.inner.has_pre_invocation_admission_gate()
+        {
+            mark_untracked_inner_invoked();
+        }
+        let scope = Arc::new(DispatchHookScope {
+            before_dispatch: self.before_dispatch.clone(),
+            attempt_gate: std::sync::Mutex::new(()),
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+        });
+        DISPATCH_HOOK
+            .scope(
+                nested_dispatch_scopes(scope),
+                self.inner.fetch_deferred(handle),
+            )
+            .await
     }
 
     async fn invoke(&self, state: &State, request: ModelRequest) -> crate::Result<ModelResponse> {

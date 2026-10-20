@@ -572,6 +572,64 @@ impl super::BeforeDispatch for RevocableDispatchCheck {
 }
 
 #[derive(Debug)]
+struct RefuseAtPhysicalSend(std::sync::atomic::AtomicUsize);
+impl super::BeforeDispatch for RefuseAtPhysicalSend {
+    fn check(&self) -> crate::Result<()> {
+        if self
+            .0
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            == 0
+        {
+            Ok(())
+        } else {
+            Err(crate::Error::Validation("dispatch revoked".into()))
+        }
+    }
+}
+
+#[tokio::test]
+async fn openai_unary_refusal_before_first_send_refunds_budget_reservation() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider = crate::providers::openai::OpenAiModel::new("fixture")
+        .with_base_url(format!("http://{}/v1", listener.local_addr().unwrap()));
+    let budget = Budget::new(SpendLimits::default());
+    let hook = Arc::new(RefuseAtPhysicalSend(Default::default()));
+    let model = BudgetedModel::new(Arc::new(provider), budget.clone(), call_policy())
+        .before_dispatch(hook.clone());
+
+    assert!(matches!(
+        model.invoke(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(budget.snapshot(), BudgetSnapshot::default());
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn openai_stream_refusal_before_first_send_refunds_budget_reservation() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider = crate::providers::openai::OpenAiModel::new("fixture")
+        .with_base_url(format!("http://{}/v1", listener.local_addr().unwrap()));
+    let budget = Budget::new(SpendLimits::default());
+    let hook = Arc::new(RefuseAtPhysicalSend(Default::default()));
+    let model = BudgetedModel::new(Arc::new(provider), budget.clone(), call_policy())
+        .before_dispatch(hook.clone());
+
+    assert!(matches!(
+        model.stream(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(budget.snapshot(), BudgetSnapshot::default());
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+        .await
+        .is_err());
+}
+
+#[derive(Debug)]
 struct RevocableRetryModel {
     calls: Arc<std::sync::atomic::AtomicUsize>,
     hook: Arc<RevocableDispatchCheck>,

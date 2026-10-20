@@ -524,6 +524,11 @@ fn mark_physical_refused_before_attempt() {
             scope
                 .refused_before_attempt
                 .store(true, std::sync::atomic::Ordering::SeqCst);
+            if scope.attempts.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                scope
+                    .untracked_inner_invoked
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+            }
         }
     });
 }

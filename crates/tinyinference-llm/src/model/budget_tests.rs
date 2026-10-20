@@ -833,6 +833,163 @@ async fn nested_hooks_both_recheck_a_real_openai_retry() {
 }
 
 #[derive(Debug)]
+struct UntrackedPaidModel {
+    endpoint: String,
+    hook: Arc<RevocableDispatchCheck>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl ChatModel<()> for UntrackedPaidModel {
+    async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
+        let response = reqwest::Client::new()
+            .post(&self.endpoint)
+            .send()
+            .await
+            .map_err(|error| crate::Error::Model(error.to_string()))?;
+        assert!(response.status().is_success());
+        let _ = response.bytes().await;
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.hook
+            .allowed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        Err(crate::Error::Model("primary exhausted after send".into()))
+    }
+}
+
+#[tokio::test]
+async fn unknown_adapter_send_is_not_refunded_after_later_nested_refusal() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/paid", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = vec![0; 4096];
+        let read = socket.read(&mut request).await.unwrap();
+        assert!(request[..read].starts_with(b"POST /paid "));
+        let body = "ok";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+    let hook = Arc::new(RevocableDispatchCheck {
+        allowed: std::sync::atomic::AtomicBool::new(true),
+        checks: Default::default(),
+    });
+    let paid = Arc::new(UntrackedPaidModel {
+        endpoint,
+        hook: Arc::clone(&hook),
+        calls: Default::default(),
+    });
+    let fallback = super::super::FallbackModel::new(
+        paid.clone(),
+        vec![Arc::new(super::super::DispatchCheckedModel::new(
+            probe_model(),
+            hook,
+        ))],
+    );
+    let budget = Budget::new(SpendLimits::default());
+    let model = BudgetedModel::new(Arc::new(fallback), budget.clone(), call_policy());
+
+    assert!(matches!(
+        model.invoke(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    server.await.unwrap();
+    assert_eq!(paid.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(budget.snapshot().reserved, Spend::default());
+    assert_eq!(
+        budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros,
+        "an untracked adapter may have sent before a nested gate refuses"
+    );
+}
+
+#[tokio::test]
+async fn anthropic_fallback_rechecks_dispatch_before_its_second_send() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let first_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first_addr = first_listener.local_addr().unwrap();
+    let second_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second_addr = second_listener.local_addr().unwrap();
+    let hook = Arc::new(RevocableDispatchCheck {
+        allowed: std::sync::atomic::AtomicBool::new(true),
+        checks: Default::default(),
+    });
+    let first_hook = Arc::clone(&hook);
+    let first_server = tokio::spawn(async move {
+        let (mut socket, _) = first_listener.accept().await.unwrap();
+        let mut request = vec![0; 8192];
+        let read = socket.read(&mut request).await.unwrap();
+        assert!(request[..read].starts_with(b"POST /v1/messages "));
+        first_hook
+            .allowed
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let body = r#"{"type":"error","error":{"type":"api_error","message":"retryable"}}"#;
+        let response = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+    let (invoke_finished, finished) = tokio::sync::oneshot::channel();
+    let second_server = tokio::spawn(async move {
+        tokio::select! {
+            biased;
+            connection = second_listener.accept() => {
+                let (mut socket, _) = connection.unwrap();
+                let mut request = vec![0; 8192];
+                let read = socket.read(&mut request).await.unwrap();
+                assert!(request[..read].starts_with(b"POST /v1/messages "));
+                let body = r#"{"id":"msg-test","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"unexpected fallback"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                true
+            }
+            _ = finished => {
+                assert_no_connection(second_listener);
+                false
+            }
+        }
+    });
+
+    let first = crate::providers::anthropic::AnthropicModel::with_base_url(
+        "fixture",
+        format!("http://{first_addr}/v1"),
+    )
+    .with_insecure_http(true);
+    let second = crate::providers::anthropic::AnthropicModel::with_base_url(
+        "fixture",
+        format!("http://{second_addr}/v1"),
+    )
+    .with_insecure_http(true);
+    let fallback = super::super::FallbackModel::new(Arc::new(first), vec![Arc::new(second)]);
+    let model = super::super::DispatchCheckedModel::new(Arc::new(fallback), hook.clone());
+    let outcome = model.invoke(&(), request()).await;
+    let _ = invoke_finished.send(());
+
+    assert!(matches!(
+        outcome,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    assert!(
+        !second_server.await.unwrap(),
+        "Anthropic fallback bypassed dispatch"
+    );
+    first_server.await.unwrap();
+    assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+#[derive(Debug)]
 struct RevocableRetryModel {
     calls: Arc<std::sync::atomic::AtomicUsize>,
     hook: Arc<RevocableDispatchCheck>,

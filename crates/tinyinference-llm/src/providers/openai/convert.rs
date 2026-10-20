@@ -600,13 +600,9 @@ pub(super) fn convert_usage(wire: UsageWire) -> Usage {
             .completion_tokens_details
             .map(|d| d.reasoning_tokens)
             .unwrap_or(0),
-        charged_amount: wire
-            .cost
-            .as_ref()
-            .and_then(usd_cost_nanos)
-            .map(|nanos| {
-                crate::usage::ChargedAmount::usd_micros(nanos.saturating_add(500) / 1_000)
-            }),
+        charged_amount: wire.cost.as_ref().and_then(usd_cost_nanos).map(|nanos| {
+            crate::usage::ChargedAmount::usd_micros(nanos.saturating_add(500) / 1_000)
+        }),
         charged_amount_nanos: wire.cost.as_ref().and_then(usd_cost_nanos),
         context_window_tokens: None,
     }

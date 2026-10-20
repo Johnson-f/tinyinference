@@ -2865,6 +2865,10 @@ mod explicit_cache_control {
             usage.charged_amount,
             Some(crate::usage::ChargedAmount::usd_micros(13))
         );
+        assert_eq!(usage.charged_amount_nanos, Some(12_500));
+
+        let tiny = convert_usage(serde_json::from_value(json!({"cost": 0.0000004})).unwrap());
+        assert_eq!(tiny.charged_amount_nanos, Some(400));
 
         let unreported = convert_usage(
             serde_json::from_value(json!({"prompt_tokens": 1, "completion_tokens": 1})).unwrap(),

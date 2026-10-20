@@ -63,6 +63,8 @@ impl ProviderUsageReport {
         usage.cache_creation_tokens = self.cache_creation_tokens;
         usage.reasoning_tokens = self.reasoning_tokens;
         if let Some(charged_amount_usd) = self.reported_charge_usd() {
+            usage.charged_amount_nanos =
+                Some((charged_amount_usd * 1_000_000_000.0).round() as i64);
             usage.charged_amount = Some(ChargedAmount::usd_micros(
                 (charged_amount_usd * 1_000_000.0).round() as i64,
             ));

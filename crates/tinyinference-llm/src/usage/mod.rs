@@ -70,6 +70,10 @@ impl AddAssign for Usage {
                 Some(ChargedAmount::new(left.micros.saturating_add(right.micros)))
             }
         };
+        self.charged_amount_nanos = match (self.charged_amount_nanos, rhs.charged_amount_nanos) {
+            (None, amount) | (amount, None) => amount,
+            (Some(left), Some(right)) => Some(left.saturating_add(right)),
+        };
     }
 }
 

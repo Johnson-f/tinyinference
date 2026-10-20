@@ -1149,7 +1149,6 @@ impl OpenAiModel {
             .authorized(self.http_client().post(&url))
             .await?
             .json(&body);
-        crate::model::budget::before_physical_attempt()?;
         let response = request
             .send()
             .await

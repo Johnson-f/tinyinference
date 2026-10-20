@@ -913,14 +913,16 @@ async fn unknown_adapter_send_is_not_refunded_after_later_nested_refusal() {
 }
 
 #[derive(Debug)]
-struct RefuseAfterWarmup(std::sync::atomic::AtomicUsize);
+struct RevokeAfterWarmup {
+    checks: std::sync::atomic::AtomicUsize,
+    revoked: std::sync::atomic::AtomicBool,
+}
 
-impl super::BeforeDispatch for RefuseAfterWarmup {
+impl super::BeforeDispatch for RevokeAfterWarmup {
     fn check(&self) -> crate::Result<()> {
-        let check = self
-            .0
+        self.checks
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if check < 2 {
+        if !self.revoked.load(std::sync::atomic::Ordering::SeqCst) {
             Ok(())
         } else {
             Err(crate::Error::Validation("dispatch revoked".into()))
@@ -935,6 +937,11 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
     let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    let hook = Arc::new(RevokeAfterWarmup {
+        checks: Default::default(),
+        revoked: Default::default(),
+    });
+    let server_hook = Arc::clone(&hook);
     let server = tokio::spawn(async move {
         let (mut warmup, _) = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -947,6 +954,9 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
         let read = warmup.read(&mut bytes).await.unwrap();
         let warmup_request = String::from_utf8_lossy(&bytes[..read]);
         assert!(warmup_request.starts_with("POST /api/chat "));
+        server_hook
+            .revoked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let warmup_response = "{}";
         warmup
             .write_all(
@@ -1000,7 +1010,6 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
     )
     .unwrap();
     let budget = Budget::new(SpendLimits::default());
-    let hook = Arc::new(RefuseAfterWarmup(Default::default()));
     let model = BudgetedModel::new(provider, budget.clone(), call_policy())
         .before_dispatch(hook.clone());
 
@@ -1011,7 +1020,7 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
         outcome,
         Err(crate::Error::Validation(message)) if message == "dispatch revoked"
     ));
-    assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(hook.checks.load(std::sync::atomic::Ordering::SeqCst), 3);
     assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
     assert_eq!(budget.snapshot().reserved, Spend::default());
     assert_eq!(server.await.unwrap(), vec!["/api/chat"]);

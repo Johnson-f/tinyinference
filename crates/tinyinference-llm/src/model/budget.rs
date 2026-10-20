@@ -872,6 +872,15 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
                 current_scopes.push(current_scope.clone());
             }
             let item = PHYSICAL_CALL.sync_scope(current_scopes, || {
+                if current_scope.attempts.load(std::sync::atomic::Ordering::SeqCst) == 0
+                    && let Some(hook) = &current_scope.before_dispatch
+                    && let Err(error) = hook.check()
+                {
+                    mark_physical_refused_before_attempt();
+                    return std::task::Poll::Ready(Some(ModelStreamItem::Failed(
+                        error.to_string(),
+                    )));
+                }
                 let item = futures::Stream::poll_next(stream.as_mut(), cx);
                 match &item {
                     std::task::Poll::Ready(Some(ModelStreamItem::Completed(response))) => {

@@ -646,6 +646,32 @@ async fn openai_stream_refusal_before_first_send_refunds_budget_reservation() {
 }
 
 #[tokio::test]
+async fn nested_dispatch_checked_refusal_refunds_outer_budget_reservation() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let provider = crate::providers::openai::OpenAiModel::new("fixture")
+        .with_base_url(format!("http://{}/v1", listener.local_addr().unwrap()));
+    let budget = Budget::new(SpendLimits::default());
+    let hook = Arc::new(RefuseAtPhysicalSend(Default::default()));
+    let dispatch_checked = Arc::new(super::super::DispatchCheckedModel::new(
+        Arc::new(provider),
+        hook.clone(),
+    ));
+    let model = BudgetedModel::new(dispatch_checked, budget.clone(), call_policy());
+
+    assert!(matches!(
+        model.invoke(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(budget.snapshot(), BudgetSnapshot::default());
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn openai_retry_refusal_keeps_charge_for_the_first_physical_send() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

@@ -450,8 +450,11 @@ pub(crate) fn before_physical_attempt() -> crate::Result<()> {
                         .store(true, std::sync::atomic::Ordering::SeqCst);
                     return Err(error);
                 }
-            } else {
-                before_unbudgeted_physical_attempt()?;
+            } else if let Err(error) = before_unbudgeted_physical_attempt() {
+                scope
+                    .refused_before_attempt
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                return Err(error);
             }
             if scope
                 .attempts

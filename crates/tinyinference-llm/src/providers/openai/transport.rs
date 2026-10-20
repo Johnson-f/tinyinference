@@ -2157,6 +2157,10 @@ impl<State: Send + Sync> ChatModel<State> for OpenAiModel {
         Some(&self.profile)
     }
 
+    fn tracks_physical_attempts(&self) -> bool {
+        true
+    }
+
     fn supports_input(
         &self,
         modality: crate::model::InputModality,

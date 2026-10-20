@@ -349,6 +349,10 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
         self.inner.cache_identity()
     }
 
+    fn tracks_physical_attempts(&self) -> bool {
+        self.inner.tracks_physical_attempts()
+    }
+
     async fn invoke(&self, state: &State, request: ModelRequest) -> crate::Result<ModelResponse> {
         if let Err(error) = self.before_dispatch.check() {
             mark_physical_refused_before_attempt();
@@ -621,6 +625,10 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
     }
     fn cache_identity(&self) -> Option<String> {
         self.inner.cache_identity()
+    }
+
+    fn tracks_physical_attempts(&self) -> bool {
+        self.inner.tracks_physical_attempts()
     }
     async fn invoke(
         &self,

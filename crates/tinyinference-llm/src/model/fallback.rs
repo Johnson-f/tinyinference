@@ -214,6 +214,12 @@ impl<State: Send + Sync> ChatModel<State> for FallbackModel<State> {
             .all(|model| model.supports_input(modality, mime_type, source))
     }
 
+    fn tracks_physical_attempts(&self) -> bool {
+        self.models
+            .iter()
+            .all(|model| model.tracks_physical_attempts())
+    }
+
     /// Returns the selected response unchanged, or the last eligible failure.
     async fn invoke(&self, state: &State, request: ModelRequest) -> Result<ModelResponse> {
         let mut last = Error::Model("model chain is empty".into());

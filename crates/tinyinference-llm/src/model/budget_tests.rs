@@ -961,15 +961,11 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
             .unwrap();
 
         let mut requests = vec!["/api/chat".to_string()];
-        if let Ok(Ok((mut chat, _))) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            tokio::select! {
-                accepted = listener.accept() => accepted,
-                _ = finished_rx => return requests,
-            },
-        )
-        .await
-        {
+        let second = tokio::select! {
+            accepted = listener.accept() => Some(accepted),
+            _ = finished_rx => None,
+        };
+        if let Some(Ok((mut chat, _))) = second {
             let mut bytes = vec![0; 8192];
             let read = chat.read(&mut bytes).await.unwrap();
             let request = String::from_utf8_lossy(&bytes[..read]);

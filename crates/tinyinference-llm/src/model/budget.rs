@@ -425,6 +425,15 @@ struct AttemptScope {
     requested: Spend,
     before_dispatch: Option<Arc<dyn BeforeDispatch>>,
     attempts: std::sync::atomic::AtomicUsize,
+    refused_before_attempt: std::sync::atomic::AtomicBool,
+}
+
+impl AttemptScope {
+    fn can_refund_before_first_attempt(&self) -> bool {
+        self.refused_before_attempt
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && self.attempts.load(std::sync::atomic::Ordering::SeqCst) == 0
+    }
 }
 tokio::task_local! { static PHYSICAL_CALL: Arc<AttemptScope>; }
 /// Admit an extra physical attempt made internally by a concrete provider.
@@ -435,7 +444,12 @@ pub(crate) fn before_physical_attempt() -> crate::Result<()> {
     PHYSICAL_CALL
         .try_with(|scope| {
             if let Some(hook) = &scope.before_dispatch {
-                hook.check()?;
+                if let Err(error) = hook.check() {
+                    scope
+                        .refused_before_attempt
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    return Err(error);
+                }
             } else {
                 before_unbudgeted_physical_attempt()?;
             }
@@ -591,6 +605,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             requested: reservation.requested,
             before_dispatch: self.before_dispatch.clone(),
             attempts: std::sync::atomic::AtomicUsize::new(0),
+            refused_before_attempt: std::sync::atomic::AtomicBool::new(false),
         });
         if let Some(hook) = &self.before_dispatch
             && let Err(error) = hook.check()
@@ -598,9 +613,17 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             reservation.settle(Spend::default());
             return Err(error);
         }
-        let response = PHYSICAL_CALL
-            .scope(scope, self.inner.invoke(state, request))
-            .await?;
+        let response = match PHYSICAL_CALL
+            .scope(Arc::clone(&scope), self.inner.invoke(state, request))
+            .await
+        {
+            Ok(response) => response,
+            Err(error) if scope.can_refund_before_first_attempt() => {
+                reservation.settle(Spend::default());
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         Self::settle(reservation, &response);
         Ok(response)
     }
@@ -611,6 +634,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             requested: reservation.requested,
             before_dispatch: self.before_dispatch.clone(),
             attempts: std::sync::atomic::AtomicUsize::new(0),
+            refused_before_attempt: std::sync::atomic::AtomicBool::new(false),
         });
         if let Some(hook) = &self.before_dispatch
             && let Err(error) = hook.check()
@@ -618,9 +642,17 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             reservation.settle(Spend::default());
             return Err(error);
         }
-        let stream = PHYSICAL_CALL
+        let stream = match PHYSICAL_CALL
             .scope(Arc::clone(&scope), self.inner.stream(state, request))
-            .await?;
+            .await
+        {
+            Ok(stream) => stream,
+            Err(error) if scope.can_refund_before_first_attempt() => {
+                reservation.settle(Spend::default());
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         let metadata = stream.metadata().clone();
         let mut stream = Box::pin(stream);
         let mut reservation = Some(reservation);
@@ -640,7 +672,15 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
                         | ModelStreamItem::ProviderFailed(_)
                         | ModelStreamItem::Deferred(_),
                     ))
-                    | std::task::Poll::Ready(None) => drop(reservation.take()),
+                    | std::task::Poll::Ready(None) => {
+                        if scope.can_refund_before_first_attempt() {
+                            if let Some(reservation) = reservation.take() {
+                                reservation.settle(Spend::default());
+                            }
+                        } else {
+                            drop(reservation.take());
+                        }
+                    }
                     _ => (),
                 }
                 item

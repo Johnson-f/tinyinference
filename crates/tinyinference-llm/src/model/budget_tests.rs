@@ -629,6 +629,49 @@ async fn openai_stream_refusal_before_first_send_refunds_budget_reservation() {
         .is_err());
 }
 
+#[tokio::test]
+async fn openai_retry_refusal_keeps_charge_for_the_first_physical_send() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = vec![0; 16 * 1024];
+        let read = socket.read(&mut request).await.unwrap();
+        assert!(request[..read].starts_with(b"POST /v1/chat/completions"));
+        let body = r#"{"error":{"message":"response_format json_object unsupported"}}"#;
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let provider = crate::providers::openai::OpenAiModel::new("fixture")
+        .with_base_url(format!("http://{addr}/v1"));
+    let budget = Budget::new(SpendLimits::default());
+    let hook = Arc::new(RefuseAtPhysicalSend(Default::default()));
+    let model = BudgetedModel::new(Arc::new(provider), budget.clone(), call_policy())
+        .before_dispatch(hook.clone());
+    let mut request = request();
+    request.response_format = Some(crate::model::ResponseFormat::JsonObject);
+
+    assert!(matches!(
+        model.invoke(&(), request).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    server.await.unwrap();
+    assert_eq!(hook.0.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(budget.snapshot().reserved, Spend::default());
+    assert_eq!(
+        budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros,
+        "a refused retry cannot refund a call after the first request was sent"
+    );
+}
+
 #[derive(Debug)]
 struct RevocableRetryModel {
     calls: Arc<std::sync::atomic::AtomicUsize>,

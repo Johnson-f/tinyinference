@@ -278,6 +278,19 @@ pub trait BeforeDispatch: Send + Sync {
     ///
     /// Returns the host's typed error when dispatch must be refused.
     fn check(&self) -> crate::Result<()>;
+
+    /// Accounts one concrete physical provider send after the policy check.
+    ///
+    /// This is called once per transport send, including warm-up and retry
+    /// requests. The default keeps existing host adapters source compatible;
+    /// hosts that enforce a physical-send ceiling should override it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the host's typed error when this physical send exceeds policy.
+    fn physical_attempt(&self) -> crate::Result<()> {
+        Ok(())
+    }
 }
 
 /// Supplies a final dispatch policy to an existing provider without adding a
@@ -322,6 +335,7 @@ fn before_unbudgeted_physical_attempt() -> crate::Result<()> {
     DISPATCH_HOOK
         .try_with(|scope| {
             scope.before_dispatch.check()?;
+            scope.before_dispatch.physical_attempt()?;
             scope
                 .attempts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -474,6 +488,12 @@ pub fn before_physical_attempt() -> crate::Result<()> {
         .try_with(|scope| {
             if let Some(hook) = &scope.before_dispatch
                 && let Err(error) = hook.check()
+            {
+                mark_physical_refused_before_attempt();
+                return Err(error);
+            }
+            if let Some(hook) = &scope.before_dispatch
+                && let Err(error) = hook.physical_attempt()
             {
                 mark_physical_refused_before_attempt();
                 return Err(error);

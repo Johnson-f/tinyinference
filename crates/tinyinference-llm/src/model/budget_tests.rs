@@ -1027,6 +1027,111 @@ async fn ollama_native_warmup_is_a_tracked_and_gated_physical_attempt() {
     assert_eq!(server.await.unwrap(), vec!["/api/chat"]);
 }
 
+#[derive(Debug, Default)]
+struct LimitOnePhysicalAttempt(std::sync::atomic::AtomicUsize);
+
+impl super::BeforeDispatch for LimitOnePhysicalAttempt {
+    fn check(&self) -> crate::Result<()> {
+        Ok(())
+    }
+
+    fn physical_attempt(&self) -> crate::Result<()> {
+        if self
+            .0
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            == 0
+        {
+            Ok(())
+        } else {
+            Err(crate::Error::Validation("physical call limit".into()))
+        }
+    }
+}
+
+#[tokio::test]
+async fn ollama_warmup_consumes_the_only_physical_call_slot() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut warmup, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+                .await
+                .expect("warm-up request reaches the local server")
+                .unwrap();
+        let mut bytes = vec![0; 8192];
+        let read = warmup.read(&mut bytes).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes[..read]).starts_with("POST /api/chat "));
+        let body = "{}";
+        warmup
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+
+        let second = tokio::select! {
+            accepted = listener.accept() => Some(accepted),
+            _ = finished_rx => None,
+        };
+        let Some(Ok((mut chat, _))) = second else {
+            return vec!["/api/chat"];
+        };
+        let mut bytes = vec![0; 8192];
+        let read = chat.read(&mut bytes).await.unwrap();
+        assert!(String::from_utf8_lossy(&bytes[..read])
+            .starts_with("POST /v1/chat/completions "));
+        let body = r#"{"id":"test","object":"chat.completion","created":1,"model":"llama3.2","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#;
+        chat.write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        vec!["/api/chat", "/v1/chat/completions"]
+    });
+
+    let mut spec = crate::providers::ProviderSpec::for_kind(crate::providers::ProviderKind::Ollama);
+    spec.base_url = endpoint;
+    let provider = crate::providers::registry::ProviderRegistry::new(
+        |_: &crate::providers::ProviderSpec| -> crate::Result<String> { Ok(String::new()) },
+    )
+    .build_with(
+        &spec,
+        crate::providers::registry::ProviderBuildOptions {
+            num_ctx: Some(4096),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let budget = Budget::new(SpendLimits::default());
+    let admission = Arc::new(LimitOnePhysicalAttempt::default());
+    let model = BudgetedModel::new(provider, budget.clone(), call_policy())
+        .before_dispatch(admission.clone());
+
+    let outcome = model.invoke(&(), request()).await;
+    let _ = finished_tx.send(());
+    let requests = server.await.unwrap();
+
+    assert!(matches!(
+        outcome,
+        Err(crate::Error::Validation(message)) if message == "physical call limit"
+    ));
+    assert_eq!(requests, vec!["/api/chat"]);
+    assert_eq!(admission.0.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(budget.snapshot().reserved, Spend::default());
+    assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+}
+
 #[tokio::test]
 async fn anthropic_fallback_rechecks_dispatch_before_its_second_send() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -1011,6 +1011,59 @@ async fn dispatch_checked_model_delegates_deferred_fetches() {
 }
 
 #[derive(Debug)]
+struct PhysicalDeferredModel {
+    fetches: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl ChatModel<()> for PhysicalDeferredModel {
+    async fn invoke(&self, _: &(), _: ModelRequest) -> crate::Result<ModelResponse> {
+        unreachable!()
+    }
+
+    async fn stream(&self, _: &(), _: ModelRequest) -> crate::Result<ModelStream> {
+        Ok(ModelStream::new(Box::pin(futures::stream::iter([
+            ModelStreamItem::Deferred(crate::model::DeferredHandle::new("fixture", "job-1")),
+        ]))))
+    }
+
+    async fn fetch_deferred(
+        &self,
+        _: &crate::model::DeferredHandle,
+    ) -> crate::Result<crate::model::DeferredStatus> {
+        super::before_physical_attempt()?;
+        self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(crate::model::DeferredStatus::Pending)
+    }
+}
+
+#[tokio::test]
+async fn dispatch_checked_model_rechecks_policy_for_deferred_provider_polls() {
+    use futures::StreamExt;
+
+    let inner = Arc::new(PhysicalDeferredModel {
+        fetches: Default::default(),
+    });
+    let hook = Arc::new(RevocableDispatchCheck {
+        allowed: std::sync::atomic::AtomicBool::new(true),
+        checks: Default::default(),
+    });
+    let model = super::super::DispatchCheckedModel::new(inner.clone(), hook.clone());
+    let mut stream = model.stream(&(), request()).await.unwrap();
+    let handle = match stream.next().await.unwrap() {
+        ModelStreamItem::Deferred(handle) => handle,
+        item => panic!("expected deferred item, got {item:?}"),
+    };
+    hook.allowed.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    assert!(matches!(
+        model.fetch_deferred(&handle).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    assert_eq!(inner.fetches.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[derive(Debug)]
 struct UntrackedPaidModel {
     endpoint: String,
     hook: Arc<RevocableDispatchCheck>,

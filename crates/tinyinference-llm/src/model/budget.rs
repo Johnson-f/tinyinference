@@ -498,6 +498,7 @@ struct AttemptScope {
     budget: Budget,
     requested: Spend,
     before_dispatch: Option<Arc<dyn BeforeDispatch>>,
+    has_pre_invocation_admission_gate: bool,
     attempt_gate: std::sync::Mutex<()>,
     attempts: std::sync::atomic::AtomicUsize,
     refused_before_attempt: std::sync::atomic::AtomicBool,
@@ -506,8 +507,10 @@ struct AttemptScope {
 
 impl AttemptScope {
     fn can_refund_before_first_attempt(&self) -> bool {
-        self.refused_before_attempt
+        (self
+            .refused_before_attempt
             .load(std::sync::atomic::Ordering::SeqCst)
+            || self.has_pre_invocation_admission_gate)
             && self.attempts.load(std::sync::atomic::Ordering::SeqCst) == 0
             && !self
                 .untracked_inner_invoked
@@ -795,6 +798,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             budget: self.budget.clone(),
             requested: reservation.requested,
             before_dispatch: self.before_dispatch.clone(),
+            has_pre_invocation_admission_gate: self.inner.has_pre_invocation_admission_gate(),
             attempt_gate: std::sync::Mutex::new(()),
             attempts: std::sync::atomic::AtomicUsize::new(0),
             refused_before_attempt: std::sync::atomic::AtomicBool::new(false),
@@ -836,6 +840,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             budget: self.budget.clone(),
             requested: reservation.requested,
             before_dispatch: self.before_dispatch.clone(),
+            has_pre_invocation_admission_gate: self.inner.has_pre_invocation_admission_gate(),
             attempt_gate: std::sync::Mutex::new(()),
             attempts: std::sync::atomic::AtomicUsize::new(0),
             refused_before_attempt: std::sync::atomic::AtomicBool::new(false),

@@ -432,9 +432,15 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
             attempt_gate: std::sync::Mutex::new(()),
             attempts: std::sync::atomic::AtomicUsize::new(0),
         });
-        let dispatch_scopes = nested_dispatch_scopes(Arc::clone(&scope));
+        let mut dispatch_scopes = Some(nested_dispatch_scopes(Arc::clone(&scope)));
         let stream = DISPATCH_HOOK
-            .scope(dispatch_scopes.clone(), self.inner.stream(state, request))
+            .scope(
+                dispatch_scopes
+                    .as_ref()
+                    .expect("dispatch scopes are initialized")
+                    .clone(),
+                self.inner.stream(state, request),
+            )
             .await?;
         let metadata = stream.metadata().clone();
         let mut stream = Box::pin(stream);
@@ -444,7 +450,9 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
             let Some(current_scope) = scope.as_ref().cloned() else {
                 return std::task::Poll::Ready(None);
             };
-            let mut current_scopes = dispatch_scopes.clone();
+            let Some(mut current_scopes) = dispatch_scopes.as_ref().cloned() else {
+                return std::task::Poll::Ready(None);
+            };
             if !current_scopes
                 .iter()
                 .any(|scope| Arc::ptr_eq(scope, &current_scope))
@@ -485,6 +493,7 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
                 )) | std::task::Poll::Ready(None)
             ) {
                 scope.take();
+                dispatch_scopes.take();
             }
             item
         });
@@ -842,9 +851,15 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
                 .untracked_inner_invoked
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
-        let attempt_scopes = nested_attempt_scopes(Arc::clone(&scope));
+        let mut attempt_scopes = Some(nested_attempt_scopes(Arc::clone(&scope)));
         let stream = match PHYSICAL_CALL
-            .scope(attempt_scopes.clone(), self.inner.stream(state, request))
+            .scope(
+                attempt_scopes
+                    .as_ref()
+                    .expect("attempt scopes are initialized")
+                    .clone(),
+                self.inner.stream(state, request),
+            )
             .await
         {
             Ok(stream) => stream,
@@ -864,7 +879,9 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             let Some(current_scope) = scope.as_ref().cloned() else {
                 return std::task::Poll::Ready(None);
             };
-            let mut current_scopes = attempt_scopes.clone();
+            let Some(mut current_scopes) = attempt_scopes.as_ref().cloned() else {
+                return std::task::Poll::Ready(None);
+            };
             if !current_scopes
                 .iter()
                 .any(|scope| Arc::ptr_eq(scope, &current_scope))
@@ -872,7 +889,10 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
                 current_scopes.push(current_scope.clone());
             }
             let item = PHYSICAL_CALL.sync_scope(current_scopes, || {
-                if current_scope.attempts.load(std::sync::atomic::Ordering::SeqCst) == 0
+                if current_scope
+                    .attempts
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    == 0
                     && let Some(hook) = &current_scope.before_dispatch
                     && let Err(error) = hook.check()
                 {
@@ -918,6 +938,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
                 // Drop the host permit at terminal delivery, even if the
                 // caller retains the fused stream object for later polling.
                 scope.take();
+                attempt_scopes.take();
             }
             item
         });

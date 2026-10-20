@@ -269,7 +269,8 @@ pub struct CallBudget {
 /// admission policy after [`BudgetedModel`] has waited for monetary capacity.
 /// The check is repeated at each physical transport attempt, including a
 /// retry or a lazy stream's first poll. It must be quick and must not perform
-/// I/O.
+/// I/O. Implementations must tolerate repeated checks for the same logical
+/// call; a committed host permit should make this operation idempotent.
 pub trait BeforeDispatch: Send + Sync {
     /// Returns an error when the reserved call must not reach the provider.
     ///

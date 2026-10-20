@@ -279,6 +279,144 @@ pub trait BeforeDispatch: Send + Sync {
     /// Returns the host's typed error when dispatch must be refused.
     fn check(&self) -> crate::Result<()>;
 }
+
+/// Supplies a final dispatch policy to an existing provider without adding a
+/// monetary budget.
+///
+/// Built-in transports call [`before_physical_attempt`] immediately before
+/// each send. The wrapper scopes the hook across invocation and stream polling,
+/// and checks once before generic model work for compatibility with adapters
+/// that do not expose a separate physical-send seam.
+pub struct DispatchCheckedModel<State: Send + Sync> {
+    inner: Arc<dyn ChatModel<State>>,
+    before_dispatch: Arc<dyn BeforeDispatch>,
+}
+
+impl<State: Send + Sync> std::fmt::Debug for DispatchCheckedModel<State> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DispatchCheckedModel")
+            .finish_non_exhaustive()
+    }
+}
+
+impl<State: Send + Sync> DispatchCheckedModel<State> {
+    /// Wraps a provider with a host-owned synchronous dispatch check.
+    pub fn new(inner: Arc<dyn ChatModel<State>>, before_dispatch: Arc<dyn BeforeDispatch>) -> Self {
+        Self {
+            inner,
+            before_dispatch,
+        }
+    }
+}
+
+struct DispatchHookScope {
+    before_dispatch: Arc<dyn BeforeDispatch>,
+    attempts: std::sync::atomic::AtomicUsize,
+}
+
+tokio::task_local! { static DISPATCH_HOOK: Arc<DispatchHookScope>; }
+
+/// Admits an unbudgeted physical attempt made by a concrete provider.
+fn before_unbudgeted_physical_attempt() -> crate::Result<()> {
+    DISPATCH_HOOK
+        .try_with(|scope| {
+            scope.before_dispatch.check()?;
+            scope
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap_or(Ok(()))
+}
+
+#[async_trait]
+impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
+    fn profile(&self) -> Option<&super::ModelProfile> {
+        self.inner.profile()
+    }
+
+    fn supports_input(
+        &self,
+        modality: super::InputModality,
+        mime: &str,
+        source: super::InputSource,
+    ) -> bool {
+        self.inner.supports_input(modality, mime, source)
+    }
+
+    fn cache_identity(&self) -> Option<String> {
+        self.inner.cache_identity()
+    }
+
+    async fn invoke(&self, state: &State, request: ModelRequest) -> crate::Result<ModelResponse> {
+        self.before_dispatch.check()?;
+        let scope = Arc::new(DispatchHookScope {
+            before_dispatch: self.before_dispatch.clone(),
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+        });
+        DISPATCH_HOOK
+            .scope(scope, self.inner.invoke(state, request))
+            .await
+    }
+
+    async fn stream(&self, state: &State, request: ModelRequest) -> crate::Result<ModelStream> {
+        self.before_dispatch.check()?;
+        let scope = Arc::new(DispatchHookScope {
+            before_dispatch: self.before_dispatch.clone(),
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let stream = DISPATCH_HOOK
+            .scope(Arc::clone(&scope), self.inner.stream(state, request))
+            .await?;
+        let metadata = stream.metadata().clone();
+        let mut stream = Box::pin(stream);
+        let mut scope = Some(scope);
+        let mut checked_generic_lazy_stream = false;
+        let guarded = futures::stream::poll_fn(move |cx| {
+            let Some(current_scope) = scope.as_ref().cloned() else {
+                return std::task::Poll::Ready(None);
+            };
+            let item = DISPATCH_HOOK.sync_scope(current_scope, || {
+                if !checked_generic_lazy_stream
+                    && scope
+                        .as_ref()
+                        .expect("scope remains while stream is polled")
+                        .attempts
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        == 0
+                {
+                    checked_generic_lazy_stream = true;
+                    if let Err(error) = scope
+                        .as_ref()
+                        .expect("scope remains while stream is polled")
+                        .before_dispatch
+                        .check()
+                    {
+                        return std::task::Poll::Ready(Some(ModelStreamItem::Failed(
+                            error.to_string(),
+                        )));
+                    }
+                }
+                futures::Stream::poll_next(stream.as_mut(), cx)
+            });
+            if matches!(
+                &item,
+                std::task::Poll::Ready(Some(
+                    ModelStreamItem::Completed(_)
+                        | ModelStreamItem::Failed(_)
+                        | ModelStreamItem::ProviderFailed(_)
+                        | ModelStreamItem::Deferred(_)
+                )) | std::task::Poll::Ready(None)
+            ) {
+                scope.take();
+            }
+            item
+        });
+        Ok(ModelStream::new(Box::pin(guarded)).with_metadata(metadata))
+    }
+}
+
 // Concrete transports call this before sending: adapters may retry request
 // shape internally, below ChatModel. The first attempt owns the outer permit;
 // each extra attempt is conservatively charged before dispatch.
@@ -298,6 +436,8 @@ pub(crate) fn before_physical_attempt() -> crate::Result<()> {
         .try_with(|scope| {
             if let Some(hook) = &scope.before_dispatch {
                 hook.check()?;
+            } else {
+                before_unbudgeted_physical_attempt()?;
             }
             if scope
                 .attempts
@@ -313,7 +453,7 @@ pub(crate) fn before_physical_attempt() -> crate::Result<()> {
             drop(reservation);
             Ok(())
         })
-        .unwrap_or(Ok(()))
+        .unwrap_or_else(|_| before_unbudgeted_physical_attempt())
 }
 
 /// Applies a shared budget to a concrete provider, before every invocation.

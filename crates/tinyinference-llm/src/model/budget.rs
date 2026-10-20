@@ -401,13 +401,6 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
         true
     }
 
-    async fn fetch_deferred(
-        &self,
-        handle: &super::DeferredHandle,
-    ) -> crate::Result<super::DeferredStatus> {
-        self.inner.fetch_deferred(handle).await
-    }
-
     async fn invoke(&self, state: &State, request: ModelRequest) -> crate::Result<ModelResponse> {
         if let Err(error) = self.before_dispatch.check() {
             mark_dispatch_refused_before_invocation();
@@ -549,7 +542,9 @@ fn mark_untracked_inner_invoked() {
 }
 
 fn nested_attempt_scopes(scope: Arc<AttemptScope>) -> Vec<Arc<AttemptScope>> {
-    vec![scope]
+    let mut scopes = PHYSICAL_CALL.try_with(Clone::clone).unwrap_or_default();
+    scopes.push(scope);
+    scopes
 }
 /// Admit an extra physical attempt made internally by a concrete provider.
 ///

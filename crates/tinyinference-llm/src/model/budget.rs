@@ -325,22 +325,35 @@ impl<State: Send + Sync> DispatchCheckedModel<State> {
 
 struct DispatchHookScope {
     before_dispatch: Arc<dyn BeforeDispatch>,
+    attempt_gate: std::sync::Mutex<()>,
     attempts: std::sync::atomic::AtomicUsize,
 }
 
 tokio::task_local! { static DISPATCH_HOOK: Arc<DispatchHookScope>; }
 
 /// Admits an unbudgeted physical attempt made by a concrete provider.
-fn before_unbudgeted_physical_attempt() -> crate::Result<()> {
+fn checked_unbudgeted_physical_attempt() -> crate::Result<Option<Arc<DispatchHookScope>>> {
     DISPATCH_HOOK
         .try_with(|scope| {
             scope.before_dispatch.check()?;
-            scope
-                .attempts
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
+            Ok(Some(Arc::clone(scope)))
         })
-        .unwrap_or(Ok(()))
+        .unwrap_or(Ok(None))
+}
+
+fn before_unbudgeted_physical_attempt() -> crate::Result<()> {
+    let Some(scope) = checked_unbudgeted_physical_attempt()? else {
+        return Ok(());
+    };
+    let _attempt = scope
+        .attempt_gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    scope.before_dispatch.physical_attempt()?;
+    scope
+        .attempts
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
 }
 
 #[async_trait]
@@ -373,6 +386,7 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
         }
         let scope = Arc::new(DispatchHookScope {
             before_dispatch: self.before_dispatch.clone(),
+            attempt_gate: std::sync::Mutex::new(()),
             attempts: std::sync::atomic::AtomicUsize::new(0),
         });
         DISPATCH_HOOK
@@ -387,6 +401,7 @@ impl<State: Send + Sync> ChatModel<State> for DispatchCheckedModel<State> {
         }
         let scope = Arc::new(DispatchHookScope {
             before_dispatch: self.before_dispatch.clone(),
+            attempt_gate: std::sync::Mutex::new(()),
             attempts: std::sync::atomic::AtomicUsize::new(0),
         });
         let stream = DISPATCH_HOOK
@@ -448,6 +463,7 @@ struct AttemptScope {
     budget: Budget,
     requested: Spend,
     before_dispatch: Option<Arc<dyn BeforeDispatch>>,
+    attempt_gate: std::sync::Mutex<()>,
     attempts: std::sync::atomic::AtomicUsize,
     refused_before_attempt: std::sync::atomic::AtomicBool,
     untracked_inner_invoked: std::sync::atomic::AtomicBool,
@@ -653,6 +669,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             budget: self.budget.clone(),
             requested: reservation.requested,
             before_dispatch: self.before_dispatch.clone(),
+            attempt_gate: std::sync::Mutex::new(()),
             attempts: std::sync::atomic::AtomicUsize::new(0),
             refused_before_attempt: std::sync::atomic::AtomicBool::new(false),
             untracked_inner_invoked: std::sync::atomic::AtomicBool::new(false),
@@ -688,6 +705,7 @@ impl<State: Send + Sync> ChatModel<State> for BudgetedModel<State> {
             budget: self.budget.clone(),
             requested: reservation.requested,
             before_dispatch: self.before_dispatch.clone(),
+            attempt_gate: std::sync::Mutex::new(()),
             attempts: std::sync::atomic::AtomicUsize::new(0),
             refused_before_attempt: std::sync::atomic::AtomicBool::new(false),
             untracked_inner_invoked: std::sync::atomic::AtomicBool::new(false),

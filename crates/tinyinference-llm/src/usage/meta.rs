@@ -54,7 +54,7 @@ pub struct ProviderUsageReport {
 
 impl ProviderUsageReport {
     /// Builds the crate [`Usage`], carrying every token breakdown. A finite,
-    /// positive charge becomes `charged_amount` in USD micros, but only when the
+    /// non-negative charge becomes `charged_amount` in USD micros, but only when the
     /// provider reported it: a catalog estimate is never recorded as a charge.
     #[must_use]
     pub fn to_usage(&self) -> Usage {
@@ -62,13 +62,11 @@ impl ProviderUsageReport {
         usage.cache_read_tokens = self.cached_input_tokens;
         usage.cache_creation_tokens = self.cache_creation_tokens;
         usage.reasoning_tokens = self.reasoning_tokens;
-        if self.charge_reported
-            && !self.cost_is_estimate
-            && self.charged_amount_usd.is_finite()
-            && self.charged_amount_usd > 0.0
-        {
+        if let Some(charged_amount_usd) = self.reported_charge_usd() {
+            usage.charged_amount_nanos =
+                Some((charged_amount_usd * 1_000_000_000.0).round() as i64);
             usage.charged_amount = Some(ChargedAmount::usd_micros(
-                (self.charged_amount_usd * 1_000_000.0).round() as i64,
+                (charged_amount_usd * 1_000_000.0).round() as i64,
             ));
         }
         if self.context_window > 0 {
@@ -82,9 +80,15 @@ impl ProviderUsageReport {
     /// so billing-free responses stay `raw`-clean.
     #[must_use]
     pub fn raw_meta(&self) -> Option<serde_json::Value> {
-        let charged =
-            (self.charge_reported && !self.cost_is_estimate).then_some(self.charged_amount_usd);
-        merge_usage_meta(None, charged, self.context_window)
+        merge_usage_meta(None, self.reported_charge_usd(), self.context_window)
+    }
+
+    fn reported_charge_usd(&self) -> Option<f64> {
+        (self.charge_reported
+            && !self.cost_is_estimate
+            && self.charged_amount_usd.is_finite()
+            && self.charged_amount_usd >= 0.0)
+            .then_some(self.charged_amount_usd)
     }
 }
 
@@ -124,7 +128,7 @@ pub struct RecoveredUsage {
     pub usage: Usage,
     /// Provider-reported charge in USD, from the stashed metadata, the
     /// provider-neutral `total_cost_usd` / `usage.cost` raw fields, or the
-    /// usage's own `charged_amount`, in that order.
+    /// usage's own nanodollar or micro-dollar charge, in that order.
     pub charged_amount_usd: Option<f64>,
     /// Model context window in tokens (`0` when unknown).
     pub context_window: u64,
@@ -147,6 +151,11 @@ pub fn recover_usage(response: &ModelResponse) -> Option<RecoveredUsage> {
             .and_then(|raw| raw.get("total_cost_usd"))
             .and_then(serde_json::Value::as_f64)
             .or_else(|| response.raw.as_ref()?.get("usage")?.get("cost")?.as_f64())
+            .or_else(|| {
+                usage
+                    .charged_amount_nanos
+                    .map(|charge| charge as f64 / 1_000_000_000.0)
+            })
             .or_else(|| {
                 usage
                     .charged_amount

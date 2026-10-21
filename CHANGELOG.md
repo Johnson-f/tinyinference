@@ -12,6 +12,22 @@
   messages that render no text. Seen on `anthropic/claude-haiku-4.5` through
   OpenRouter: two budget notices in an 80-call turn wrote about 276k prompt
   tokens to the cache again.
+### Breaking changes
+
+- Bump to `0.5.0`: `tinyinference_llm::Usage` adds
+  `charged_amount_nanos`, and `tinyinference_decisions::Usage` adds
+  `cached_input_tokens` and `cost_usd_nanos`. Downstream Rust code that uses
+  exhaustive struct literals must initialize the new fields or use
+  `..Default::default()`.
+
+- Local OpenAI-compatible runtimes (`build_local_runtime_chat_model`, and
+  `OpenAiModel::ollama_at` / `llama_cpp` / `vllm` / local `ProviderSpec`s) send
+  every system message as one leading `system` message. Strict chat templates
+  (Qwen-family on LM Studio / llama.cpp) reject a second or mid-transcript
+  `system` turn with "System message must be at the beginning."
+  (tinyhumansai/openhuman#7440). New `OpenAiModel::with_single_system_message`;
+  its profile reports `hoists_system_messages` and no
+  `mid_conversation_system_messages`. Hosted routes are unchanged.
 - OpenAI-compatible provider: a streamed response now keeps the vendor fields
   of `usage` (OpenRouter's `cost`, `cost_details`, `is_byok`) on `raw`, under
   `usage`, where the non-streaming response already has them in its wire

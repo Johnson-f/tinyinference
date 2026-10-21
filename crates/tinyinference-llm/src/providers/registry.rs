@@ -269,9 +269,8 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
             explicit_cache_control: !local && endpoint_is_openrouter(endpoint),
         };
         if compatible_local {
-            return Ok(super::openai::config::build_openai_model_with(
+            return Ok(super::openai::config::build_local_openai_model_with(
                 config,
-                false,
                 options.http.clone(),
             ));
         }
@@ -454,6 +453,9 @@ impl ChatModel<()> for LocalRegistryModel {
     }
     fn cache_identity(&self) -> Option<String> {
         <super::openai::OpenAiModel as ChatModel<()>>::cache_identity(&self.model)
+    }
+    fn tracks_physical_attempts(&self) -> bool {
+        <super::openai::OpenAiModel as ChatModel<()>>::tracks_physical_attempts(&self.model)
     }
     async fn invoke(
         &self,

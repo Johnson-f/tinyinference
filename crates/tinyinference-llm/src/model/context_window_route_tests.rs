@@ -415,6 +415,36 @@ fn route_projection_uses_native_static_fallback_precedence() {
     assert_eq!(managed.window, Some(900_000));
     assert_eq!(managed.source, WindowSource::StaticGuess);
 
+    let provider_model = resolver.project_for_route(
+        "managed",
+        "hint:agentic",
+        None,
+        ContextWindowRouteInput {
+            provider_model_window: Some(96_000),
+            managed_default: Some(ManagedDefaultWindow {
+                model: "hint:agentic".to_owned(),
+                window: 900_000,
+            }),
+            catalog_window: Some(70_000),
+            ..Default::default()
+        },
+    );
+    assert_eq!(provider_model.window, Some(96_000));
+    assert_eq!(provider_model.source, WindowSource::StaticGuess);
+
+    let zero_provider_model = resolver.project_for_route(
+        "managed",
+        "deepseek/unlisted-zero-provider-window",
+        None,
+        ContextWindowRouteInput {
+            provider_model_window: Some(0),
+            catalog_window: Some(70_000),
+            ..Default::default()
+        },
+    );
+    assert_eq!(zero_provider_model.window, Some(70_000));
+    assert_eq!(zero_provider_model.source, WindowSource::StaticGuess);
+
     let workload = resolver.project_for_route(
         "external",
         "hint:agentic",
@@ -570,6 +600,7 @@ async fn route_projection_matches_async_resolution_without_discovery() {
     let resolver = ContextWindowResolver::new();
     let route = ContextWindowRouteInput {
         catalog_window: Some(48_000),
+        provider_model_window: Some(31_000),
         ..Default::default()
     };
     let projected = resolver.project_for_route(
@@ -589,4 +620,5 @@ async fn route_projection_matches_async_resolution_without_discovery() {
         )
         .await;
     assert_eq!(projected, resolved);
+    assert_eq!(projected.window, Some(31_000));
 }

@@ -117,6 +117,61 @@ async fn connection_test_uses_host_managed_factory_and_returns_actual_width() {
 }
 
 #[tokio::test]
+async fn detailed_connection_test_identifies_model_build_failures() {
+    let settings = EmbeddingFactorySettings {
+        provider: "not-a-provider".into(),
+        model: "model".into(),
+        dimensions: 4,
+        ollama_base_url: "http://localhost:11434".into(),
+    };
+    let credentials: CredentialResolver = std::sync::Arc::new(|_| String::new());
+    let managed: ManagedModelFactory = std::sync::Arc::new(|_, _| unreachable!());
+
+    assert!(matches!(
+        test_embedding_connection_detailed(&settings, &credentials, &managed, None).await,
+        Err(ConnectionTestError::Build(crate::Error::Validation(_)))
+    ));
+}
+
+#[tokio::test]
+async fn detailed_connection_test_identifies_embedding_failures() {
+    struct FailingModel;
+
+    #[async_trait::async_trait]
+    impl crate::EmbeddingModel for FailingModel {
+        fn name(&self) -> &str {
+            "managed"
+        }
+
+        fn model_id(&self) -> &str {
+            "model"
+        }
+
+        fn dimensions(&self) -> usize {
+            4
+        }
+
+        async fn embed(&self, _texts: &[String]) -> crate::Result<Vec<Vec<f32>>> {
+            Err(crate::Error::Embedding("offline".into()))
+        }
+    }
+
+    let settings = EmbeddingFactorySettings {
+        provider: "managed".into(),
+        model: "model".into(),
+        dimensions: 4,
+        ollama_base_url: "http://localhost:11434".into(),
+    };
+    let credentials: CredentialResolver = std::sync::Arc::new(|_| String::new());
+    let managed: ManagedModelFactory = std::sync::Arc::new(|_, _| Ok(Box::new(FailingModel)));
+
+    assert!(matches!(
+        test_embedding_connection_detailed(&settings, &credentials, &managed, None).await,
+        Err(ConnectionTestError::Embed(crate::Error::Embedding(message))) if message == "offline"
+    ));
+}
+
+#[tokio::test]
 async fn connection_test_preserves_noop_provider_success() {
     let settings = EmbeddingFactorySettings {
         provider: "none".into(),

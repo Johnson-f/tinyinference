@@ -71,8 +71,9 @@ pub use rerank::{
 };
 pub use types::*;
 pub use verify::{
-    ConnectionTestResult, UnavailableEmbeddingModel, VerifiedDims, VerifyRejection,
-    effective_embedder_slug, test_embedding_connection, verify_custom_endpoint,
+    ConnectionTestError, ConnectionTestResult, UnavailableEmbeddingModel, VerifiedDims,
+    VerifyRejection, effective_embedder_slug, test_embedding_connection,
+    test_embedding_connection_detailed, verify_custom_endpoint,
 };
 
 use async_trait::async_trait;

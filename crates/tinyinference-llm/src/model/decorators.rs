@@ -59,7 +59,7 @@ impl ModelRequestDefaults {
 /// Decorates a model with request defaults and an optional profile override.
 pub struct ProfileOverrideModel<State: Send + Sync> {
     inner: Arc<dyn ChatModel<State>>,
-    profile: ModelProfile,
+    profile: Option<ModelProfile>,
     defaults: ModelRequestDefaults,
 }
 
@@ -79,7 +79,18 @@ impl<State: Send + Sync> ProfileOverrideModel<State> {
     pub fn new(inner: Arc<dyn ChatModel<State>>, profile: ModelProfile) -> Self {
         Self {
             inner,
-            profile,
+            profile: Some(profile),
+            defaults: ModelRequestDefaults::default(),
+        }
+    }
+
+    /// Wraps `inner` with request defaults while preserving its optional
+    /// capability profile exactly.
+    #[must_use]
+    pub fn new_preserving_profile(inner: Arc<dyn ChatModel<State>>) -> Self {
+        Self {
+            inner,
+            profile: None,
             defaults: ModelRequestDefaults::default(),
         }
     }
@@ -109,7 +120,7 @@ impl<State: Send + Sync> ProfileOverrideModel<State> {
 #[async_trait]
 impl<State: Send + Sync> ChatModel<State> for ProfileOverrideModel<State> {
     fn profile(&self) -> Option<&ModelProfile> {
-        Some(&self.profile)
+        self.profile.as_ref().or_else(|| self.inner.profile())
     }
 
     fn supports_input(

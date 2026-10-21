@@ -42,6 +42,9 @@ pub struct ContextWindowRouteInput {
     pub discovery: Option<DiscoveryRequest>,
     /// Host-owned pricing or model catalog hint.
     pub catalog_window: Option<u64>,
+    /// Context-window metadata returned by the host's registered provider hook
+    /// for this exact requested model. Non-positive values are ignored.
+    pub provider_model_window: Option<u64>,
     /// Optional host-owned managed default model mapping.
     pub managed_default: Option<ManagedDefaultWindow>,
     /// Context window selected by the host's local runtime profile logic.
@@ -56,6 +59,7 @@ impl std::fmt::Debug for ContextWindowRouteInput {
             .field("endpoint", &self.endpoint.as_ref().map(|_| "[redacted]"))
             .field("discovery", &self.discovery.as_ref().map(|_| "[redacted]"))
             .field("catalog_window", &self.catalog_window)
+            .field("provider_model_window", &self.provider_model_window)
             .field(
                 "managed_default",
                 &self.managed_default.as_ref().map(|hint| hint.window),
@@ -548,7 +552,10 @@ impl PreparedRoute {
         let managed_window = route.managed_default.as_ref().and_then(|hint| {
             (hint.model.trim() == model.trim() && hint.window > 0).then_some(hint.window)
         });
-        let static_window = managed_window
+        let static_window = route
+            .provider_model_window
+            .filter(|window| *window > 0)
+            .or(managed_window)
             .or_else(|| workload::context_window_for_model(model))
             .or(route.catalog_window.filter(|window| *window > 0))
             .or_else(|| context_window_for_model_id(model));

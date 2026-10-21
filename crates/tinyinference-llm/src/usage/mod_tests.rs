@@ -37,6 +37,24 @@ fn add_accumulates_all_fields() {
 }
 
 #[test]
+fn usage_accumulation_backfills_nanodollars_from_legacy_microdollars() {
+    let mut legacy: Usage = serde_json::from_value(serde_json::json!({
+        "charged_amount": { "micros": 17 }
+    }))
+    .expect("legacy usage deserializes without nanodollars");
+    let exact = Usage {
+        charged_amount: Some(ChargedAmount::usd_micros(0)),
+        charged_amount_nanos: Some(400),
+        ..Usage::default()
+    };
+
+    legacy += exact;
+
+    assert_eq!(legacy.charged_amount, Some(ChargedAmount::usd_micros(17)));
+    assert_eq!(legacy.charged_amount_nanos, Some(17_400));
+}
+
+#[test]
 fn usage_accumulation_preserves_optional_amounts_and_latest_context_window() {
     let with_amount = Usage {
         charged_amount: Some(ChargedAmount::usd_micros(17)),

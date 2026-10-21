@@ -320,7 +320,9 @@ async fn temporary_wait_mode_retry_refusal_does_not_mark_budget_exhausted() {
             cost_micros: 100,
         })
         .expect("live reservation leaves capacity for the first send");
-    let model = BudgetedModel::new(Arc::new(InternalRetryModel), budget.clone(), call_policy());
+    let admission = Arc::new(CountPhysicalAdmission::default());
+    let model = BudgetedModel::new(Arc::new(InternalRetryModel), budget.clone(), call_policy())
+        .before_dispatch(admission.clone());
 
     assert!(matches!(
         model.invoke(&(), request()).await,
@@ -333,6 +335,11 @@ async fn temporary_wait_mode_retry_refusal_does_not_mark_budget_exhausted() {
     );
     assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
     assert_eq!(budget.snapshot().reserved.cost_micros, 100);
+    assert_eq!(
+        admission.0.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "retry denied by live money reservations must not consume another host slot"
+    );
     blocker.settle(Spend::default());
 }
 

@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-core"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "httpdate",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-decisions"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1585,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-embeddings"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1605,7 +1605,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-image"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1624,7 +1624,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-llm"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-local"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1674,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-providers"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1692,7 +1692,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-video"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1707,7 +1707,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-voice"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.23.1",

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- Bump to `0.5.0`: `tinyinference_llm::Usage` adds
+  `charged_amount_nanos`, and `tinyinference_decisions::Usage` adds
+  `cached_input_tokens` and `cost_usd_nanos`. Downstream Rust code that uses
+  exhaustive struct literals must initialize the new fields or use
+  `..Default::default()`.
+
 - Local OpenAI-compatible runtimes (`build_local_runtime_chat_model`, and
   `OpenAiModel::ollama_at` / `llama_cpp` / `vllm` / local `ProviderSpec`s) send
   every system message as one leading `system` message. Strict chat templates

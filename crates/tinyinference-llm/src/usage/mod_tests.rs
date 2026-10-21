@@ -71,7 +71,6 @@ fn usage_accumulation_backfills_nanodollars_from_legacy_microdollars() {
     let mut unknown = Usage::default();
     unknown += Usage::default();
     assert_eq!(unknown.charged_amount_nanos, None);
-
 }
 
 #[test]

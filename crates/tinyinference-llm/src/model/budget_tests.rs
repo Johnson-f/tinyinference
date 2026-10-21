@@ -1051,7 +1051,10 @@ async fn budget_refunds_when_a_gated_fallback_refuses_before_any_child_invocatio
         Err(crate::Error::Validation(message)) if message == "dispatch refused"
     ));
     assert_eq!(primary.invokes.load(std::sync::atomic::Ordering::SeqCst), 0);
-    assert_eq!(fallback.invokes.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        fallback.invokes.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
     assert_eq!(budget.snapshot(), BudgetSnapshot::default());
 }
 

@@ -1,16 +1,33 @@
 use super::*;
+use crate::model::{InputModality, InputSource};
 use async_trait::async_trait;
 use futures::StreamExt;
 use std::sync::Mutex;
 
 #[derive(Default)]
-struct RequestRecorder(Mutex<Vec<ModelRequest>>);
+struct RequestRecorder {
+    requests: Mutex<Vec<ModelRequest>>,
+    profile: Option<ModelProfile>,
+}
+
+impl RequestRecorder {
+    fn with_profile(profile: Option<ModelProfile>) -> Self {
+        Self {
+            requests: Mutex::new(Vec::new()),
+            profile,
+        }
+    }
+}
 
 #[async_trait]
 impl ChatModel<()> for RequestRecorder {
     async fn invoke(&self, _: &(), request: ModelRequest) -> Result<ModelResponse> {
-        self.0.lock().unwrap().push(request);
+        self.requests.lock().unwrap().push(request);
         Ok(ModelResponse::assistant("ok"))
+    }
+
+    fn profile(&self) -> Option<&ModelProfile> {
+        self.profile.as_ref()
     }
 
     fn supports_input(
@@ -64,7 +81,7 @@ async fn assert_request_defaults_preserve_optional_profile(
         .collect::<Vec<_>>()
         .await;
 
-    let requests = inner.0.lock().unwrap();
+    let requests = inner.requests.lock().unwrap();
     assert_eq!(requests.len(), 4);
     assert_eq!(requests[0].model.as_deref(), Some("default-model"));
     assert_eq!(requests[0].temperature, Some(0.25));
@@ -90,9 +107,29 @@ async fn request_defaults_preserve_missing_profiles_and_explicit_call_values() {
 
 #[tokio::test]
 async fn request_defaults_keep_explicit_profiles_and_explicit_call_values() {
-    let inner = Arc::new(RequestRecorder::default());
-    let profile = ModelProfile {
+    let inner_profile = ModelProfile {
         provider: Some("fixture".to_owned()),
+        model: Some("profile-model".to_owned()),
+        ..ModelProfile::default()
+    };
+    let inner = Arc::new(RequestRecorder::with_profile(Some(inner_profile.clone())));
+    let model = ProfileOverrideModel::new_preserving_profile(inner.clone()).with_defaults(
+        ModelRequestDefaults {
+            model: Some("default-model".to_owned()),
+            temperature: Some(0.25),
+        },
+    );
+    assert_request_defaults_preserve_optional_profile(model, &inner, Some(inner_profile)).await;
+}
+
+#[tokio::test]
+async fn explicit_profile_override_still_wins_over_the_inner_profile() {
+    let inner = Arc::new(RequestRecorder::with_profile(Some(ModelProfile {
+        provider: Some("inner".to_owned()),
+        ..ModelProfile::default()
+    })));
+    let profile = ModelProfile {
+        provider: Some("override".to_owned()),
         model: Some("profile-model".to_owned()),
         ..ModelProfile::default()
     };

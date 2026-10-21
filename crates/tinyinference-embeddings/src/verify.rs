@@ -146,6 +146,26 @@ pub struct ConnectionTestResult {
     pub actual_dims: usize,
 }
 
+/// Identifies whether a provider connection test failed while constructing the
+/// selected model or while invoking that model.
+#[derive(Debug)]
+pub enum ConnectionTestError {
+    /// The selected provider or its configuration could not produce a model.
+    Build(crate::Error),
+    /// The model was constructed, but the embedding request failed.
+    Embed(crate::Error),
+}
+
+impl std::fmt::Display for ConnectionTestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Build(error) | Self::Embed(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ConnectionTestError {}
+
 /// Build the selected provider using host-supplied credential/model factories and test it.
 /// A custom endpoint uses the dedicated portable setup probe.
 pub async fn test_embedding_connection(
@@ -154,17 +174,37 @@ pub async fn test_embedding_connection(
     managed: &ManagedModelFactory,
     custom_endpoint: Option<&str>,
 ) -> crate::Result<ConnectionTestResult> {
+    test_embedding_connection_detailed(settings, credentials, managed, custom_endpoint)
+        .await
+        .map_err(|error| match error {
+            ConnectionTestError::Build(error) | ConnectionTestError::Embed(error) => error,
+        })
+}
+
+/// Test a provider connection while preserving model construction versus
+/// embedding invocation failures for hosts with distinct error contracts.
+pub async fn test_embedding_connection_detailed(
+    settings: &EmbeddingFactorySettings,
+    credentials: &CredentialResolver,
+    managed: &ManagedModelFactory,
+    custom_endpoint: Option<&str>,
+) -> std::result::Result<ConnectionTestResult, ConnectionTestError> {
     let stored_endpoint = settings.provider.strip_prefix("custom:");
     if let Some(endpoint) = custom_endpoint.or(stored_endpoint) {
         let key = credentials("custom");
-        let vectors =
-            probe_custom_embeddings(endpoint, &key, &settings.model, settings.dimensions).await?;
+        let vectors = probe_custom_embeddings(endpoint, &key, &settings.model, settings.dimensions)
+            .await
+            .map_err(ConnectionTestError::Embed)?;
         return Ok(ConnectionTestResult {
             actual_dims: vectors.first().map_or(0, Vec::len),
         });
     }
-    let model = create_configured_embedding_model(settings, credentials, managed)?;
-    let vectors = model.embed(&["connection test".to_owned()]).await?;
+    let model = create_configured_embedding_model(settings, credentials, managed)
+        .map_err(ConnectionTestError::Build)?;
+    let vectors = model
+        .embed(&["connection test".to_owned()])
+        .await
+        .map_err(ConnectionTestError::Embed)?;
     let actual_dims = vectors.first().map_or(0, Vec::len);
     Ok(ConnectionTestResult { actual_dims })
 }

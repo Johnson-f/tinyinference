@@ -8,7 +8,7 @@ use tinyinference_llm::model::ChatModel;
 use tinyinference_llm::providers::MockModel;
 use tinyinference_llm::providers::overrides::{
     CatalogEntry, CatalogRequest, ChatModelEntry, ChatModelRequest, EmbeddingRequest,
-    ProviderOverrides, ReadinessRequest,
+    ProviderModelMetadata, ProviderOverrides, ReadinessRequest,
 };
 
 struct HostContext<'a> {
@@ -35,6 +35,7 @@ fn synchronous_factories_accept_borrowed_non_clone_host_contexts() {
                     ))
                 }),
                 probe: None,
+                models: None,
             })
         },
         |id| {
@@ -112,6 +113,7 @@ async fn independent_live_family_lookups_override_only_their_builtin() {
                         })
                     },
                 )),
+                models: None,
             })
         },
         |id| {
@@ -266,4 +268,74 @@ async fn independent_live_family_lookups_override_only_their_builtin() {
         .await
         .unwrap();
     assert_eq!(builtin_listing["builtin"], true);
+}
+
+#[test]
+fn registered_chat_entry_exposes_all_provider_model_metadata() {
+    let overrides = ProviderOverrides::new(
+        |id| {
+            (id == "hosted").then(|| ChatModelEntry {
+                build: Arc::new(|_| unreachable!("metadata test does not build a model")),
+                probe: None,
+                models: Some(ProviderModelMetadata {
+                    default_model: Arc::new(|| Some("provider-default".into())),
+                    role_for_model: Arc::new(|model| {
+                        (model == "chat-alias").then(|| "chat".into())
+                    }),
+                    is_alias: Arc::new(|model| model == "chat-alias"),
+                    is_raw_model: Arc::new(|model| model.starts_with("raw/")),
+                    supports_vision: Arc::new(|model| model == "vision-model"),
+                    resolve_model: Arc::new(|role, context: &HostContext<'_>, pin| {
+                        if role == "chat" {
+                            Some(pin.unwrap_or(context.borrowed_config).to_owned())
+                        } else {
+                            None
+                        }
+                    }),
+                    context_window: Arc::new(|model| (model == "vision-model").then_some(131_072)),
+                    default_pricing: Arc::new(|| Some(("provider-default".into(), 0.25, 1.5))),
+                    without_reasoning: Arc::new(|mut request| {
+                        request.metadata["reasoning_disabled"] = serde_json::Value::Bool(true);
+                        request
+                    }),
+                }),
+            })
+        },
+        |_| None,
+        |_| None,
+    );
+
+    let entry = overrides.chat_entry("hosted").expect("registered entry");
+    let metadata = entry.models.expect("provider metadata");
+    let context = HostContext {
+        borrowed_config: "context-default",
+        _ownership_marker: std::marker::PhantomData,
+    };
+
+    assert_eq!((metadata.default_model)(), Some("provider-default".into()));
+    assert_eq!((metadata.role_for_model)("chat-alias"), Some("chat".into()));
+    assert!((metadata.is_alias)("chat-alias"));
+    assert!((metadata.is_raw_model)("raw/model"));
+    assert!((metadata.supports_vision)("vision-model"));
+    assert_eq!(
+        (metadata.resolve_model)("chat", &context, None),
+        Some("context-default".into())
+    );
+    assert_eq!(
+        (metadata.resolve_model)("chat", &context, Some("explicit-model")),
+        Some("explicit-model".into())
+    );
+    assert_eq!((metadata.context_window)("vision-model"), Some(131_072));
+    assert_eq!(
+        (metadata.default_pricing)(),
+        Some(("provider-default".into(), 0.25, 1.5))
+    );
+    let request = (metadata.without_reasoning)(tinyinference_llm::model::ModelRequest {
+        model: Some("request-model".into()),
+        metadata: serde_json::json!({"caller": "retained"}),
+        ..Default::default()
+    });
+    assert_eq!(request.model.as_deref(), Some("request-model"));
+    assert_eq!(request.metadata["caller"], "retained");
+    assert_eq!(request.metadata["reasoning_disabled"], true);
 }

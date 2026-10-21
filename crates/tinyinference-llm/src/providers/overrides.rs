@@ -92,6 +92,8 @@ pub struct ChatModelEntry<Ctx> {
     pub build: ChatModelFactory<Ctx>,
     /// Optionally checks whether the provider can serve a resolved model.
     pub probe: Option<ReadinessProbe<Ctx>>,
+    /// Provider-owned model vocabulary, defaults, and capabilities.
+    pub models: Option<ProviderModelMetadata<Ctx>>,
 }
 
 impl<Ctx> std::fmt::Debug for ChatModelEntry<Ctx> {
@@ -99,6 +101,7 @@ impl<Ctx> std::fmt::Debug for ChatModelEntry<Ctx> {
         formatter
             .debug_struct("ChatModelEntry")
             .field("has_readiness_probe", &self.probe.is_some())
+            .field("has_model_metadata", &self.models.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -108,6 +111,67 @@ impl<Ctx> Clone for ChatModelEntry<Ctx> {
         Self {
             build: Arc::clone(&self.build),
             probe: self.probe.as_ref().map(Arc::clone),
+            models: self.models.clone(),
+        }
+    }
+}
+
+/// Callback that selects a workload role for a provider model alias.
+pub type ModelRoleLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+/// Callback that resolves a workload role using a host-selected context.
+pub type ContextModelResolver<Ctx> =
+    Arc<dyn Fn(&str, &Ctx, Option<&str>) -> Option<String> + Send + Sync>;
+/// Callback that reports a provider model's static context window.
+pub type ModelContextWindowLookup = Arc<dyn Fn(&str) -> Option<u64> + Send + Sync>;
+
+/// Provider-owned model behavior consulted by a consuming host.
+///
+/// The host owns registration and decides whether a lookup is process-wide,
+/// task-local, or tied to an explicit context. This value carries only the
+/// selected provider's model metadata and callbacks; it does not store or
+/// select providers itself.
+pub struct ProviderModelMetadata<Ctx> {
+    /// The provider's default model, absent when it has no default.
+    pub default_model: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    /// Resolves a provider-specific model alias to its workload role.
+    pub role_for_model: ModelRoleLookup,
+    /// Whether a model is a provider-specific alias rather than a concrete id.
+    pub is_alias: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    /// Whether a model is a concrete id suitable for pass-through.
+    pub is_raw_model: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    /// Whether a model accepts image input according to provider metadata.
+    pub supports_vision: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    /// Resolves a workload role and optional pin using the host's selected context.
+    pub resolve_model: ContextModelResolver<Ctx>,
+    /// The model's static context window, if the provider knows one.
+    pub context_window: ModelContextWindowLookup,
+    /// Provider default pricing as (model id, input USD/1M, output USD/1M).
+    pub default_pricing: Arc<dyn Fn() -> Option<(String, f64, f64)> + Send + Sync>,
+    /// Applies a provider-specific request hint without exposing its wire key.
+    pub without_reasoning:
+        Arc<dyn Fn(crate::model::ModelRequest) -> crate::model::ModelRequest + Send + Sync>,
+}
+
+impl<Ctx> std::fmt::Debug for ProviderModelMetadata<Ctx> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderModelMetadata")
+            .finish_non_exhaustive()
+    }
+}
+
+impl<Ctx> Clone for ProviderModelMetadata<Ctx> {
+    fn clone(&self) -> Self {
+        Self {
+            default_model: Arc::clone(&self.default_model),
+            role_for_model: Arc::clone(&self.role_for_model),
+            is_alias: Arc::clone(&self.is_alias),
+            is_raw_model: Arc::clone(&self.is_raw_model),
+            supports_vision: Arc::clone(&self.supports_vision),
+            resolve_model: Arc::clone(&self.resolve_model),
+            context_window: Arc::clone(&self.context_window),
+            default_pricing: Arc::clone(&self.default_pricing),
+            without_reasoning: Arc::clone(&self.without_reasoning),
         }
     }
 }

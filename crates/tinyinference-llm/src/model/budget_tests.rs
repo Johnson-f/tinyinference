@@ -333,7 +333,10 @@ async fn temporary_wait_mode_retry_refusal_does_not_mark_budget_exhausted() {
         None,
         "a retry denied only by live capacity must not publish terminal exhaustion"
     );
-    assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+    assert_eq!(
+        budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros
+    );
     assert_eq!(budget.snapshot().reserved.cost_micros, 100);
     assert_eq!(
         admission.0.load(std::sync::atomic::Ordering::SeqCst),

@@ -38,8 +38,8 @@ fn add_accumulates_all_fields() {
 
 #[test]
 fn usage_accumulation_backfills_nanodollars_from_legacy_microdollars() {
-    let mut legacy: Usage = serde_json::from_value(serde_json::json!({
-        "charged_amount": { "micros": 17 }
+    let legacy: Usage = serde_json::from_value(serde_json::json!({
+        "charged_amount": { "micros": 10 }
     }))
     .expect("legacy usage deserializes without nanodollars");
     let exact = Usage {
@@ -48,10 +48,30 @@ fn usage_accumulation_backfills_nanodollars_from_legacy_microdollars() {
         ..Usage::default()
     };
 
-    legacy += exact;
+    let mut legacy_then_exact = legacy;
+    legacy_then_exact += exact;
+    assert_eq!(
+        legacy_then_exact.charged_amount,
+        Some(ChargedAmount::usd_micros(10))
+    );
+    assert_eq!(legacy_then_exact.charged_amount_nanos, Some(10_400));
 
-    assert_eq!(legacy.charged_amount, Some(ChargedAmount::usd_micros(17)));
-    assert_eq!(legacy.charged_amount_nanos, Some(17_400));
+    let mut exact_then_legacy = exact;
+    exact_then_legacy += legacy;
+    assert_eq!(exact_then_legacy.charged_amount_nanos, Some(10_400));
+
+    let mut legacy_only = Usage::default();
+    legacy_only += legacy;
+    assert_eq!(legacy_only.charged_amount_nanos, Some(10_000));
+
+    let mut exact_only = Usage::default();
+    exact_only += exact;
+    assert_eq!(exact_only.charged_amount_nanos, Some(400));
+
+    let mut unknown = Usage::default();
+    unknown += Usage::default();
+    assert_eq!(unknown.charged_amount_nanos, None);
+
 }
 
 #[test]

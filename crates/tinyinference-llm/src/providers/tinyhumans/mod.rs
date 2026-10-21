@@ -362,6 +362,14 @@ impl ChatModel<()> for TinyHumansModel {
         <OpenAiModel as ChatModel<()>>::profile(&self.model)
     }
 
+    fn tracks_physical_attempts(&self) -> bool {
+        <OpenAiModel as ChatModel<()>>::tracks_physical_attempts(&self.model)
+    }
+
+    fn has_pre_invocation_admission_gate(&self) -> bool {
+        <OpenAiModel as ChatModel<()>>::has_pre_invocation_admission_gate(&self.model)
+    }
+
     fn supports_input(&self, modality: InputModality, mime: &str, source: InputSource) -> bool {
         <OpenAiModel as ChatModel<()>>::supports_input(&self.model, modality, mime, source)
     }

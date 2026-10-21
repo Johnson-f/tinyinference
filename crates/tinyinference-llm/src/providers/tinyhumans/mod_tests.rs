@@ -673,6 +673,43 @@ fn model_keeps_managed_tool_vision_and_cache_behavior() {
     );
 }
 
+#[test]
+fn model_advertises_native_tool_and_physical_attempt_capabilities() {
+    use crate::model::ChatModel;
+
+    let model = fixture_model("https://api.example.test").with_native_tool_calling(true);
+    let profile = model.profile().unwrap();
+    assert!(profile.tool_calling);
+    assert!(profile.parallel_tool_calls);
+    assert!(model.tracks_physical_attempts());
+}
+
+#[test]
+fn model_advertises_only_serializable_image_and_audio_inputs() {
+    use crate::model::{ChatModel, InputModality as M, InputSource as S};
+
+    let model = fixture_model("https://api.example.test");
+    for mime in ["image/jpeg", "image/webp", "image/gif"] {
+        assert!(model.supports_input(M::Image, mime, S::Base64), "{mime}");
+    }
+    for mime in ["audio/x-wav", "audio/mpeg", "audio/mp3"] {
+        assert!(model.supports_input(M::Audio, mime, S::Base64), "{mime}");
+    }
+    for (modality, mime) in [
+        (M::Image, "application/pdf"),
+        (M::Image, "video/mp4"),
+        (
+            M::Image,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (M::Image, "image/tiff"),
+        (M::Audio, "audio/ogg"),
+    ] {
+        assert!(!model.supports_input(modality, mime, S::Base64), "{mime}");
+    }
+    assert!(!model.supports_input(M::Audio, "audio/wav", S::Url));
+}
+
 #[path = "cache_identity_tests.rs"]
 mod cache_identity_tests;
 

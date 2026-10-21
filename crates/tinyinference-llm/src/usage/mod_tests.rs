@@ -37,6 +37,43 @@ fn add_accumulates_all_fields() {
 }
 
 #[test]
+fn usage_accumulation_backfills_nanodollars_from_legacy_microdollars() {
+    let legacy: Usage = serde_json::from_value(serde_json::json!({
+        "charged_amount": { "micros": 10 }
+    }))
+    .expect("legacy usage deserializes without nanodollars");
+    let exact = Usage {
+        charged_amount: Some(ChargedAmount::usd_micros(0)),
+        charged_amount_nanos: Some(400),
+        ..Usage::default()
+    };
+
+    let mut legacy_then_exact = legacy;
+    legacy_then_exact += exact;
+    assert_eq!(
+        legacy_then_exact.charged_amount,
+        Some(ChargedAmount::usd_micros(10))
+    );
+    assert_eq!(legacy_then_exact.charged_amount_nanos, Some(10_400));
+
+    let mut exact_then_legacy = exact;
+    exact_then_legacy += legacy;
+    assert_eq!(exact_then_legacy.charged_amount_nanos, Some(10_400));
+
+    let mut legacy_only = Usage::default();
+    legacy_only += legacy;
+    assert_eq!(legacy_only.charged_amount_nanos, Some(10_000));
+
+    let mut exact_only = Usage::default();
+    exact_only += exact;
+    assert_eq!(exact_only.charged_amount_nanos, Some(400));
+
+    let mut unknown = Usage::default();
+    unknown += Usage::default();
+    assert_eq!(unknown.charged_amount_nanos, None);
+}
+
+#[test]
 fn usage_accumulation_preserves_optional_amounts_and_latest_context_window() {
     let with_amount = Usage {
         charged_amount: Some(ChargedAmount::usd_micros(17)),
@@ -83,6 +120,7 @@ fn usage_serialization_preserves_optional_metadata_and_accepts_legacy_payloads()
         input_tokens: 11,
         output_tokens: 13,
         charged_amount: Some(ChargedAmount::usd_micros(42)),
+        charged_amount_nanos: Some(42_000),
         context_window_tokens: Some(128_000),
         ..Usage::default()
     };
@@ -91,6 +129,7 @@ fn usage_serialization_preserves_optional_metadata_and_accepts_legacy_payloads()
         encoded["charged_amount"],
         serde_json::json!({ "micros": 42 })
     );
+    assert_eq!(encoded["charged_amount_nanos"], serde_json::json!(42_000));
     assert_eq!(encoded["context_window_tokens"], serde_json::json!(128_000));
     assert_eq!(serde_json::from_value::<Usage>(encoded).unwrap(), usage);
 

@@ -30,12 +30,7 @@ impl ChatModel<()> for RequestRecorder {
         self.profile.as_ref()
     }
 
-    fn supports_input(
-        &self,
-        modality: InputModality,
-        _: &str,
-        source: InputSource,
-    ) -> bool {
+    fn supports_input(&self, modality: InputModality, _: &str, source: InputSource) -> bool {
         modality == InputModality::Image && source == InputSource::Base64
     }
 

@@ -1098,6 +1098,68 @@ async fn budget_refunds_when_a_gated_fallback_refuses_before_any_child_invocatio
 }
 
 #[tokio::test]
+async fn mixed_fallback_refusal_before_opaque_child_entry_refunds_budget() {
+    let primary = probe_model();
+    let opaque_fallback = probe_model();
+    let chain = Arc::new(super::super::FallbackModel::new(
+        Arc::new(super::super::DispatchCheckedModel::new(
+            primary.clone(),
+            Arc::new(DispatchCheck {
+                allowed: false,
+                checks: Default::default(),
+            }),
+        )),
+        vec![opaque_fallback.clone()],
+    ));
+    let budget = Budget::new(SpendLimits::default());
+    let model = BudgetedModel::new(chain, budget.clone(), call_policy());
+
+    assert!(matches!(
+        model.invoke(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch refused"
+    ));
+    assert_eq!(primary.invokes.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        opaque_fallback
+            .invokes
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert_eq!(budget.snapshot(), BudgetSnapshot::default());
+}
+
+#[tokio::test]
+async fn mixed_fallback_stream_refusal_before_opaque_child_entry_refunds_budget() {
+    let primary = probe_model();
+    let opaque_fallback = probe_model();
+    let chain = Arc::new(super::super::FallbackModel::new(
+        Arc::new(super::super::DispatchCheckedModel::new(
+            primary.clone(),
+            Arc::new(DispatchCheck {
+                allowed: false,
+                checks: Default::default(),
+            }),
+        )),
+        vec![opaque_fallback.clone()],
+    ));
+    let budget = Budget::new(SpendLimits::default());
+    let model = BudgetedModel::new(chain, budget.clone(), call_policy());
+
+    assert!(matches!(
+        model.stream(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch refused"
+    ));
+    assert_eq!(primary.streams.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        opaque_fallback
+            .streams
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert_eq!(budget.snapshot(), BudgetSnapshot::default());
+}
+
+#[tokio::test]
 async fn refused_dispatch_wrapper_does_not_charge_an_untracked_inner_model() {
     let inner = probe_model();
     let dispatch = Arc::new(super::super::DispatchCheckedModel::new(
@@ -1288,6 +1350,57 @@ async fn unknown_adapter_send_is_not_refunded_after_later_nested_refusal() {
         budget.snapshot().spent.cost_micros,
         call_policy().cost_micros,
         "an untracked adapter may have sent before a nested gate refuses"
+    );
+}
+
+#[tokio::test]
+async fn opaque_stream_fallback_send_remains_charged_after_later_gated_refusal() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/paid", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = vec![0; 4096];
+        let read = socket.read(&mut request).await.unwrap();
+        assert!(request[..read].starts_with(b"POST /paid "));
+        let body = "ok";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).await.unwrap();
+    });
+    let hook = Arc::new(RevocableDispatchCheck {
+        allowed: std::sync::atomic::AtomicBool::new(true),
+        checks: Default::default(),
+    });
+    let paid = Arc::new(UntrackedPaidModel {
+        endpoint,
+        hook: Arc::clone(&hook),
+        calls: Default::default(),
+    });
+    let fallback = super::super::FallbackModel::new(
+        paid.clone(),
+        vec![Arc::new(super::super::DispatchCheckedModel::new(
+            probe_model(),
+            hook,
+        ))],
+    );
+    let budget = Budget::new(SpendLimits::default());
+    let model = BudgetedModel::new(Arc::new(fallback), budget.clone(), call_policy());
+
+    assert!(matches!(
+        model.stream(&(), request()).await,
+        Err(crate::Error::Validation(message)) if message == "dispatch revoked"
+    ));
+    server.await.unwrap();
+    assert_eq!(paid.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(budget.snapshot().reserved, Spend::default());
+    assert_eq!(
+        budget.snapshot().spent.cost_micros,
+        call_policy().cost_micros,
+        "a possibly-paid opaque fallback stream must remain charged"
     );
 }
 

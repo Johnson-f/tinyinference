@@ -567,6 +567,10 @@ fn mark_untracked_inner_invoked() {
     });
 }
 
+pub(super) fn mark_untracked_fallback_child_invoked() {
+    mark_untracked_inner_invoked();
+}
+
 fn nested_attempt_scopes(scope: Arc<AttemptScope>) -> Vec<Arc<AttemptScope>> {
     let mut scopes = PHYSICAL_CALL.try_with(Clone::clone).unwrap_or_default();
     scopes.push(scope);

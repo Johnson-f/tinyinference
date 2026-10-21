@@ -533,6 +533,7 @@ pub(super) fn convert_responses_usage(wire: &ResponsesUsage) -> Usage {
             .and_then(|d| d.reasoning_tokens)
             .unwrap_or(0),
         charged_amount: None,
+        charged_amount_nanos: None,
         context_window_tokens: None,
     }
 }

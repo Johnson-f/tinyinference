@@ -600,9 +600,23 @@ pub(super) fn convert_usage(wire: UsageWire) -> Usage {
             .completion_tokens_details
             .map(|d| d.reasoning_tokens)
             .unwrap_or(0),
-        charged_amount: None,
+        charged_amount: wire.cost.as_ref().and_then(usd_cost_nanos).map(|nanos| {
+            crate::usage::ChargedAmount::usd_micros(nanos.saturating_add(500) / 1_000)
+        }),
+        charged_amount_nanos: wire.cost.as_ref().and_then(usd_cost_nanos),
         context_window_tokens: None,
     }
+}
+
+/// Converts a decimal USD amount to the crate's integer micro-dollar unit.
+/// Invalid, negative, non-finite, or out-of-range provider values stay
+/// unknown instead of being turned into a fabricated zero.
+fn usd_cost_nanos(cost: &serde_json::Value) -> Option<i64> {
+    let value = cost.as_number()?.as_f64()?;
+    if !value.is_finite() || value < 0.0 || value > (i64::MAX as f64 / 1_000_000_000.0) {
+        return None;
+    }
+    Some((value * 1_000_000_000.0).round() as i64)
 }
 
 /// Normalizes provider-specific reasoning/thinking payloads into text.

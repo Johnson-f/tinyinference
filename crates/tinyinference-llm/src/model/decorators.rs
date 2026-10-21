@@ -136,6 +136,14 @@ impl<State: Send + Sync> ChatModel<State> for ProfileOverrideModel<State> {
         self.inner.cache_identity()
     }
 
+    fn tracks_physical_attempts(&self) -> bool {
+        self.inner.tracks_physical_attempts()
+    }
+
+    fn has_pre_invocation_admission_gate(&self) -> bool {
+        self.inner.has_pre_invocation_admission_gate()
+    }
+
     async fn invoke(&self, state: &State, request: ModelRequest) -> Result<ModelResponse> {
         self.inner.invoke(state, self.defaults.apply(request)).await
     }
@@ -194,6 +202,14 @@ impl<State: Send + Sync> ChatModel<State> for MaxTokensModel<State> {
 
     fn cache_identity(&self) -> Option<String> {
         self.inner.cache_identity()
+    }
+
+    fn tracks_physical_attempts(&self) -> bool {
+        self.inner.tracks_physical_attempts()
+    }
+
+    fn has_pre_invocation_admission_gate(&self) -> bool {
+        self.inner.has_pre_invocation_admission_gate()
     }
 
     async fn invoke(&self, state: &State, request: ModelRequest) -> Result<ModelResponse> {
@@ -260,6 +276,14 @@ impl<State: Send + Sync> ChatModel<State> for RouteRecordingModel<State> {
 
     fn cache_identity(&self) -> Option<String> {
         self.inner.cache_identity()
+    }
+
+    fn tracks_physical_attempts(&self) -> bool {
+        self.inner.tracks_physical_attempts()
+    }
+
+    fn has_pre_invocation_admission_gate(&self) -> bool {
+        self.inner.has_pre_invocation_admission_gate()
     }
 
     async fn invoke(&self, state: &State, request: ModelRequest) -> Result<ModelResponse> {
@@ -430,6 +454,14 @@ impl<State: Send + Sync> ChatModel<State> for ObservingModel<State> {
 
     fn cache_identity(&self) -> Option<String> {
         self.inner.cache_identity()
+    }
+
+    fn tracks_physical_attempts(&self) -> bool {
+        self.inner.tracks_physical_attempts()
+    }
+
+    fn has_pre_invocation_admission_gate(&self) -> bool {
+        self.inner.has_pre_invocation_admission_gate()
     }
 
     async fn invoke(&self, state: &State, request: ModelRequest) -> Result<ModelResponse> {

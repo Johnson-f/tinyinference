@@ -8,6 +8,8 @@ use std::sync::Mutex;
 struct RequestRecorder {
     requests: Mutex<Vec<ModelRequest>>,
     profile: Option<ModelProfile>,
+    tracks_physical_attempts: bool,
+    has_pre_invocation_admission_gate: bool,
 }
 
 impl RequestRecorder {
@@ -15,6 +17,8 @@ impl RequestRecorder {
         Self {
             requests: Mutex::new(Vec::new()),
             profile,
+            tracks_physical_attempts: false,
+            has_pre_invocation_admission_gate: false,
         }
     }
 }
@@ -28,6 +32,14 @@ impl ChatModel<()> for RequestRecorder {
 
     fn profile(&self) -> Option<&ModelProfile> {
         self.profile.as_ref()
+    }
+
+    fn tracks_physical_attempts(&self) -> bool {
+        self.tracks_physical_attempts
+    }
+
+    fn has_pre_invocation_admission_gate(&self) -> bool {
+        self.has_pre_invocation_admission_gate
     }
 
     fn supports_input(&self, modality: InputModality, _: &str, source: InputSource) -> bool {
@@ -135,6 +147,24 @@ async fn explicit_profile_override_still_wins_over_the_inner_profile() {
         },
     );
     assert_request_defaults_preserve_optional_profile(model, &inner, Some(profile)).await;
+}
+
+#[test]
+fn profile_override_preserves_dispatch_capability_contracts() {
+    let inner = Arc::new(RequestRecorder {
+        tracks_physical_attempts: true,
+        has_pre_invocation_admission_gate: true,
+        ..RequestRecorder::default()
+    });
+    let model = ProfileOverrideModel::new_preserving_profile(inner.clone()).with_defaults(
+        ModelRequestDefaults {
+            model: Some("default-model".to_owned()),
+            temperature: Some(0.25),
+        },
+    );
+
+    assert!(model.tracks_physical_attempts());
+    assert!(model.has_pre_invocation_admission_gate());
 }
 
 #[test]

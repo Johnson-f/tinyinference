@@ -307,6 +307,35 @@ async fn provider_internal_retry_cannot_reuse_the_first_attempt_reservation() {
     );
 }
 
+#[tokio::test]
+async fn temporary_wait_mode_retry_refusal_does_not_mark_budget_exhausted() {
+    let budget = Budget::new(SpendLimits {
+        tokens: None,
+        cost_micros: Some(250),
+    })
+    .wait_for_capacity();
+    let blocker = budget
+        .reserve(Spend {
+            tokens: 0,
+            cost_micros: 100,
+        })
+        .expect("live reservation leaves capacity for the first send");
+    let model = BudgetedModel::new(Arc::new(InternalRetryModel), budget.clone(), call_policy());
+
+    assert!(matches!(
+        model.invoke(&(), request()).await,
+        Err(crate::Error::BudgetExceeded(_))
+    ));
+    assert_eq!(
+        budget.refusal(),
+        None,
+        "a retry denied only by live capacity must not publish terminal exhaustion"
+    );
+    assert_eq!(budget.snapshot().spent.cost_micros, call_policy().cost_micros);
+    assert_eq!(budget.snapshot().reserved.cost_micros, 100);
+    blocker.settle(Spend::default());
+}
+
 #[derive(Debug)]
 struct CompletedStreamModel;
 #[async_trait]

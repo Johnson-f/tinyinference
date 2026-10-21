@@ -581,6 +581,12 @@ fn nested_attempt_scopes(scope: Arc<AttemptScope>) -> Vec<Arc<AttemptScope>> {
 /// including retries, and report [`ChatModel::tracks_physical_attempts`] as
 /// true only when every send is covered.
 ///
+/// Retry admission is synchronous and does not wait for live reservations to
+/// settle. When a wait-mode budget cannot reserve a retry only because of live
+/// capacity, this returns [`crate::Error::BudgetExceeded`] without publishing
+/// a terminal refusal through [`Budget::refusal`]. A retry that settled spend
+/// cannot afford remains a terminal refusal.
+///
 /// Outside an active budgeted or dispatch-checked invocation this is a no-op.
 pub fn before_physical_attempt() -> crate::Result<()> {
     PHYSICAL_CALL
@@ -617,14 +623,17 @@ pub fn before_physical_attempt() -> crate::Result<()> {
             let mut retry_reservations = Vec::new();
             for scope in scopes {
                 if scope.attempts.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-                    match scope.budget.reserve(scope.requested) {
+                    match scope
+                        .budget
+                        .reserve_inner(scope.requested, scope.budget.wait_capacity)
+                    {
                         Ok(reservation) => retry_reservations.push(reservation),
-                        Err(error) => {
+                        Err(refusal) => {
                             for reservation in retry_reservations {
                                 reservation.settle(Spend::default());
                             }
                             mark_physical_refused_before_attempt();
-                            return Err(crate::Error::BudgetExceeded(error));
+                            return Err(crate::Error::BudgetExceeded(refusal.error));
                         }
                     }
                 }

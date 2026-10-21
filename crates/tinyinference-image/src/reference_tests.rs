@@ -5,7 +5,9 @@ use std::path::Path;
 use bytes::Bytes;
 use std::sync::Arc;
 
-use tinystoragedrivers_core::{BlobStore, MemoryStorage, Scope, StorageBackend};
+use tinystoragedrivers_api::BlobStore;
+use tinystoragedrivers_testkit::memory_storage;
+use tinystoragedrivers_types::Scope;
 
 use crate::media::GeneratedMedia;
 use crate::mock::TINY_PNG;
@@ -169,11 +171,7 @@ fn media_types_and_extensions_round_trip() {
 
 fn memory_blobs() -> Arc<dyn BlobStore> {
     let scope = Scope::new("media-test").unwrap();
-    MemoryStorage::new()
-        .for_scope(&scope)
-        .unwrap()
-        .blobs()
-        .clone()
+    memory_storage(&scope).blobs().clone()
 }
 
 #[tokio::test]

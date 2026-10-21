@@ -1864,6 +1864,66 @@ fn temperature_builders_compose() {
         .with_temperature_override(Some(0.0));
 }
 
+// ── single_system_message ─────────────────────────────────────────────
+
+#[test]
+fn single_system_joins_leading_and_mid_transcript_system_messages() {
+    let merged = single_system_message(&[
+        Message::system("Stable."),
+        Message::system("Volatile."),
+        Message::user("Hi"),
+        Message::assistant("Hello"),
+        Message::system("Tool patch."),
+        Message::user("Bye"),
+    ]);
+    assert_eq!(merged.len(), 4);
+    assert!(matches!(merged[0], Message::System(_)));
+    assert_eq!(merged[0].text(), "Stable.\n\nVolatile.\n\nTool patch.");
+    assert_eq!(merged[1].text(), "Hi");
+    assert!(matches!(merged[2], Message::Assistant(_)));
+    assert_eq!(merged[3].text(), "Bye");
+    let systems = merged
+        .iter()
+        .filter(|m| matches!(m, Message::System(_)))
+        .count();
+    assert_eq!(systems, 1);
+}
+
+#[test]
+fn single_system_is_noop_for_one_leading_system_message() {
+    let input = vec![Message::system("sys"), Message::user("hi")];
+    assert_eq!(single_system_message(&input), input);
+    let input = vec![Message::user("hi")];
+    assert_eq!(single_system_message(&input), input);
+}
+
+#[test]
+fn single_system_hoists_a_lone_late_system_message_and_drops_empty_ones() {
+    let merged = single_system_message(&[
+        Message::user("hi"),
+        Message::system(""),
+        Message::system("late"),
+    ]);
+    assert_eq!(merged.len(), 2);
+    assert!(matches!(merged[0], Message::System(_)));
+    assert_eq!(merged[0].text(), "late");
+    assert_eq!(merged[1].text(), "hi");
+
+    let merged = single_system_message(&[Message::user("hi"), Message::system("")]);
+    assert_eq!(merged, vec![Message::user("hi")]);
+}
+
+#[test]
+fn single_system_mode_clears_mid_conversation_and_survives_model_change() {
+    let model = OpenAiModel::compatible_provider("lmstudio", "", "http://127.0.0.1:1234/v1", "a")
+        .with_single_system_message()
+        .with_model("b");
+    assert!(!profile_of(&model).mid_conversation_system_messages);
+    assert!(profile_of(&model).hoists_system_messages);
+    let plain = OpenAiModel::compatible_provider("lmstudio", "", "http://127.0.0.1:1234/v1", "a");
+    assert!(profile_of(&plain).mid_conversation_system_messages);
+}
+
 // ── merge_system_into_user ────────────────────────────────────────────
 
 #[test]

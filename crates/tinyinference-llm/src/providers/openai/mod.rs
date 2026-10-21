@@ -113,7 +113,7 @@ use sse::*;
 #[cfg(test)]
 use transport::{
     Degrade, auth_headers, degrade_for_400, merge_provider_options, merge_system_into_user,
-    request_timeout,
+    request_timeout, single_system_message,
 };
 
 #[cfg(test)]

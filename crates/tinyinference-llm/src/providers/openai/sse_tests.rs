@@ -1,8 +1,7 @@
 use super::*;
 use serde_json::json;
 
-/// Runs a synthetic SSE byte stream through the parser and returns its
-/// terminal [`ModelStreamItem::Completed`] response.
+/// Runs a synthetic SSE byte stream through the parser and returns every item.
 async fn stream_items(raw: Vec<&'static [u8]>) -> Vec<ModelStreamItem> {
     use futures::StreamExt;
 

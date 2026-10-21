@@ -236,6 +236,29 @@ struct RecordingOllamaFetcher {
     requests: Mutex<Vec<(String, String, Option<Value>)>>,
 }
 
+struct RouteProjectionFetcher;
+
+#[async_trait::async_trait]
+impl ModelListingFetcher for RouteProjectionFetcher {
+    async fn get_json(&self, url: &str, _headers: &[(String, String)]) -> crate::Result<Value> {
+        let (window, cap) = if url.contains("api-a.example") {
+            (64_000, 8_000)
+        } else {
+            (32_000, 4_000)
+        };
+        Ok(json!({
+            "data": [{
+                "id": "deepseek/projection-test",
+                "context_length": window,
+                "top_provider": {
+                    "context_length": window,
+                    "max_completion_tokens": cap
+                }
+            }]
+        }))
+    }
+}
+
 #[async_trait::async_trait]
 impl ModelListingFetcher for RecordingOllamaFetcher {
     async fn get_json(&self, url: &str, _headers: &[(String, String)]) -> crate::Result<Value> {
@@ -370,4 +393,200 @@ fn workload_context_hints_cover_legacy_aliases_without_a_managed_model_id() {
         super::super::workload::context_window_for_model("host/managed-default"),
         None
     );
+}
+
+#[test]
+fn route_projection_uses_native_static_fallback_precedence() {
+    let resolver = ContextWindowResolver::new();
+
+    let managed = resolver.project_for_route(
+        "managed",
+        "host/managed-default",
+        None,
+        ContextWindowRouteInput {
+            managed_default: Some(ManagedDefaultWindow {
+                model: "host/managed-default".to_owned(),
+                window: 900_000,
+            }),
+            catalog_window: Some(70_000),
+            ..Default::default()
+        },
+    );
+    assert_eq!(managed.window, Some(900_000));
+    assert_eq!(managed.source, WindowSource::StaticGuess);
+
+    let workload = resolver.project_for_route(
+        "external",
+        "hint:agentic",
+        None,
+        ContextWindowRouteInput {
+            catalog_window: Some(70_000),
+            ..Default::default()
+        },
+    );
+    assert_eq!(workload.window, Some(200_000));
+    assert_eq!(workload.source, WindowSource::StaticGuess);
+
+    let catalog = resolver.project_for_route(
+        "external",
+        "unlisted-model",
+        None,
+        ContextWindowRouteInput {
+            catalog_window: Some(70_000),
+            ..Default::default()
+        },
+    );
+    assert_eq!(catalog.window, Some(70_000));
+
+    let generic = resolver.project_for_route(
+        "external",
+        "deepseek/unlisted-projection-model",
+        None,
+        ContextWindowRouteInput::default(),
+    );
+    assert_eq!(generic.window, Some(128_000));
+
+    let local = resolver.project_for_route(
+        "lmstudio",
+        "unknown-local-model",
+        Some(LocalProviderKind::LmStudio),
+        ContextWindowRouteInput {
+            local_window: Some(32_000),
+            ..Default::default()
+        },
+    );
+    assert_eq!(local.window, Some(32_000));
+    assert_eq!(local.source, WindowSource::LocalProfile);
+
+    let unknown = resolver.project_for_route(
+        "external",
+        "projection-unknown-model",
+        None,
+        ContextWindowRouteInput::default(),
+    );
+    assert_eq!(unknown.window, None);
+    assert_eq!(unknown.source, WindowSource::Unknown);
+}
+
+#[tokio::test]
+async fn route_projection_obeys_override_and_exact_discovery_identity() {
+    let resolver = ContextWindowResolver::new();
+    let cache = ModelLimitsCache::default();
+    let fetcher = RouteProjectionFetcher;
+    for endpoint in ["https://api-a.example/v1", "https://api-b.example/v1"] {
+        let discovered = resolver
+            .resolve_for_route_with_fetcher(
+                "openrouter",
+                "deepseek/projection-test",
+                None,
+                ContextWindowRouteInput {
+                    discovery: Some(
+                        DiscoveryRequest::new(endpoint, "deepseek/projection-test")
+                            .with_single_model_probe(false),
+                    ),
+                    ..Default::default()
+                },
+                &cache,
+                &fetcher,
+            )
+            .await;
+        assert_eq!(discovered.source, WindowSource::ProviderReported);
+    }
+
+    let exact = resolver.project_for_route(
+        "openrouter",
+        "deepseek/projection-test",
+        None,
+        ContextWindowRouteInput {
+            discovery: Some(
+                DiscoveryRequest::new("https://api-a.example/v1", "deepseek/projection-test")
+                    .with_single_model_probe(false),
+            ),
+            ..Default::default()
+        },
+    );
+    assert_eq!(exact.window, Some(64_000));
+    assert_eq!(exact.source, WindowSource::ProviderReported);
+    assert_eq!(exact.max_output_tokens, Some(8_000));
+
+    let other_identity = resolver.project_for_route(
+        "openrouter",
+        "deepseek/projection-test",
+        None,
+        ContextWindowRouteInput {
+            discovery: Some(DiscoveryRequest::new(
+                "https://api-c.example/v1",
+                "deepseek/projection-test",
+            )),
+            ..Default::default()
+        },
+    );
+    assert_eq!(other_identity.window, Some(128_000));
+    assert_eq!(other_identity.source, WindowSource::StaticGuess);
+    assert_eq!(other_identity.max_output_tokens, None);
+
+    let projection = resolver.project_for_route(
+        "openrouter",
+        "deepseek/projection-test",
+        None,
+        ContextWindowRouteInput::default(),
+    );
+    assert_eq!(projection.window, Some(32_000));
+    assert_eq!(projection.source, WindowSource::ProviderReported);
+    assert_eq!(projection.max_output_tokens, Some(4_000));
+
+    let override_result = resolver.project_for_route(
+        "openrouter",
+        "deepseek/projection-test",
+        None,
+        ContextWindowRouteInput {
+            config_override: Some(0),
+            ..Default::default()
+        },
+    );
+    assert_eq!(override_result.window, Some(32_000));
+    assert_eq!(override_result.source, WindowSource::ProviderReported);
+
+    let positive_override = resolver.project_for_route(
+        "openrouter",
+        "deepseek/projection-test",
+        None,
+        ContextWindowRouteInput {
+            config_override: Some(16_000),
+            discovery: Some(
+                DiscoveryRequest::new("https://api-a.example/v1", "deepseek/projection-test")
+                    .with_single_model_probe(false),
+            ),
+            ..Default::default()
+        },
+    );
+    assert_eq!(positive_override.window, Some(16_000));
+    assert_eq!(positive_override.source, WindowSource::ConfigOverride);
+    assert_eq!(positive_override.max_output_tokens, Some(8_000));
+}
+
+#[tokio::test]
+async fn route_projection_matches_async_resolution_without_discovery() {
+    let resolver = ContextWindowResolver::new();
+    let route = ContextWindowRouteInput {
+        catalog_window: Some(48_000),
+        ..Default::default()
+    };
+    let projected = resolver.project_for_route(
+        "external",
+        "unlisted-projection-parity-model",
+        None,
+        route.clone(),
+    );
+    let resolved = resolver
+        .resolve_for_route(
+            "external",
+            "unlisted-projection-parity-model",
+            None,
+            route,
+            &ModelLimitsCache::default(),
+            || panic!("a route without discovery must not construct a client"),
+        )
+        .await;
+    assert_eq!(projected, resolved);
 }

@@ -249,6 +249,42 @@ impl ContextWindowResolver {
             .await
     }
 
+    /// Projects the context window for a route without performing discovery or
+    /// mutating discovery state.
+    ///
+    /// A supplied discovery request selects only limits remembered for that
+    /// exact discovery identity. Without one, the projection uses the smallest
+    /// remembered window for the provider/model pair. The result then follows
+    /// the same override, managed/workload/catalog/model hint, and local
+    /// fallback precedence as [`Self::resolve_for_route`]. The remembered
+    /// positive output-token cap is preserved in the result.
+    pub fn project_for_route(
+        &self,
+        provider: &str,
+        model: &str,
+        local_kind: Option<LocalProviderKind>,
+        route: ContextWindowRouteInput,
+    ) -> ResolvedWindow {
+        let prepared = PreparedRoute::new(model, local_kind, route);
+        let key = remembered_key(provider, model, prepared.discovery.as_ref());
+        let remembered = {
+            let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            if prepared.discovery.is_some() {
+                state.lookup(&key)
+            } else {
+                state.projection(&key.route)
+            }
+        };
+        let input = ContextWindowInput {
+            config_override: prepared.config_override,
+            discovery: prepared.discovery.as_ref(),
+            static_window: prepared.static_window,
+            has_local_profile: local_kind.is_some(),
+            local_window: prepared.local_window,
+        };
+        select_window(&input, remembered, None, None)
+    }
+
     /// Resolves a concrete provider route with a host-supplied listing fetcher.
     ///
     /// This has the same route normalization, precedence, identity memory and
@@ -421,33 +457,57 @@ impl ContextWindowResolver {
                 None
             }
         };
-        let max_output_tokens =
-            max_output_tokens.or(remembered.and_then(|limits| limits.max_output_tokens));
-        if let Some((window, source)) =
-            discovered_window.or(remembered.and_then(|limits| limits.window))
-        {
-            return ResolvedWindow {
-                window: Some(window),
-                source,
-                max_output_tokens,
-            };
-        }
-        let (window, source) =
-            if let Some(window) = input.static_window.filter(|window| *window > 0) {
-                (Some(window), WindowSource::StaticGuess)
-            } else if input.has_local_profile {
-                (
-                    input.local_window.filter(|window| *window > 0),
-                    WindowSource::LocalProfile,
-                )
-            } else {
-                (None, WindowSource::Unknown)
-            };
-        ResolvedWindow {
-            window,
+        select_window(
+            &input,
+            remembered.unwrap_or_default(),
+            discovered_window,
+            max_output_tokens,
+        )
+    }
+}
+
+fn select_window(
+    input: &ContextWindowInput<'_>,
+    remembered: RememberedLimits,
+    discovered: Option<(u64, WindowSource)>,
+    discovered_cap: Option<u64>,
+) -> ResolvedWindow {
+    let max_output_tokens = discovered_cap.or(remembered.max_output_tokens);
+    if let Some(window) = input.config_override.filter(|window| *window > 0) {
+        return ResolvedWindow {
+            window: Some(window),
+            source: WindowSource::ConfigOverride,
+            max_output_tokens,
+        };
+    }
+    if let Some((window, source)) = discovered {
+        return ResolvedWindow {
+            window: Some(window),
             source,
             max_output_tokens,
-        }
+        };
+    }
+    if let Some((window, source)) = remembered.window {
+        return ResolvedWindow {
+            window: Some(window),
+            source,
+            max_output_tokens,
+        };
+    }
+    let (window, source) = if let Some(window) = input.static_window.filter(|window| *window > 0) {
+        (Some(window), WindowSource::StaticGuess)
+    } else if input.has_local_profile {
+        (
+            input.local_window.filter(|window| *window > 0),
+            WindowSource::LocalProfile,
+        )
+    } else {
+        (None, WindowSource::Unknown)
+    };
+    ResolvedWindow {
+        window,
+        source,
+        max_output_tokens,
     }
 }
 

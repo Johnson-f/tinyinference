@@ -3,7 +3,7 @@ use serde_json::json;
 
 /// Runs a synthetic SSE byte stream through the parser and returns its
 /// terminal [`ModelStreamItem::Completed`] response.
-async fn completed(raw: Vec<&'static [u8]>) -> ModelResponse {
+async fn stream_items(raw: Vec<&'static [u8]>) -> Vec<ModelStreamItem> {
     use futures::StreamExt;
 
     let bytes = futures::stream::iter(
@@ -22,7 +22,11 @@ async fn completed(raw: Vec<&'static [u8]>) -> ModelResponse {
         completion_seen: false,
         terminal_emitted: false,
     };
-    let items: Vec<ModelStreamItem> = futures::stream::unfold(state, sse_next).collect().await;
+    futures::stream::unfold(state, sse_next).collect().await
+}
+
+async fn completed(raw: Vec<&'static [u8]>) -> ModelResponse {
+    let items = stream_items(raw).await;
     items
         .into_iter()
         .find_map(|item| match item {
@@ -80,16 +84,34 @@ async fn sse_stream_keeps_gateway_extension_frame_on_raw() {
 /// off `raw`.
 #[tokio::test]
 async fn sse_stream_keeps_usage_extension_fields_on_raw() {
-    let response = completed(vec![
+    let items = stream_items(vec![
         b"data: {\"id\":\"c1\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}],\"usage\":null}\n\n",
         b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5,\"total_tokens\":105,\"prompt_tokens_details\":{\"cached_tokens\":80},\"cost\":0.000183,\"is_byok\":false,\"cost_details\":{\"upstream_inference_cost\":null}}}\n\n",
         b"data: [DONE]\n\n",
     ])
     .await;
 
-    let usage = response.usage.unwrap();
+    let usage_delta = items
+        .iter()
+        .find_map(|item| match item {
+            ModelStreamItem::UsageDelta(usage) => Some(usage),
+            _ => None,
+        })
+        .expect("usage frame emits a usage delta");
+    assert_eq!(usage_delta.charged_amount_nanos, Some(183_000));
+
+    let response = items
+        .iter()
+        .find_map(|item| match item {
+            ModelStreamItem::Completed(response) => Some(response),
+            _ => None,
+        })
+        .expect("stream ends with completed response");
+
+    let usage = response.usage.as_ref().unwrap();
     assert_eq!(usage.total_tokens, 105);
     assert_eq!(usage.cache_read_tokens, 80);
+    assert_eq!(usage.charged_amount_nanos, Some(183_000));
     let raw = response.raw.as_ref().expect("usage extensions kept on raw");
     assert_eq!(raw.pointer("/usage/cost"), Some(&json!(0.000183)));
     assert_eq!(raw["usage"]["is_byok"], json!(false));

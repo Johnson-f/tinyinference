@@ -106,9 +106,11 @@ pub fn scrub_secret_patterns(input: &str) -> String {
 /// whether the value is a credential or ordinary code.
 ///
 /// Groups: `key` = sensitive key, 2 = operator, 3 = double-quoted value,
-/// 4 = single-quoted value, 5 = bare value.
+/// 4 = single-quoted value, 5 = bare value. A bare value may start with `$`
+/// and continue through `@ $ % # ~ ^`; `!`, `?`, `:`, `&` and `*` still end it
+/// (GraphQL `String!`, `Token::Bearer`, query strings, the redaction marker).
 static SENSITIVE_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(?P<key>[a-z0-9_\-]*(?:token|api[_-]?key|password|secret|user[_-]?key|bearer|credential))["']?[ \t]*(:=|==|[:=])[ \t]*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([a-zA-Z0-9_+./=\-]+))"#).unwrap()
+    Regex::new(r#"(?i)\b(?P<key>[a-z0-9_\-]*(?:token|api[_-]?key|password|secret|user[_-]?key|bearer|credential))["']?[ \t]*(:=|==|[:=])[ \t]*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([a-zA-Z0-9_+./=\-$][a-zA-Z0-9_+./=\-@$%#~^]*))"#).unwrap()
 });
 
 /// Value prefixes issued by credential providers. A labelled value starting
@@ -172,6 +174,16 @@ fn looks_like_secret(value: &str, quoted: bool, rest: &str, key: &str) -> bool {
     if has_known_secret_prefix(value) {
         return true;
     }
+    // `$DB_PASSWORD` (and a lone `$` before `{`/`(`/`[`) is a shell or CI
+    // variable reference; a lowercase `$ecret123` is a value.
+    if let Some(name) = value.strip_prefix('$')
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    {
+        return false;
+    }
     // `"<eos>"`, `"<your key here>"`: placeholders and markup.
     if value
         .find('<')
@@ -189,7 +201,7 @@ fn looks_like_secret(value: &str, quoted: bool, rest: &str, key: &str) -> bool {
     // `"x".join(…)`. A bare `.` at the end of a sentence is not member access.
     let mut after = rest.chars();
     match after.next() {
-        Some('(' | '[') => return false,
+        Some('(' | '[' | '{') => return false,
         Some('.') if after.next().is_some_and(|c| c.is_alphabetic() || c == '_') => {
             return false;
         }
@@ -297,20 +309,26 @@ pub fn scrub_credentials(input: &str) -> String {
             .expect("sensitive key-value match has a value");
         let rest = &input[caps.get(0).expect("full match").end()..];
         let key = caps.name("key").expect("sensitive key capture");
-        // `api_key: String` is a type annotation, not a credential
-        // assignment. Uppercase type names make this unambiguous while
-        // lowercase alphabetic values such as `password: correcthorse`
-        // remain protected. Lowercase built-in type names (`accessToken:
-        // string | null`) are annotations too, but only bare: a quoted
-        // `"string"` is data.
+        // `api_key: String,` is a type annotation, not a credential
+        // assignment. Only a bare value can be one: a quoted `"String"` is
+        // data. A capitalised word counts only when annotation syntax follows
+        // it on the line (`, ; ) < > | = [ { ?`), because YAML
+        // `secret: MyPassphrase` reads the same up to the end of the line.
+        // Lowercase built-in type names (`accessToken: string | null`) are
+        // annotations without that context; `password: correcthorse` is not.
+        let annotation_follows = rest
+            .trim_start_matches([' ', '\t'])
+            .starts_with([',', ';', ')', '<', '>', '|', '=', '[', '{', '?']);
         if &caps[2] == ":"
+            && !quoted
             && ((value
                 .as_str()
                 .chars()
                 .next()
                 .is_some_and(char::is_uppercase)
-                && DIGITLESS_IDENTIFIER_REGEX.is_match(value.as_str()))
-                || (!quoted && LOWERCASE_TYPE_NAMES.contains(&value.as_str())))
+                && DIGITLESS_IDENTIFIER_REGEX.is_match(value.as_str())
+                && annotation_follows)
+                || LOWERCASE_TYPE_NAMES.contains(&value.as_str()))
         {
             return full_match.to_string();
         }

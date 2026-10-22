@@ -333,3 +333,30 @@ fn values_that_only_resemble_code_references_stay_redacted() {
         assert!(!out.contains(value), "{input} -> {out}");
     }
 }
+
+// A quoted (or YAML) capitalised word under `:` is data, not a type annotation.
+#[test]
+fn quoted_capitalised_secret_is_redacted() {
+    let leaked: Vec<String> = [r#"{"password": "Correcthorse"}"#, "secret: MyPassphrase"]
+        .into_iter()
+        .map(|input| (input, scrub_credentials(input)))
+        .filter(|(_, out)| out.contains("Correcthorse") || out.contains("MyPassphrase"))
+        .map(|(input, out)| format!("{input} -> {out}"))
+        .collect();
+    assert!(leaked.is_empty(), "leaked: {leaked:?}");
+}
+
+// Bare values with punctuation must be redacted whole.
+#[test]
+fn bare_values_with_punctuation_are_fully_redacted() {
+    let leaked: Vec<String> = [
+        ("DB_PASSWORD=p@ssw0rd!", "ssw0rd"),
+        ("password=$ecret123", "ecret123"),
+    ]
+    .into_iter()
+    .map(|(input, secret)| (input, secret, scrub_credentials(input)))
+    .filter(|(_, secret, out)| out.contains(secret))
+    .map(|(input, _, out)| format!("{input} -> {out}"))
+    .collect();
+    assert!(leaked.is_empty(), "leaked: {leaked:?}");
+}

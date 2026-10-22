@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `response_to_model_response` keeps the provider's finish reason (new
+  `ChatResponse::finish_reason`, passed through `canonical_finish_reason`), so a
+  length cut is no longer reported as `stop`; without one it still infers
+  `stop`/`tool_calls`. Native tool calls with empty or blank `arguments` parse
+  as `{}` instead of an invalid call. Code using an exhaustive `ChatResponse`
+  struct literal must initialise `finish_reason` or use `..Default::default()`.
 - OpenAI-compatible provider: a Claude model id (`claude-...`, or one with an
   `anthropic` path segment) now reports `hoists_system_messages`, as the native
   Anthropic adapter does. A relay serving Claude over Chat Completions joins

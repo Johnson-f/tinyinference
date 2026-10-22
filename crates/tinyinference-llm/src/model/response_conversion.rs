@@ -1,7 +1,7 @@
 //! Conversion from portable provider responses into the normalized model API.
 
 use crate::message::{AssistantMessage, ContentBlock};
-use crate::model::{ModelRequest, ModelResponse};
+use crate::model::{ModelRequest, ModelResponse, canonical_finish_reason};
 use crate::providers::response::ChatResponse;
 use crate::tool::ToolCall;
 use crate::usage::{BilledUsage, billed_usage_report};
@@ -23,19 +23,26 @@ pub fn response_to_model_response(
         let calls = response
             .tool_calls
             .iter()
-            .map(|call| match serde_json::from_str(&call.arguments) {
-                Ok(arguments) => ToolCall {
-                    id: call.id.clone(),
-                    name: call.name.clone(),
-                    arguments,
-                    invalid: None,
-                },
-                Err(error) => ToolCall::invalid(
-                    call.id.clone(),
-                    call.name.clone(),
-                    call.arguments.clone(),
-                    error.to_string(),
-                ),
+            .map(|call| {
+                // Zero-argument calls often arrive as `""`: an empty object.
+                let arguments = match call.arguments.trim() {
+                    "" => "{}",
+                    _ => &call.arguments,
+                };
+                match serde_json::from_str(arguments) {
+                    Ok(arguments) => ToolCall {
+                        id: call.id.clone(),
+                        name: call.name.clone(),
+                        arguments,
+                        invalid: None,
+                    },
+                    Err(error) => ToolCall::invalid(
+                        call.id.clone(),
+                        call.name.clone(),
+                        call.arguments.clone(),
+                        error.to_string(),
+                    ),
+                }
             })
             .collect();
         (text.to_owned(), calls)
@@ -87,10 +94,10 @@ pub fn response_to_model_response(
 
     let report = response.usage.as_ref().map(billed_usage_report);
     let usage = report.as_ref().map(|report| report.to_usage());
-    let finish_reason = if tool_calls.is_empty() {
-        "stop"
-    } else {
-        "tool_calls"
+    let finish_reason = match response.finish_reason.clone() {
+        Some(reported) => canonical_finish_reason(reported),
+        None if tool_calls.is_empty() => "stop".to_owned(),
+        None => "tool_calls".to_owned(),
     };
     ModelResponse {
         message: AssistantMessage {
@@ -101,7 +108,7 @@ pub fn response_to_model_response(
             origin: None,
         },
         usage,
-        finish_reason: Some(finish_reason.to_owned()),
+        finish_reason: Some(finish_reason),
         raw: report.and_then(|report| report.raw_meta()),
         resolved_model: None,
         continue_turn: None,
@@ -110,3 +117,7 @@ pub fn response_to_model_response(
         resolved_route: None,
     }
 }
+
+#[cfg(test)]
+#[path = "response_conversion_tests.rs"]
+mod tests;

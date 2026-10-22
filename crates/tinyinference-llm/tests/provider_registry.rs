@@ -355,7 +355,8 @@ async fn capture_openrouter_request(
 
 #[tokio::test]
 async fn caller_provider_object_replaces_the_openrouter_price_default() {
-    let provider = serde_json::json!({"order": ["wafer", "primeintellect"], "allow_fallbacks": true});
+    let provider =
+        serde_json::json!({"order": ["wafer", "primeintellect"], "allow_fallbacks": true});
     let body =
         capture_openrouter_request(Some(serde_json::json!({ "provider": provider.clone() }))).await;
     assert_eq!(body["provider"], provider);

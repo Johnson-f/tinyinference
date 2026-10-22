@@ -103,6 +103,7 @@ impl LocalAiService {
             }),
             bootstrap_lock: tokio::sync::Mutex::new(()),
             bootstrap_flight: parking_lot::Mutex::new(None),
+            last_bootstrap_config: parking_lot::Mutex::new(None),
             bootstrap_scheduled: std::sync::atomic::AtomicBool::new(false),
             last_memory_summary_at: parking_lot::Mutex::new(None),
             http: reqwest::Client::builder()
@@ -214,6 +215,7 @@ impl LocalAiService {
 
     async fn bootstrap_inner(&self, config: &Config) {
         let _guard = self.bootstrap_lock.lock().await;
+        *self.last_bootstrap_config.lock() = Some(bootstrap_config_fingerprint(config));
 
         if !local_inference_enabled(config) {
             tracing::debug!(
@@ -292,6 +294,9 @@ impl LocalAiService {
 
     fn bootstrap_result_matches_config(&self, config: &Config) -> bool {
         let state = self.status.lock().state.clone();
+        if *self.last_bootstrap_config.lock() != Some(bootstrap_config_fingerprint(config)) {
+            return false;
+        }
         if local_inference_enabled(config) {
             !matches!(state.as_str(), "idle" | "disabled")
         } else {
@@ -348,6 +353,15 @@ impl LocalAiService {
             }
         }
     }
+}
+
+fn bootstrap_config_fingerprint(config: &Config) -> (bool, bool, String, Option<String>) {
+    (
+        config.local_ai.runtime_enabled,
+        config.local_ai.opt_in_confirmed,
+        config.local_ai.provider.clone(),
+        config.local_ai.base_url.clone(),
+    )
 }
 
 enum BootstrapAction {

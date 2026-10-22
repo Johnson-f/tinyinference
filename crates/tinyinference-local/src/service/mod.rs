@@ -136,6 +136,7 @@ pub struct LocalAiService {
     pub(crate) status: Mutex<LocalAiStatus>,
     pub(crate) bootstrap_lock: tokio::sync::Mutex<()>,
     pub(crate) bootstrap_flight: Mutex<Option<tokio::sync::watch::Sender<BootstrapFlightState>>>,
+    pub(crate) last_bootstrap_config: Mutex<Option<(bool, bool, String, Option<String>)>>,
     pub(crate) bootstrap_scheduled: AtomicBool,
     pub(crate) last_memory_summary_at: Mutex<Option<std::time::Instant>>,
     pub(crate) http: reqwest::Client,

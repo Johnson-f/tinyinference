@@ -15,6 +15,24 @@ use serde_json::json;
 use super::*;
 
 #[test]
+fn bootstrap_result_identity_includes_provider_and_endpoint() {
+    let first = Config::default();
+    let mut other_provider = first.clone();
+    other_provider.local_ai.provider = "lm_studio".into();
+    let mut other_endpoint = first.clone();
+    other_endpoint.local_ai.base_url = Some("http://127.0.0.1:1234".into());
+
+    assert_ne!(
+        bootstrap_config_fingerprint(&first),
+        bootstrap_config_fingerprint(&other_provider)
+    );
+    assert_ne!(
+        bootstrap_config_fingerprint(&first),
+        bootstrap_config_fingerprint(&other_endpoint)
+    );
+}
+
+#[test]
 fn autosummary_debounce_blocks_repeated_calls_inside_window() {
     let mut config = Config::default();
     config.local_ai.autosummary_debounce_ms = 60_000;

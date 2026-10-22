@@ -401,7 +401,7 @@ fn wire_roles(body: &Value) -> Vec<String> {
 }
 
 #[test]
-fn hoisting_model_drops_system_messages_that_render_no_text() {
+fn deepseek_still_drops_record_only_system_messages() {
     // A record-only patch (sections / tool deltas, no content) renders as an
     // empty `role: system` message. A route that hoists system content to the
     // front of the prompt would still rewrite its cached prefix for it (#6962).
@@ -432,13 +432,44 @@ fn claude_on_a_relay_drops_system_messages_that_render_no_text() {
 }
 
 #[test]
-fn non_hoisting_model_keeps_every_system_message_in_place() {
+fn record_only_system_messages_never_reach_the_wire() {
     let model = OpenAiModel::new("k").with_model("gpt-4.1-mini");
-    let body = body_for(&model, &transcript_with_record_only_patch());
+    let request = transcript_with_record_only_patch();
+    let body = body_for(&model, &request);
     assert_eq!(
         wire_roles(&body),
-        ["system", "user", "system", "system"],
+        ["system", "user", "system"],
         "body={body}"
+    );
+    let system_contents = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .map(|message| message["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        system_contents,
+        ["You are helpful.", "a real mid-turn instruction"]
+    );
+    assert!(
+        matches!(request.messages.get(2), Some(Message::System(system)) if system.content.is_empty())
+    );
+}
+
+#[test]
+fn system_messages_with_text_are_kept_in_order() {
+    let model = OpenAiModel::new("k").with_model("gpt-4.1-mini");
+    let body = body_for(&model, &transcript_with_record_only_patch());
+    let contents = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contents,
+        ["You are helpful.", "hi", "a real mid-turn instruction"]
     );
 }
 
@@ -455,7 +486,7 @@ fn request_model_override_controls_record_only_system_filtering() {
     let request = transcript_with_record_only_patch().with_model("gpt-4.1-mini");
     assert_eq!(
         wire_roles(&body_for(&model, &request)),
-        ["system", "user", "system", "system"]
+        ["system", "user", "system"]
     );
 }
 

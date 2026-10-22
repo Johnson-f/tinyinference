@@ -329,9 +329,8 @@ pub(super) fn is_reasoning_model(model: &str) -> bool {
 /// Completions wire — a transcript record such as a tool-change patch, whose
 /// sections and tool deltas `convert::translate_message` does not send.
 ///
-/// A route that hoists system content to the prompt head would still rewrite
-/// its cached prefix for the empty `role: "system"` turn (#6962), so the
-/// request builder drops these for such a route. The transcript keeps them.
+/// These records are kept in the transcript but have no content to send to any
+/// Chat Completions route. The request builder drops them from the wire.
 fn is_record_only_system(message: &Message) -> bool {
     let Message::System(system) = message else {
         return false;
@@ -343,7 +342,7 @@ fn is_record_only_system(message: &Message) -> bool {
     });
     if empty {
         tracing::trace!(
-            "[providers][openai] dropping a record-only system message for a route that hoists system content"
+            "[providers][openai] dropping a record-only system message from the Chat Completions request"
         );
     }
     empty
@@ -1373,13 +1372,12 @@ impl OpenAiModel {
             .rsplit('/')
             .next()
             .is_some_and(|name| name.to_ascii_lowercase().starts_with("deepseek-"));
-        let hoists_system = derive_profile(&self.provider, effective_model).hoists_system_messages;
         let mut messages = source_messages
             .iter()
             // `Message::Custom` is a host-side out-of-band record; never sent
             // to the provider.
             .filter(|message| !matches!(message, Message::Custom(_)))
-            .filter(|message| !(hoists_system && is_record_only_system(message)))
+            .filter(|message| !is_record_only_system(message))
             .map(|message| {
                 if deepseek {
                     translate_deepseek_message(message)

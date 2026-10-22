@@ -447,7 +447,10 @@ fn record_only_system_messages_never_reach_the_wire() {
         .filter(|message| message["role"] == "system")
         .map(|message| message["content"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(system_contents, ["You are helpful.", "a real mid-turn instruction"]);
+    assert_eq!(
+        system_contents,
+        ["You are helpful.", "a real mid-turn instruction"]
+    );
 }
 
 #[test]

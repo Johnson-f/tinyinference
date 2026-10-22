@@ -582,3 +582,31 @@ fn context_window_matches_dashscope_input_length_range() {
                 \"message\":\"Range of input length should be [1, 98304]\"}}";
     assert!(is_context_window_exceeded_message(body));
 }
+
+// A 429 must not short-circuit plan-cap / host session-expired classification.
+#[test]
+fn codex_plan_cap_429_is_not_retryable() {
+    let wrapped = format!("openai Responses API error (429): {AFE_BODY}");
+    let cases = [
+        (
+            "status 429 + AFE body",
+            classify_provider_failure(Some(429), None, AFE_BODY),
+        ),
+        (
+            "wrapped (429) AFE message",
+            classify_provider_failure(None, None, &wrapped),
+        ),
+        (
+            "host session-expired inside 429",
+            classify_provider_failure_with(Some(429), None, "session expired", |m| {
+                m.contains("session expired")
+            }),
+        ),
+    ];
+    let retryable: Vec<String> = cases
+        .iter()
+        .filter(|(_, c)| c.is_retryable())
+        .map(|(n, c)| format!("{n} -> {c:?}"))
+        .collect();
+    assert!(retryable.is_empty(), "classified retryable: {retryable:?}");
+}

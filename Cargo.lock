@@ -1807,6 +1807,7 @@ dependencies = [
 name = "tinyinference-providers"
 version = "0.5.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "rand 0.10.3",
@@ -1814,7 +1815,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tinystoragedrivers-secrets",
+ "tinystoragedrivers-api",
  "tokio",
  "tracing",
  "url",

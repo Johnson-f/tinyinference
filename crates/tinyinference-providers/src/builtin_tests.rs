@@ -234,3 +234,42 @@ fn host_managed_provider_is_an_extension_not_a_generic_builtin() {
     assert!(builtin_cloud_provider("openhuman").is_none());
     assert!(!host_is_builtin_cloud_provider("api.openhuman.ai"));
 }
+
+#[test]
+fn presets_support_host_supplied_providers_without_adding_host_knowledge_upstream() {
+    let presets = BuiltinPresets::new([BuiltinCloudProvider {
+        slug: "openhuman",
+        label: "OpenHuman",
+        endpoint: "https://api.openhuman.ai/v1",
+        auth_style: BuiltinAuthStyle::Bearer,
+    }]);
+
+    assert_eq!(
+        presets.builtin_cloud_provider("openhuman").map(|p| p.label),
+        Some("OpenHuman")
+    );
+    assert!(presets.is_builtin_cloud_slug("openhuman"));
+    assert!(presets.host_is_builtin_cloud_provider("api.openhuman.ai"));
+    assert_eq!(
+        presets
+            .endpoint_host("https://API.OpenHuman.ai:443/v1")
+            .as_deref(),
+        Some("api.openhuman.ai")
+    );
+    // The managed endpoint currently exposes chat completions only. Pin this
+    // host contract here while keeping OpenHuman's preset caller-supplied.
+    assert!(presets.endpoint_host_is_chat_completions_only("https://api.openhuman.ai/v1"));
+    assert!(!presets.builtin_cloud_supports_responses_api("openhuman"));
+
+    assert!(builtin_cloud_provider("openhuman").is_none());
+    assert!(!host_is_builtin_cloud_provider("api.openhuman.ai"));
+}
+
+#[test]
+fn builtin_presets_keep_their_catalog_and_capability_helpers() {
+    let presets = BuiltinPresets::default();
+    assert!(presets.is_builtin_cloud_slug("openai"));
+    assert!(presets.builtin_cloud_supports_responses_api("openai"));
+    assert!(!presets.builtin_cloud_supports_responses_api("groq"));
+    assert!(presets.endpoint_host_is_chat_completions_only("https://api.groq.com/openai/v1"));
+}

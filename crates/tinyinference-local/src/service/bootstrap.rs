@@ -11,9 +11,10 @@ use crate::provider::{
 };
 use crate::service::RuntimeConfig as Config;
 use crate::status::LocalAiStatus;
+use std::sync::{Arc, atomic::Ordering};
 
-use super::LocalAiService;
 use super::ollama_admin::OllamaHealthStatus;
+use super::{BootstrapConfigFingerprint, BootstrapFlightState, LocalAiService};
 
 /// Result of probing the configured endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +28,51 @@ enum EndpointProbe {
 }
 
 impl LocalAiService {
+    /// Schedules a background endpoint probe unless one is already pending.
+    ///
+    /// Unlike [`Self::bootstrap`], this method coalesces repeated requests
+    /// while a probe is running. Once the probe completes, another call can
+    /// schedule a fresh attempt, including after an unreachable result.
+    ///
+    /// Returns the spawned task when this call schedules it, or `None` when
+    /// another probe is already scheduled or no Tokio runtime is active.
+    pub fn schedule_bootstrap(
+        self: &Arc<Self>,
+        config: Config,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        if self
+            .bootstrap_scheduled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return None;
+        }
+
+        // Reserve the shared flight before spawning so a foreground caller can
+        // join this scheduled probe even when the task has not been polled yet.
+        let Some(completion) = self.try_claim_bootstrap() else {
+            self.bootstrap_scheduled.store(false, Ordering::Release);
+            return None;
+        };
+
+        let guard = BootstrapScheduleGuard(Arc::clone(self));
+        let service = Arc::clone(self);
+        Some(runtime.spawn(async move {
+            let _guard = guard;
+            let mut completion = completion;
+            service.bootstrap_inner(&config).await;
+            completion.finish();
+        }))
+    }
+
+    /// Probes the configured runtime unless a ready or degraded result is
+    /// already cached. Concurrent calls share the same probe, including an
+    /// unreachable result; a later call may retry it.
+    pub async fn ensure_ready(&self, runtime: &Config) {
+        self.bootstrap(runtime).await;
+    }
+
     pub fn new(config: &Config) -> Self {
         let model_id = model_ids::effective_chat_model_id(config);
         let provider = provider_from_name(&config.local_ai.provider);
@@ -56,6 +102,9 @@ impl LocalAiService {
                 gen_toks_per_sec: None,
             }),
             bootstrap_lock: tokio::sync::Mutex::new(()),
+            bootstrap_flight: parking_lot::Mutex::new(None),
+            last_bootstrap_config: parking_lot::Mutex::new(None),
+            bootstrap_scheduled: std::sync::atomic::AtomicBool::new(false),
             last_memory_summary_at: parking_lot::Mutex::new(None),
             http: reqwest::Client::builder()
                 // Local models can take >30s on cold start and first-token generation.
@@ -134,7 +183,39 @@ impl LocalAiService {
     /// `unreachable` endpoint is probed again on the next call, so a runtime
     /// the user starts later is picked up.
     pub async fn bootstrap(&self, config: &Config) {
+        loop {
+            let action = self.bootstrap_action();
+
+            match action {
+                BootstrapAction::Wait(mut receiver) => loop {
+                    let state = *receiver.borrow_and_update();
+                    match state {
+                        BootstrapFlightState::Completed => {
+                            if self.bootstrap_result_matches_config(config) {
+                                return;
+                            }
+                            break;
+                        }
+                        BootstrapFlightState::Cancelled => break,
+                        BootstrapFlightState::Running => {
+                            if receiver.changed().await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                },
+                BootstrapAction::Lead(mut completion) => {
+                    self.bootstrap_inner(config).await;
+                    completion.finish();
+                    return;
+                }
+            }
+        }
+    }
+
+    async fn bootstrap_inner(&self, config: &Config) {
         let _guard = self.bootstrap_lock.lock().await;
+        *self.last_bootstrap_config.lock() = Some(bootstrap_config_fingerprint(config));
 
         if !local_inference_enabled(config) {
             tracing::debug!(
@@ -211,6 +292,18 @@ impl LocalAiService {
         }
     }
 
+    fn bootstrap_result_matches_config(&self, config: &Config) -> bool {
+        let state = self.status.lock().state.clone();
+        if *self.last_bootstrap_config.lock() != Some(bootstrap_config_fingerprint(config)) {
+            return false;
+        }
+        if local_inference_enabled(config) {
+            !matches!(state.as_str(), "idle" | "disabled")
+        } else {
+            state == "disabled"
+        }
+    }
+
     /// Probe the configured endpoint without side effects. Returns the probed
     /// base URL and the verdict.
     async fn probe_endpoint(&self, config: &Config) -> (String, EndpointProbe) {
@@ -259,6 +352,84 @@ impl LocalAiService {
                 true
             }
         }
+    }
+}
+
+fn bootstrap_config_fingerprint(config: &Config) -> BootstrapConfigFingerprint {
+    (
+        config.local_ai.runtime_enabled,
+        config.local_ai.opt_in_confirmed,
+        config.local_ai.provider.clone(),
+        config.local_ai.base_url.clone(),
+    )
+}
+
+enum BootstrapAction {
+    Wait(tokio::sync::watch::Receiver<BootstrapFlightState>),
+    Lead(BootstrapCompletion),
+}
+
+impl LocalAiService {
+    fn bootstrap_action(&self) -> BootstrapAction {
+        let mut flight = self.bootstrap_flight.lock();
+        let receiver = flight.as_ref().map(|sender| sender.subscribe());
+        if let Some(receiver) = receiver
+            && *receiver.borrow() == BootstrapFlightState::Running
+        {
+            return BootstrapAction::Wait(receiver);
+        }
+        BootstrapAction::Lead(Self::claim_bootstrap_locked(&mut flight))
+    }
+
+    fn try_claim_bootstrap(&self) -> Option<BootstrapCompletion> {
+        let mut flight = self.bootstrap_flight.lock();
+        if let Some(sender) = flight.as_ref() {
+            let receiver = sender.subscribe();
+            if *receiver.borrow() == BootstrapFlightState::Running {
+                return None;
+            }
+        }
+        Some(Self::claim_bootstrap_locked(&mut flight))
+    }
+
+    fn claim_bootstrap_locked(
+        flight: &mut Option<tokio::sync::watch::Sender<BootstrapFlightState>>,
+    ) -> BootstrapCompletion {
+        let (sender, receiver) = tokio::sync::watch::channel(BootstrapFlightState::Running);
+        drop(receiver);
+        *flight = Some(sender.clone());
+        BootstrapCompletion {
+            sender,
+            completed: false,
+        }
+    }
+}
+
+struct BootstrapCompletion {
+    sender: tokio::sync::watch::Sender<BootstrapFlightState>,
+    completed: bool,
+}
+
+impl BootstrapCompletion {
+    fn finish(&mut self) {
+        self.sender.send_replace(BootstrapFlightState::Completed);
+        self.completed = true;
+    }
+}
+
+impl Drop for BootstrapCompletion {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.sender.send_replace(BootstrapFlightState::Cancelled);
+        }
+    }
+}
+
+struct BootstrapScheduleGuard(Arc<LocalAiService>);
+
+impl Drop for BootstrapScheduleGuard {
+    fn drop(&mut self) {
+        self.0.bootstrap_scheduled.store(false, Ordering::Release);
     }
 }
 

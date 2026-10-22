@@ -1,5 +1,8 @@
 //! Provider-neutral failure classification shared by transport adapters.
 
+pub mod copy;
+pub mod demotion;
+
 /// Provider failure class used for retry and telemetry decisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderFailureClass {
@@ -377,6 +380,23 @@ pub fn classify_provider_failure(
     code: Option<&str>,
     message: &str,
 ) -> ProviderFailureClass {
+    classify_provider_failure_with(status, code, message, |_| false)
+}
+
+/// Classifies a provider failure while allowing the host to identify a
+/// host-specific session-expiry message.
+///
+/// The predicate is consulted before generic status and code classification,
+/// allowing host-owned account state to remain terminal even when a proxy
+/// wraps it in a retryable status. Generic users should use
+/// [`classify_provider_failure`], which does not assign special meaning to
+/// any host's session errors.
+pub fn classify_provider_failure_with(
+    status: Option<u16>,
+    code: Option<&str>,
+    message: &str,
+    is_session_expired: impl Fn(&str) -> bool,
+) -> ProviderFailureClass {
     let has_structured_status = status.is_some();
     let has_structured_code = code.is_some_and(|value| !value.trim().is_empty());
     let structured_code = code.unwrap_or_default().to_ascii_lowercase();
@@ -393,6 +413,17 @@ pub fn classify_provider_failure(
     let rate_limited = status == Some(429)
         || (lower.contains("429")
             && (lower.contains("too many") || lower.contains("rate") || lower.contains("limit")));
+    if rate_limited && !contains_business_limit(&lower) {
+        return ProviderFailureClass::RateLimited;
+    }
+
+    if is_session_expired(message)
+        || is_context_window_exceeded_message(message)
+        || body_indicates_quota_exhausted(message)
+    {
+        return ProviderFailureClass::NonRetryable;
+    }
+
     if rate_limited {
         return if contains_business_limit(&lower) {
             ProviderFailureClass::NonRetryableRateLimit

@@ -97,6 +97,51 @@ async fn configured_http_client_is_used_for_model_listing() {
     );
 }
 
+fn split_system_request() -> ModelRequest {
+    ModelRequest::new(vec![
+        Message::system("Stable."),
+        Message::system("Volatile."),
+        Message::user("hi"),
+        Message::assistant("hello"),
+        Message::system("Patch."),
+        Message::user("again"),
+    ])
+}
+
+#[test]
+fn local_runtimes_send_exactly_one_leading_system_message() {
+    // tinyhumansai/openhuman#7440: Qwen-family templates on LM Studio /
+    // llama.cpp reject any `system` turn after the first.
+    let lm_studio =
+        OpenAiModel::compatible_provider("lmstudio", "", "http://127.0.0.1:1234/v1", "qwen3")
+            .with_single_system_message();
+    let llama_cpp = OpenAiModel::llama_cpp("http://127.0.0.1:8080", "qwen3").unwrap();
+    for model in [lm_studio, llama_cpp] {
+        let body = body_for(&model, &split_system_request());
+        assert_eq!(
+            wire_roles(&body),
+            ["system", "user", "assistant", "user"],
+            "body={body}"
+        );
+        assert_eq!(
+            body["messages"][0]["content"].as_str(),
+            Some("Stable.\n\nVolatile.\n\nPatch."),
+            "body={body}"
+        );
+    }
+}
+
+#[test]
+fn hosted_openai_compatible_keeps_system_messages_in_place() {
+    let model = OpenAiModel::new("k");
+    let body = body_for(&model, &split_system_request());
+    assert_eq!(
+        wire_roles(&body),
+        ["system", "system", "user", "assistant", "system", "user"],
+        "body={body}"
+    );
+}
+
 fn unsupported_patterns() -> Vec<String> {
     ["o1*", "o3*", "o4*", "gpt-5*"]
         .into_iter()
@@ -370,6 +415,19 @@ fn hoisting_model_drops_system_messages_that_render_no_text() {
     assert_eq!(
         body["messages"][2]["content"],
         json!("a real mid-turn instruction")
+    );
+}
+
+#[test]
+fn claude_on_a_relay_drops_system_messages_that_render_no_text() {
+    // The relay joins every system message into Anthropic's one `system`, so
+    // even an empty one would rewrite the cached prefix.
+    let model = OpenAiModel::new("k").with_model("anthropic/claude-haiku-4.5");
+    let body = body_for(&model, &transcript_with_record_only_patch());
+    assert_eq!(
+        wire_roles(&body),
+        ["system", "user", "system"],
+        "body={body}"
     );
 }
 

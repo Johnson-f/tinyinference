@@ -43,6 +43,10 @@ fn local_runtime_builder_disables_native_tools_and_vision() {
     let profile = model.profile().expect("openai models expose a profile");
     assert!(!profile.tool_calling);
     assert!(!profile.modalities.image_in);
+    // One leading system message only, so the harness must not place a
+    // system message mid-transcript (tinyhumansai/openhuman#7440).
+    assert!(!profile.mid_conversation_system_messages);
+    assert!(profile.hoists_system_messages);
 }
 
 #[test]

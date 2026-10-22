@@ -61,6 +61,10 @@ pub struct OpenAiModel {
     /// the `system` role is dropped — for OpenAI-compatible endpoints that reject
     /// a `system` role. `false` by default (system messages pass through).
     merge_system_into_user: bool,
+    /// When `true`, every `system` message is joined into one leading `system`
+    /// message — for local chat templates (Qwen-style) that reject a `system`
+    /// turn anywhere but first. See [`Self::with_single_system_message`].
+    single_system_message: bool,
     /// Whether the endpoint accepts a **named** `tool_choice`
     /// (`{"type":"function","function":{"name":…}}`). `true` by default. When
     /// `false`, a [`ToolChoice::Tool`] request is degraded to
@@ -261,6 +265,44 @@ pub(super) fn merge_system_into_user(messages: &[Message]) -> Vec<Message> {
     merged
 }
 
+/// Joins every non-empty `system` message into one `system` message at the
+/// front, keeping all other messages in order. Strict local chat templates
+/// (Qwen-family `raise_exception('System message must be at the
+/// beginning.')`) reject a second or mid-transcript `system` turn; the role is
+/// kept, unlike [`merge_system_into_user`]. Record-only (empty) system
+/// messages are dropped. A no-op when there is at most one system message and
+/// it is already first. Pure, so the transform is unit-testable.
+pub(super) fn single_system_message(messages: &[Message]) -> Vec<Message> {
+    let systems = messages
+        .iter()
+        .filter(|m| matches!(m, Message::System(_)))
+        .count();
+    if systems == 0 || (systems == 1 && matches!(messages.first(), Some(Message::System(_)))) {
+        return messages.to_vec();
+    }
+    let system_text = messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::System(s) => {
+                let t = content_text(&s.content);
+                (!t.is_empty()).then_some(t)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let rest = messages
+        .iter()
+        .filter(|m| !matches!(m, Message::System(_)))
+        .cloned();
+    if system_text.is_empty() {
+        return rest.collect();
+    }
+    std::iter::once(Message::system(system_text))
+        .chain(rest)
+        .collect()
+}
+
 /// Returns `true` for a relay-style Anthropic model id (`anthropic/claude-...`,
 /// or a bare `claude-...`), whose prompt cache is opt-in: without explicit
 /// `cache_control` breakpoints it caches nothing, however stable the prefix.
@@ -354,7 +396,16 @@ pub(super) fn derive_profile(provider: &str, model: &str) -> ModelProfile {
         // DeepSeek's chat template hoists every system turn into the prompt
         // head, so new mid-turn system text rewrites the cached prefix
         // (#6962). Matches bare ids and routed ones (`deepseek/...`).
-        hoists_system_messages: lower.contains("deepseek"),
+        //
+        // A Claude model behind an OpenAI-compatible relay (OpenRouter,
+        // TinyHumans) does the same: the relay translates Chat Completions
+        // into Anthropic's Messages API, which has one top-level `system`, so
+        // every `role: "system"` message joins it. A mid-turn note (a budget
+        // notice, a contents list) then changes the prefix all the cached
+        // tools, system and history hang off, and the whole conversation is
+        // written to the cache again, once when the note appears and once
+        // when it goes. The native Anthropic adapter already says so.
+        hoists_system_messages: lower.contains("deepseek") || is_anthropic_model(model),
         ..ModelProfile::default()
     }
 }
@@ -375,6 +426,7 @@ impl OpenAiModel {
             temperature_unsupported: Vec::new(),
             temperature_override: None,
             merge_system_into_user: false,
+            single_system_message: false,
             named_tool_choice_supported: true,
             json_object_format_supported: true,
             model: DEFAULT_MODEL.to_string(),
@@ -515,6 +567,21 @@ impl OpenAiModel {
         // patch to occupy — a caller must fold such a patch into the
         // leading system message before this transform runs instead.
         self.profile.mid_conversation_system_messages = false;
+        self
+    }
+
+    /// Sends every system message as one leading `system` message, for local
+    /// chat templates that reject a `system` turn anywhere but first (LM
+    /// Studio / llama.cpp serving Qwen-family models: "System message must be
+    /// at the beginning."). The profile then reports
+    /// [`ModelProfile::hoists_system_messages`] and no
+    /// [`ModelProfile::mid_conversation_system_messages`], so the harness puts
+    /// per-call guidance in the tail turn instead of a new system message,
+    /// which keeps the runtime's cached prompt prefix stable.
+    pub fn with_single_system_message(mut self) -> Self {
+        self.single_system_message = true;
+        self.profile.mid_conversation_system_messages = false;
+        self.profile.hoists_system_messages = true;
         self
     }
 
@@ -678,7 +745,10 @@ impl OpenAiModel {
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self.profile = derive_profile(&self.provider, &self.model);
-        self.profile.hoists_system_messages |= self.responses_api_primary;
+        self.profile.hoists_system_messages |=
+            self.responses_api_primary || self.single_system_message;
+        self.profile.mid_conversation_system_messages &=
+            !(self.merge_system_into_user || self.single_system_message);
         self
     }
 
@@ -686,7 +756,10 @@ impl OpenAiModel {
     pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
         self.provider = provider.into();
         self.profile = derive_profile(&self.provider, &self.model);
-        self.profile.hoists_system_messages |= self.responses_api_primary;
+        self.profile.hoists_system_messages |=
+            self.responses_api_primary || self.single_system_message;
+        self.profile.mid_conversation_system_messages &=
+            !(self.merge_system_into_user || self.single_system_message);
         self
     }
 
@@ -1014,7 +1087,8 @@ impl OpenAiModel {
             .with_vision(false)
             .with_named_tool_choice(false)
             .with_json_object_format(false)
-            .with_anthropic_cache_control(false);
+            .with_anthropic_cache_control(false)
+            .with_single_system_message();
         output.local_runtime = Some(kind);
         output.json_schema_strict.store(false, Ordering::Relaxed);
         output.profile.max_input_tokens = None;
@@ -1287,6 +1361,9 @@ impl OpenAiModel {
         let merged_messages;
         let source_messages: &[Message] = if self.merge_system_into_user {
             merged_messages = merge_system_into_user(base_messages);
+            &merged_messages
+        } else if self.single_system_message {
+            merged_messages = single_system_message(base_messages);
             &merged_messages
         } else {
             base_messages

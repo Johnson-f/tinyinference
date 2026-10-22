@@ -82,6 +82,21 @@ fn provider_neutral_total_cost_metadata_is_recovered() {
 }
 
 #[test]
+fn exact_usage_charge_is_recovered_without_raw_metadata() {
+    let usage = ProviderUsageReport {
+        charged_amount_usd: 0.0000004,
+        charge_reported: true,
+        ..Default::default()
+    }
+    .to_usage();
+    let response = ModelResponse::assistant("done").with_usage(usage);
+
+    let recovered = recover_usage(&response).expect("usage info");
+    assert_eq!(recovered.usage.charged_amount_nanos, Some(400));
+    assert_eq!(recovered.charged_amount_usd, Some(0.0000004));
+}
+
+#[test]
 fn no_usage_recovers_to_none() {
     assert!(recover_usage(&ModelResponse::assistant("hi")).is_none());
 }

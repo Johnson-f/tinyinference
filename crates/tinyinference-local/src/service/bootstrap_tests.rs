@@ -175,6 +175,7 @@ async fn bootstrap_against_reachable_endpoint_is_ready_without_pulling() {
 
     let status = service.status();
     assert_eq!(status.state, "ready");
+    assert_eq!(status.chat_model_id, "gemma3:4b-it-qat");
     assert_eq!(status.warning, None);
     assert_eq!(status.error_category, None);
     assert_eq!(

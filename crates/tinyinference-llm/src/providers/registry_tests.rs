@@ -578,3 +578,57 @@ fn local_compatible_settings_reject_a_cloud_provider_family() {
     };
     assert!(error.to_string().contains("requires a Compatible"));
 }
+
+#[test]
+fn hosted_route_defaults_are_replaced_per_top_level_key() {
+    let price = Some(serde_json::json!({"provider":{"sort":"price"}}));
+    assert_eq!(
+        replace_route_defaults(
+            price.clone(),
+            Some(serde_json::json!({"provider":{"order":["wafer"]},"top_k":7}))
+        ),
+        Some(serde_json::json!({"provider":{"order":["wafer"]},"top_k":7}))
+    );
+    assert_eq!(
+        replace_route_defaults(price.clone(), Some(serde_json::json!({"top_k":7}))),
+        Some(serde_json::json!({"provider":{"sort":"price"},"top_k":7}))
+    );
+    assert_eq!(
+        replace_route_defaults(price.clone(), Some(serde_json::json!({"provider":null}))),
+        Some(serde_json::json!({}))
+    );
+    assert_eq!(replace_route_defaults(price.clone(), None), price);
+    assert_eq!(
+        replace_route_defaults(price.clone(), Some(serde_json::Value::Null)),
+        price
+    );
+    assert_eq!(
+        replace_route_defaults(None, Some(serde_json::json!({"provider":null,"top_k":7}))),
+        Some(serde_json::json!({"top_k":7}))
+    );
+    assert_eq!(
+        replace_route_defaults(price, Some(serde_json::json!("not an object"))),
+        Some(serde_json::json!("not an object"))
+    );
+}
+
+#[test]
+fn discovery_pins_the_caller_order_instead_of_the_price_default() {
+    let spec = ProviderSpec::for_kind(ProviderKind::OpenRouter);
+    let options = ProviderBuildOptions {
+        default_provider_options: Some(
+            serde_json::json!({"provider":{"order":["wafer"],"allow_fallbacks":false}}),
+        ),
+        ..Default::default()
+    };
+    let request = registry()
+        .discovery_request(&spec, &options)
+        .unwrap()
+        .unwrap();
+    assert_eq!(request.pinned_providers, vec!["wafer"]);
+    let request = registry()
+        .discovery_request(&spec, &Default::default())
+        .unwrap()
+        .unwrap();
+    assert!(request.pinned_providers.is_empty());
+}

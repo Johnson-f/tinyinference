@@ -89,7 +89,13 @@ pub struct ProviderBuildOptions<'a> {
     pub extra_query_params: &'a [(String, String)],
     /// Host client identity, when required by an endpoint.
     pub user_agent: Option<&'a str>,
-    /// Options merged beneath request-specific options.
+    /// Options sent beneath request-specific options.
+    ///
+    /// On a local route they merge deeply with the route's `num_ctx`. On a
+    /// hosted route each top-level key replaces the endpoint's routing default
+    /// (OpenRouter's `{"provider":{"sort":"price"}}`) instead of merging into
+    /// it, and a `null` value removes the default's key. A request's own
+    /// `provider_options` still replace these per top-level key.
     pub default_provider_options: Option<serde_json::Value>,
     /// Optional Ollama context setting. Native mode applies it before the first
     /// inference request; a failed setup prevents inference. CompatibleOnly
@@ -266,15 +272,14 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
                 && options.ollama_context_mode == OllamaContextMode::CompatibleOnly);
         let local = is_local(&spec.kind) || compatible_local;
         let oauth = options.codex.is_some_and(|routing| routing.using_oauth);
-        let route_options = if local {
-            options
+        let provider_options = if local {
+            let route_options = options
                 .num_ctx
-                .map(|num_ctx| serde_json::json!({"options": {"num_ctx": num_ctx}}))
+                .map(|num_ctx| serde_json::json!({"options": {"num_ctx": num_ctx}}));
+            merge_route_options(route_options, options.default_provider_options.clone())
         } else {
-            openrouter_default_provider_options(endpoint)
+            hosted_route_options(endpoint, &options)
         };
-        let provider_options =
-            merge_route_options(route_options, options.default_provider_options.clone());
         let native_num_ctx = if spec.kind == ProviderKind::Ollama && !compatible_local {
             provider_options
                 .as_ref()
@@ -458,11 +463,7 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
         for (name, value) in effective_headers(options) {
             request = with_replaced_header(request, &name, &value);
         }
-        if let Some(provider_options) = options
-            .default_provider_options
-            .clone()
-            .or_else(|| openrouter_default_provider_options(endpoint))
-        {
+        if let Some(provider_options) = hosted_route_options(endpoint, options) {
             request = request.with_pinned_providers(pinned_openrouter_providers(&provider_options));
         }
         Ok(Some(request))
@@ -582,8 +583,13 @@ pub fn resolve_slug_model(
     Ok(effective.to_owned())
 }
 
-/// Stable price ordering for direct OpenRouter routes; request-specific
-/// options can override it. Other endpoints receive no default routing option.
+/// Stable price ordering for direct OpenRouter routes. Other endpoints receive
+/// no default routing option.
+///
+/// This is only a default: a caller's
+/// [`ProviderBuildOptions::default_provider_options`] that names `provider`
+/// replaces the whole object (a `null` value drops it), and a request's own
+/// `provider_options` replace it again per top-level key.
 pub fn openrouter_default_provider_options(endpoint: &str) -> Option<serde_json::Value> {
     endpoint_is_openrouter(endpoint).then(|| serde_json::json!({"provider": {"sort": "price"}}))
 }
@@ -684,6 +690,49 @@ impl ChatModel<()> for LocalRegistryModel {
 }
 
 // Route defaults form a base; host settings override only the fields supplied.
+/// The provider options a hosted (non-local) route sends beneath each request.
+///
+/// The endpoint's routing default is replaced, not merged, per top-level key by
+/// the caller's options: a caller that names `provider` owns that whole object,
+/// so no part of the default's preference (such as `sort`) leaks into it. A
+/// caller key set to `null` removes the default's key altogether.
+fn hosted_route_options(
+    endpoint: &str,
+    options: &ProviderBuildOptions<'_>,
+) -> Option<serde_json::Value> {
+    replace_route_defaults(
+        openrouter_default_provider_options(endpoint),
+        options.default_provider_options.clone(),
+    )
+}
+
+/// Replaces `defaults` per top-level key with `overrides`; a `null` override
+/// removes the key. A non-object override is returned untouched so the
+/// transport rejects it with its usual validation error.
+fn replace_route_defaults(
+    defaults: Option<serde_json::Value>,
+    overrides: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    match (defaults, overrides) {
+        (Some(serde_json::Value::Object(mut base)), Some(serde_json::Value::Object(over))) => {
+            for (key, value) in over {
+                if value.is_null() {
+                    base.remove(&key);
+                } else {
+                    base.insert(key, value);
+                }
+            }
+            Some(serde_json::Value::Object(base))
+        }
+        (base, None | Some(serde_json::Value::Null)) => base,
+        (_, Some(serde_json::Value::Object(mut over))) => {
+            over.retain(|_, value| !value.is_null());
+            Some(serde_json::Value::Object(over))
+        }
+        (_, over) => over,
+    }
+}
+
 fn merge_route_options(
     defaults: Option<serde_json::Value>,
     overrides: Option<serde_json::Value>,

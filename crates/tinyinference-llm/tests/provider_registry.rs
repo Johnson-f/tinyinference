@@ -318,3 +318,63 @@ async fn explicit_local_modes_preserve_legacy_compatible_wire_without_native_war
         }
     }
 }
+
+/// Builds an OpenRouter route whose `openrouter.ai` host resolves to the
+/// capture listener, so the endpoint-specific routing default applies.
+async fn capture_openrouter_request(
+    default_provider_options: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let (_, body) = capture_compatible_request(move |loopback| {
+        let address: std::net::SocketAddr = loopback
+            .trim_start_matches("http://")
+            .trim_end_matches("/v1")
+            .parse()
+            .unwrap();
+        let mut spec = ProviderSpec::for_kind(ProviderKind::OpenRouter);
+        spec.base_url = format!("http://openrouter.ai:{}/v1", address.port());
+        ProviderRegistry::new(|_: &ProviderSpec| Ok("test-key".to_string()))
+            .build_with(
+                &spec,
+                ProviderBuildOptions {
+                    default_provider_options,
+                    http: Some(
+                        reqwest::Client::builder()
+                            .no_proxy()
+                            .resolve("openrouter.ai", address)
+                            .build()
+                            .unwrap(),
+                    ),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    })
+    .await;
+    body
+}
+
+#[tokio::test]
+async fn caller_provider_object_replaces_the_openrouter_price_default() {
+    let provider =
+        serde_json::json!({"order": ["wafer", "primeintellect"], "allow_fallbacks": true});
+    let body =
+        capture_openrouter_request(Some(serde_json::json!({ "provider": provider.clone() }))).await;
+    assert_eq!(body["provider"], provider);
+}
+
+#[tokio::test]
+async fn null_caller_provider_drops_the_openrouter_default() {
+    let body =
+        capture_openrouter_request(Some(serde_json::json!({"provider": null, "top_k": 7}))).await;
+    assert!(body.get("provider").is_none(), "{body}");
+    assert_eq!(body["top_k"], 7);
+}
+
+#[tokio::test]
+async fn openrouter_route_without_caller_options_keeps_price_ordering() {
+    let body = capture_openrouter_request(None).await;
+    assert_eq!(body["provider"], serde_json::json!({"sort": "price"}));
+    let body = capture_openrouter_request(Some(serde_json::json!({"top_k": 7}))).await;
+    assert_eq!(body["provider"], serde_json::json!({"sort": "price"}));
+    assert_eq!(body["top_k"], 7);
+}

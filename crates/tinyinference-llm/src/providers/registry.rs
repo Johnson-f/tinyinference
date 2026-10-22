@@ -89,7 +89,13 @@ pub struct ProviderBuildOptions<'a> {
     pub extra_query_params: &'a [(String, String)],
     /// Host client identity, when required by an endpoint.
     pub user_agent: Option<&'a str>,
-    /// Options merged beneath request-specific options.
+    /// Options sent beneath request-specific options.
+    ///
+    /// On a local route they merge deeply with the route's `num_ctx`. On a
+    /// hosted route each top-level key replaces the endpoint's routing default
+    /// (OpenRouter's `{"provider":{"sort":"price"}}`) instead of merging into
+    /// it, and a `null` value removes the default's key. A request's own
+    /// `provider_options` still replace these per top-level key.
     pub default_provider_options: Option<serde_json::Value>,
     /// Optional Ollama context setting. Native mode applies it before the first
     /// inference request; a failed setup prevents inference. CompatibleOnly

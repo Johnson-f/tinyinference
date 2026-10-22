@@ -165,3 +165,20 @@ async fn sse_stream_without_extensions_has_no_raw() {
     .await;
     assert!(response.raw.is_none());
 }
+
+/// A hostile `tool_calls[].index` must not size the slot vector. 2_000_000
+/// (about 144 MB of slots) rather than `u32::MAX`, which would abort on OOM.
+#[tokio::test]
+async fn huge_tool_call_index_is_rejected() {
+    let items = stream_items(vec![
+        b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":2000000,\"id\":\"call-1\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        b"data: [DONE]\n\n",
+    ])
+    .await;
+    assert!(
+        items
+            .iter()
+            .any(|item| matches!(item, ModelStreamItem::ProviderFailed(_))),
+        "an out-of-range tool-call index was accepted"
+    );
+}

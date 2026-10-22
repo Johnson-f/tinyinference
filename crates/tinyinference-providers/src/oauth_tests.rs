@@ -1,5 +1,58 @@
 use super::*;
 
+#[derive(Debug, Default)]
+struct MemorySecrets(std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>);
+
+#[async_trait::async_trait]
+impl tinystoragedrivers_api::SecretStore for MemorySecrets {
+    async fn get(
+        &self,
+        name: &str,
+    ) -> tinystoragedrivers_api::types::Result<Option<zeroize::Zeroizing<Vec<u8>>>> {
+        Ok(self
+            .0
+            .lock()
+            .expect("memory secret lock")
+            .get(name)
+            .cloned()
+            .map(zeroize::Zeroizing::new))
+    }
+
+    async fn set(&self, name: &str, value: &[u8]) -> tinystoragedrivers_api::types::Result<()> {
+        self.0
+            .lock()
+            .expect("memory secret lock")
+            .insert(name.to_owned(), value.to_vec());
+        Ok(())
+    }
+
+    async fn delete(&self, name: &str) -> tinystoragedrivers_api::types::Result<bool> {
+        Ok(self
+            .0
+            .lock()
+            .expect("memory secret lock")
+            .remove(name)
+            .is_some())
+    }
+
+    async fn list(&self, prefix: &str) -> tinystoragedrivers_api::types::Result<Vec<String>> {
+        let mut names = self
+            .0
+            .lock()
+            .expect("memory secret lock")
+            .keys()
+            .filter(|name| name.starts_with(prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        Ok(names)
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "test-memory"
+    }
+}
+
 fn unsigned_jwt(payload: serde_json::Value) -> String {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none"}"#);
     let payload = URL_SAFE_NO_PAD.encode(payload.to_string());
@@ -72,8 +125,8 @@ fn flow_config(token_url: &str) -> OAuthConfig {
     }
 }
 
-fn memory_flow(token_url: &str) -> (OAuthFlow, Arc<tinystoragedrivers_secrets::MemorySecrets>) {
-    let secrets = Arc::new(tinystoragedrivers_secrets::MemorySecrets::new());
+fn memory_flow(token_url: &str) -> (OAuthFlow, Arc<MemorySecrets>) {
+    let secrets = Arc::new(MemorySecrets::default());
     (
         OAuthFlow::new(flow_config(token_url), secrets.clone()),
         secrets,
@@ -113,7 +166,7 @@ async fn start_keeps_pending_state_in_the_secret_store_not_on_disk() {
 
 #[tokio::test]
 async fn state_equals_verifier_uses_the_stored_verifier_as_state() {
-    let secrets = Arc::new(tinystoragedrivers_secrets::MemorySecrets::new());
+    let secrets = Arc::new(MemorySecrets::default());
     let mut config = flow_config("http://127.0.0.1:9/token");
     config.state_equals_verifier = true;
     let flow = OAuthFlow::new(config, secrets.clone());

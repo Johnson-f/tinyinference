@@ -137,6 +137,15 @@ fn scrub_credentials_is_idempotent() {
     assert_eq!(scrub_credentials(&once), once);
 }
 
+// A second pass must not stack a marker on a short value that the first
+// pass replaced whole (`"ab"` -> `"*[REDACTED]"`).
+#[test]
+fn short_quoted_value_scrubs_idempotently() {
+    let once = scrub_credentials(r#"{"token":"ab"}"#);
+    assert_eq!(once, r#"{"token":"*[REDACTED]"}"#);
+    assert_eq!(scrub_credentials(&once), once);
+}
+
 #[test]
 fn scrub_credentials_empty_input() {
     assert_eq!(scrub_credentials(""), "");

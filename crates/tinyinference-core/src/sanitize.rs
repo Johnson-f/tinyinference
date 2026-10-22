@@ -336,8 +336,9 @@ pub fn scrub_credentials(input: &str) -> String {
             return full_match.to_string();
         }
         // Already redacted: an unquoted value stops at `*`, so a second pass
-        // would match the kept prefix and stack another marker. Leave it.
-        if rest.starts_with("*[REDACTED]") {
+        // would match the kept prefix and stack another marker. A short
+        // quoted value was replaced whole, so its value is the marker.
+        if rest.starts_with("*[REDACTED]") || value.as_str().starts_with("*[REDACTED]") {
             return full_match.to_string();
         }
         // Replace only the value span. Rebuilding the key from captures used

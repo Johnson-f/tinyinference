@@ -58,6 +58,12 @@ use serde_json::Value;
 
 use crate::Error;
 use crate::Result;
+
+/// Highest wire index a streaming adapter accepts for a content block or a
+/// tool-call slot. Providers number these densely from zero; this generous
+/// bound keeps one malicious or corrupt event from turning a wire index into an
+/// unbounded allocation while staying far above practical response sizes.
+pub(crate) const MAX_STREAM_INDEX: usize = 1023;
 use crate::message::{AssistantMessage, ContentBlock, Message, MessageDelta};
 use crate::model::{
     ChatModel, ModelProfile, ModelRequest, ModelResponse, ModelStream, ModelStreamItem,

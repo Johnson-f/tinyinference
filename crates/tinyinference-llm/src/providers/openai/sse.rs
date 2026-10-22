@@ -711,6 +711,26 @@ impl SseState {
             }
         }
         if let Ok(chunk) = serde_json::from_value::<ChatCompletionChunk>(value) {
+            // `resolve_slot` grows the slot vector up to the wire index, so an
+            // out-of-range index is rejected before it can size an allocation.
+            if let Some(index) = chunk
+                .choices
+                .iter()
+                .flat_map(|choice| &choice.delta.tool_calls)
+                .filter_map(|fragment| fragment.index)
+                .find(|&index| index as usize > crate::providers::MAX_STREAM_INDEX)
+            {
+                let item = self.provider_failure(ProviderError {
+                    message: format!(
+                        "tool-call index {index} exceeds limit {}",
+                        crate::providers::MAX_STREAM_INDEX
+                    ),
+                    retryable: false,
+                    ..ProviderError::default()
+                });
+                self.pending.push_back(item);
+                return;
+            }
             let mut pending = std::mem::take(&mut self.pending);
             self.acc.ingest(chunk, &mut pending);
             self.pending = pending;

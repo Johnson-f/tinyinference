@@ -35,11 +35,7 @@ use crate::{Error, Result};
 
 use super::PROVIDER;
 use super::response::parse_usage;
-
-/// Anthropic emits content blocks densely from zero. This generous bound keeps
-/// a malicious or corrupt event from turning one wire index into an unbounded
-/// allocation while remaining far above practical response sizes.
-const MAX_CONTENT_BLOCK_INDEX: usize = 1023;
+use crate::providers::MAX_STREAM_INDEX;
 
 /// One open content block, keyed by its wire `index`.
 #[derive(Clone, Debug)]
@@ -454,9 +450,9 @@ fn event_index(event: &Value) -> Result<usize> {
         .as_u64()
         .and_then(|index| usize::try_from(index).ok())
         .ok_or_else(|| Error::Model("invalid Anthropic SSE content-block index".to_string()))?;
-    if index > MAX_CONTENT_BLOCK_INDEX {
+    if index > MAX_STREAM_INDEX {
         return Err(Error::Model(format!(
-            "Anthropic SSE content-block index {index} exceeds limit {MAX_CONTENT_BLOCK_INDEX}"
+            "Anthropic SSE content-block index {index} exceeds limit {MAX_STREAM_INDEX}"
         )));
     }
     Ok(index)

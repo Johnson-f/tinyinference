@@ -434,7 +434,8 @@ fn claude_on_a_relay_drops_system_messages_that_render_no_text() {
 #[test]
 fn record_only_system_messages_never_reach_the_wire() {
     let model = OpenAiModel::new("k").with_model("gpt-4.1-mini");
-    let body = body_for(&model, &transcript_with_record_only_patch());
+    let request = transcript_with_record_only_patch();
+    let body = body_for(&model, &request);
     assert_eq!(
         wire_roles(&body),
         ["system", "user", "system"],
@@ -450,6 +451,9 @@ fn record_only_system_messages_never_reach_the_wire() {
     assert_eq!(
         system_contents,
         ["You are helpful.", "a real mid-turn instruction"]
+    );
+    assert!(
+        matches!(request.messages.get(2), Some(Message::System(system)) if system.content.is_empty())
     );
 }
 

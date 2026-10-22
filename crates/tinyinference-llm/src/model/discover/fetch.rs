@@ -188,7 +188,7 @@ pub(crate) async fn discover_model_limits_with_guard(
     access(&mut || cached = cache.get_variant(&request.endpoint, &request.model, &variant));
     if cached.discovered.is_some() {
         tracing::debug!(
-            endpoint = %request.endpoint,
+            endpoint = %redact_url(&request.endpoint),
             model = %request.model,
             found = cached.discovered.as_ref().is_some_and(Option::is_some),
             "[model_limits] discovery cache hit"
@@ -206,7 +206,7 @@ pub(crate) async fn discover_model_limits_with_guard(
         Ok(limits) => limits,
         Err(_) => {
             tracing::warn!(
-                endpoint = %request.endpoint,
+                endpoint = %redact_url(&request.endpoint),
                 model = %request.model,
                 timeout_ms = request.timeout.as_millis() as u64,
                 "[model_limits] discovery timed out"
@@ -215,7 +215,7 @@ pub(crate) async fn discover_model_limits_with_guard(
         }
     };
     tracing::info!(
-        endpoint = %request.endpoint,
+        endpoint = %redact_url(&request.endpoint),
         model = %request.model,
         context_window = ?limits.as_ref().and_then(|limits| limits.context_window),
         max_output_tokens = ?limits.as_ref().and_then(|limits| limits.max_output_tokens),
@@ -267,7 +267,7 @@ async fn fetch_limits(
         Ok(body) => {
             let listed = parse_listing_limits(&body);
             tracing::debug!(
-                endpoint = %request.endpoint,
+                endpoint = %redact_url(&request.endpoint),
                 listed = listed.len(),
                 "[model_limits] read model listing"
             );
@@ -290,7 +290,7 @@ async fn fetch_limits(
         }
         Err(error) => {
             tracing::debug!(
-                endpoint = %request.endpoint,
+                endpoint = %redact_url(&request.endpoint),
                 error = %error,
                 "[model_limits] model listing unavailable"
             );
@@ -320,7 +320,7 @@ async fn fetch_limits(
                 }
             }
             Err(error) => tracing::debug!(
-                endpoint = %request.endpoint,
+                endpoint = %redact_url(&request.endpoint),
                 model = %request.model,
                 error = %error,
                 "[model_limits] single-model record unavailable"
@@ -381,7 +381,7 @@ async fn fetch_limits(
                     // The model-level value may be the maximum across
                     // providers; it does not describe the pinned route.
                     tracing::debug!(
-                        endpoint = %request.endpoint,
+                        endpoint = %redact_url(&request.endpoint),
                         model = %request.model,
                         "[model_limits] no pinned provider endpoint matched; dropping model-level limit"
                     );
@@ -390,7 +390,7 @@ async fn fetch_limits(
             }
             Err(error) => {
                 tracing::debug!(
-                    endpoint = %request.endpoint,
+                    endpoint = %redact_url(&request.endpoint),
                     model = %request.model,
                     error = %error,
                     "[model_limits] pinned-provider endpoints unavailable; dropping model-level limit"

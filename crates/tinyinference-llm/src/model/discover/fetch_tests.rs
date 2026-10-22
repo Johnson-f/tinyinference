@@ -619,6 +619,14 @@ fn ollama_endpoints_are_detected_from_the_url() {
     }
 }
 
+#[test]
+fn discovery_diagnostic_endpoint_redacts_credentials_and_query_values() {
+    assert_eq!(
+        redact_url("https://operator:secret@provider.example/v1?api_key=private#fragment"),
+        "https://provider.example/v1"
+    );
+}
+
 struct ListingThenHungProbe;
 
 #[async_trait]

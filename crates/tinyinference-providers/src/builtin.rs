@@ -193,7 +193,95 @@ pub const BUILTIN_CLOUD_PROVIDERS: &[BuiltinCloudProvider] = &[
     },
 ];
 
-/// Finds a builtin preset by its exact provider identifier.
+/// A generic cloud preset catalog extended with host-owned presets.
+///
+/// Hosts can add their managed endpoint without making the provider-neutral
+/// catalog depend on host-specific names or policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinPresets {
+    providers: Vec<BuiltinCloudProvider>,
+}
+
+impl BuiltinPresets {
+    /// Creates a catalog from the generic presets and host-supplied additions.
+    ///
+    /// The generic presets are searched first when a host supplies a duplicate
+    /// slug, so host additions cannot silently change a generic provider's
+    /// canonical endpoint or protocol.
+    #[must_use]
+    pub fn new(extra_presets: impl IntoIterator<Item = BuiltinCloudProvider>) -> Self {
+        let providers = BUILTIN_CLOUD_PROVIDERS
+            .iter()
+            .copied()
+            .chain(extra_presets)
+            .collect();
+        Self { providers }
+    }
+
+    /// Finds a preset by its exact provider slug.
+    #[must_use]
+    pub fn builtin_cloud_provider(&self, slug: &str) -> Option<&BuiltinCloudProvider> {
+        self.providers.iter().find(|provider| provider.slug == slug)
+    }
+
+    /// Returns whether `slug` matches any preset in this catalog.
+    #[must_use]
+    pub fn is_builtin_cloud_slug(&self, slug: &str) -> bool {
+        self.builtin_cloud_provider(slug).is_some()
+    }
+
+    /// Returns whether a preset is known to support the OpenAI Responses API.
+    ///
+    /// Only the generic OpenAI, OpenRouter, and xAI presets are known to expose
+    /// it. Host-supplied and unknown providers retain caller-selected behavior.
+    #[must_use]
+    pub fn builtin_cloud_supports_responses_api(&self, slug: &str) -> bool {
+        self.builtin_cloud_provider(slug).is_some()
+            && matches!(slug, "openai" | "openrouter" | "xai")
+    }
+
+    /// Extracts the normalized authority host from an endpoint URL.
+    #[must_use]
+    pub fn endpoint_host(&self, endpoint: &str) -> Option<String> {
+        endpoint_host(endpoint)
+    }
+
+    /// Returns whether `host` belongs to a preset in this catalog.
+    #[must_use]
+    pub fn host_is_builtin_cloud_provider(&self, host: &str) -> bool {
+        let host = host.trim().to_ascii_lowercase();
+        !host.is_empty()
+            && self.providers.iter().any(|provider| {
+                self.endpoint_host(provider.endpoint).as_deref() == Some(host.as_str())
+            })
+    }
+
+    /// Returns whether an endpoint host in this catalog is chat-completions-only.
+    #[must_use]
+    pub fn endpoint_host_is_chat_completions_only(&self, endpoint: &str) -> bool {
+        let Some(host) = self.endpoint_host(endpoint) else {
+            return false;
+        };
+        let mut found = false;
+        for provider in &self.providers {
+            if self.endpoint_host(provider.endpoint).as_deref() == Some(host.as_str()) {
+                if self.builtin_cloud_supports_responses_api(provider.slug) {
+                    return false;
+                }
+                found = true;
+            }
+        }
+        found
+    }
+}
+
+impl Default for BuiltinPresets {
+    fn default() -> Self {
+        Self::new([])
+    }
+}
+
+/// Finds a generic builtin preset by its exact provider identifier.
 #[must_use]
 pub fn builtin_cloud_provider(type_str: &str) -> Option<&'static BuiltinCloudProvider> {
     BUILTIN_CLOUD_PROVIDERS
@@ -201,21 +289,14 @@ pub fn builtin_cloud_provider(type_str: &str) -> Option<&'static BuiltinCloudPro
         .find(|provider| provider.slug == type_str)
 }
 
-/// Whether `slug` matches a built-in cloud provider preset.
-///
-/// The chat factory uses this to decide capability defaults (e.g. whether the
-/// provider exposes the OpenAI Responses API) only for providers we ship and
-/// therefore know the API surface of. Custom / user-defined slugs are treated
-/// as unknown and keep the permissive defaults.
+/// Whether `slug` matches a generic built-in cloud provider preset.
+#[must_use]
 pub fn is_builtin_cloud_slug(slug: &str) -> bool {
     builtin_cloud_provider(slug).is_some()
 }
 
-/// Whether a builtin preset supports the OpenAI Responses API.
-///
-/// OpenAI, OpenRouter, and xAI expose the Responses API at their cataloged
-/// endpoints. Unknown proxies retain their caller-selected capability; they
-/// are not builtin presets.
+/// Whether a generic builtin preset supports the OpenAI Responses API.
+#[must_use]
 pub fn builtin_cloud_supports_responses_api(slug: &str) -> bool {
     matches!(slug, "openai" | "openrouter" | "xai")
 }
@@ -258,12 +339,10 @@ pub fn endpoint_host(endpoint: &str) -> Option<String> {
 /// Comparisons are case-insensitive and derived from the builtin catalog.
 pub fn host_is_builtin_cloud_provider(host: &str) -> bool {
     let host = host.trim().to_ascii_lowercase();
-    if host.is_empty() {
-        return false;
-    }
-    BUILTIN_CLOUD_PROVIDERS
-        .iter()
-        .any(|p| endpoint_host(p.endpoint).as_deref() == Some(host.as_str()))
+    !host.is_empty()
+        && BUILTIN_CLOUD_PROVIDERS
+            .iter()
+            .any(|provider| endpoint_host(provider.endpoint).as_deref() == Some(host.as_str()))
 }
 
 /// Whether an endpoint **host** is a known cloud host that does NOT serve the
@@ -286,7 +365,6 @@ pub fn endpoint_host_is_chat_completions_only(endpoint: &str) -> bool {
     for provider in BUILTIN_CLOUD_PROVIDERS {
         if endpoint_host(provider.endpoint).as_deref() == Some(host.as_str()) {
             if builtin_cloud_supports_responses_api(provider.slug) {
-                // A Responses-capable built-in lives at this host → not chat-only.
                 return false;
             }
             matched_chat_only = true;

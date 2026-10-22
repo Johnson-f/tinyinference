@@ -5,6 +5,110 @@ fn registry() -> ProviderRegistry<impl CredentialResolver> {
 }
 
 #[test]
+fn slug_model_fallback_keeps_concrete_namespaced_ids_and_remaps_hints() {
+    assert_eq!(
+        resolve_slug_model(" qwen3:14b ", Some("provider-default"), |model| {
+            model.trim().starts_with("hint:")
+        })
+        .unwrap(),
+        " qwen3:14b "
+    );
+    assert_eq!(
+        resolve_slug_model("  ", Some(" provider-default "), |model| {
+            model.trim().starts_with("hint:")
+        })
+        .unwrap(),
+        " provider-default "
+    );
+    assert_eq!(
+        resolve_slug_model("hint:fast", Some(" gpt-5 "), |model| {
+            model.trim().starts_with("hint:")
+        })
+        .unwrap(),
+        "gpt-5"
+    );
+    assert_eq!(
+        resolve_slug_model("hint:fast", None, |model| model.starts_with("hint:")),
+        Err(SlugModelError::NoConcreteDefault)
+    );
+    assert_eq!(
+        resolve_slug_model("hint:fast", Some("  "), |model| model.starts_with("hint:")),
+        Err(SlugModelError::NoConcreteDefault)
+    );
+    assert_eq!(
+        resolve_slug_model("hint:fast", Some("hint:slow"), |model| model
+            .starts_with("hint:")),
+        Err(SlugModelError::NoConcreteDefault)
+    );
+    assert_eq!(
+        resolve_slug_model("", Some("hint:slow"), |model| model.starts_with("hint:")),
+        Err(SlugModelError::NoConcreteDefault)
+    );
+    assert_eq!(
+        resolve_slug_model("", None, |model| model.starts_with("hint:")),
+        Err(SlugModelError::MissingModel)
+    );
+}
+
+#[test]
+fn typed_cloud_discovery_reuses_spec_endpoint_model_and_credentials() {
+    let registry = registry();
+    let route = tinyinference_providers::route::ProviderRoute::parse("openai:qwen3:14b").unwrap();
+    let mut spec = ProviderSpec::for_kind(ProviderKind::OpenAi);
+    spec.provider = "openai".into();
+    spec.base_url = "https://custom.example.test/v1".into();
+    spec.model = "configured-default".into();
+    let request = registry
+        .discovery_request_for_route(route, Some(spec.clone()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(request.endpoint, spec.base_url);
+    assert_eq!(request.model, "qwen3:14b");
+    assert_eq!(
+        request.headers,
+        vec![("Authorization".into(), "Bearer test-key".into())]
+    );
+}
+
+#[test]
+fn typed_routes_without_cloud_listings_bypass_credentials() {
+    let registry = ProviderRegistry::new(|_: &ProviderSpec| -> Result<String> {
+        panic!("route without a cloud listing must not consult credentials")
+    });
+    for route in [
+        "openhuman:gpt-5",
+        "ollama:qwen3:14b",
+        "claude-code:sonnet",
+        "cloud:gpt-5",
+    ] {
+        assert!(
+            registry
+                .discovery_request_for_route(
+                    tinyinference_providers::route::ProviderRoute::parse(route).unwrap(),
+                    Some(ProviderSpec::for_kind(ProviderKind::OpenAi)),
+                )
+                .unwrap()
+                .is_none()
+        );
+    }
+    let route = tinyinference_providers::route::ProviderRoute::parse("openai:gpt-5").unwrap();
+    assert!(
+        registry
+            .discovery_request_for_route(route.clone(), None)
+            .unwrap()
+            .is_none()
+    );
+    let mut mismatched = ProviderSpec::for_kind(ProviderKind::OpenAi);
+    mismatched.provider = "other".into();
+    assert!(
+        registry
+            .discovery_request_for_route(route, Some(mismatched))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn builds_cloud_and_local_profiles_from_resolved_specs() {
     for kind in [
         ProviderKind::OpenAi,
@@ -90,7 +194,7 @@ fn discovery_uses_same_endpoint_model_auth_and_pinned_routes() {
 }
 
 #[test]
-fn local_and_oauth_discovery_do_not_read_credentials() {
+fn local_discovery_does_not_read_credentials() {
     let registry = ProviderRegistry::new(|_: &ProviderSpec| -> Result<String> {
         panic!("discovery must not consult credentials when no listing exists")
     });
@@ -98,24 +202,6 @@ fn local_and_oauth_discovery_do_not_read_credentials() {
     assert!(
         registry
             .discovery_request(&spec, &Default::default())
-            .unwrap()
-            .is_none()
-    );
-    let spec = ProviderSpec::for_kind(ProviderKind::OpenAi);
-    let route = OpenAiCodexRouting {
-        endpoint: "https://chatgpt.com/backend-api/codex".into(),
-        using_oauth: true,
-        account_id: Some("account".into()),
-    };
-    assert!(
-        registry
-            .discovery_request(
-                &spec,
-                &ProviderBuildOptions {
-                    codex: Some(&route),
-                    ..Default::default()
-                }
-            )
             .unwrap()
             .is_none()
     );
@@ -219,6 +305,62 @@ fn debugging_registry_options_never_discloses_transport_secrets() {
     );
     assert!(!debug.contains("secret"));
     assert!(debug.contains("Authorization"));
+}
+
+#[test]
+fn injected_http_client_takes_precedence_over_ca_bundle_and_builder() {
+    let spec = ProviderSpec::for_kind(ProviderKind::OpenAi);
+    let http = reqwest::Client::new();
+    let model = registry()
+        .build_with(
+            &spec,
+            ProviderBuildOptions {
+                http: Some(http),
+                ca_bundle: Some("malformed secret PEM"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        model.profile().unwrap().model.as_deref(),
+        Some("gpt-4.1-mini")
+    );
+}
+
+#[test]
+fn client_builder_factory_can_borrow_host_transport_settings() {
+    let proxy_url = String::from("http://127.0.0.1:19444");
+    let builder = std::sync::Arc::new(|| {
+        reqwest::Client::builder().proxy(reqwest::Proxy::http(&proxy_url).unwrap())
+    });
+    let model = registry()
+        .build_with(
+            &ProviderSpec::for_kind(ProviderKind::OpenAi),
+            ProviderBuildOptions {
+                http_builder: Some(builder),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(model.profile().is_some());
+}
+
+#[test]
+fn invalid_ca_bundle_fails_without_leaking_input() {
+    let secret = "malformed secret PEM";
+    let result = registry().build_with(
+        &ProviderSpec::for_kind(ProviderKind::OpenAi),
+        ProviderBuildOptions {
+            ca_bundle: Some(secret),
+            ..Default::default()
+        },
+    );
+    let error = match result {
+        Ok(_) => panic!("invalid CA bundle must be rejected"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, Error::Validation(_)));
+    assert!(!error.to_string().contains(secret));
 }
 
 #[test]

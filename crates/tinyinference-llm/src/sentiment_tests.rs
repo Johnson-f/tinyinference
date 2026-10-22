@@ -1,6 +1,14 @@
 use super::*;
 
 #[test]
+fn sentiment_prompt_requests_the_parser_contract_and_includes_message_verbatim() {
+    let prompt = sentiment_prompt("  hello\nUser message: keep exact  ");
+    assert!(prompt.contains("Reply with EXACTLY three words separated by spaces:"));
+    assert!(prompt.contains("EMOTION VALENCE CONFIDENCE"));
+    assert!(prompt.ends_with("User message:   hello\nUser message: keep exact  "));
+}
+
+#[test]
 fn parse_valid_response() {
     let r = parse_sentiment_response("joy positive 0.9");
     assert_eq!(r.emotion, "joy");

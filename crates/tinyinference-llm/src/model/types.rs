@@ -92,6 +92,19 @@ pub enum ReasoningEffort {
 }
 
 impl ReasoningEffort {
+    /// Parses a user-facing effort name, including common on/off aliases.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "none" | "off" | "disabled" => Some(Self::None),
+            "minimal" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" | "med" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" | "max" | "maximum" => Some(Self::XHigh),
+            _ => None,
+        }
+    }
+
     /// Returns the common provider wire token.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -122,6 +135,25 @@ pub struct ReasoningConfig {
 }
 
 impl ReasoningConfig {
+    /// Adds a reasoning budget of 55% of the output cap, with a 1024-token
+    /// minimum. Existing budgets, uncapped requests and disabled reasoning are
+    /// left unchanged.
+    pub fn with_output_room(mut self, max_output_tokens: Option<u32>) -> Self {
+        if !matches!(self.effort, Some(effort) if effort != ReasoningEffort::None)
+            || self.budget_tokens.is_some()
+        {
+            return self;
+        }
+        let Some(cap) = max_output_tokens else {
+            return self;
+        };
+        let budget = (u64::from(cap) * 55 / 100) as u32;
+        if budget >= 1024 {
+            self.budget_tokens = Some(budget);
+        }
+        self
+    }
+
     /// Creates a config containing only `effort`.
     pub fn effort(effort: ReasoningEffort) -> Self {
         Self {

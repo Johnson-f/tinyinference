@@ -15,6 +15,24 @@ use serde_json::json;
 use super::*;
 
 #[test]
+fn bootstrap_result_identity_includes_provider_and_endpoint() {
+    let first = Config::default();
+    let mut other_provider = first.clone();
+    other_provider.local_ai.provider = "lm_studio".into();
+    let mut other_endpoint = first.clone();
+    other_endpoint.local_ai.base_url = Some("http://127.0.0.1:1234".into());
+
+    assert_ne!(
+        bootstrap_config_fingerprint(&first),
+        bootstrap_config_fingerprint(&other_provider)
+    );
+    assert_ne!(
+        bootstrap_config_fingerprint(&first),
+        bootstrap_config_fingerprint(&other_endpoint)
+    );
+}
+
+#[test]
 fn autosummary_debounce_blocks_repeated_calls_inside_window() {
     let mut config = Config::default();
     config.local_ai.autosummary_debounce_ms = 60_000;
@@ -58,6 +76,72 @@ async fn spawn_rejecting_endpoint() -> String {
         }
     });
     format!("http://127.0.0.1:{}", addr.port())
+}
+
+async fn spawn_counting_rejecting_endpoint(hits: Arc<AtomicUsize>) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            hits.fetch_add(1, Ordering::SeqCst);
+            drop(stream);
+        }
+    });
+    format!("http://127.0.0.1:{}", addr.port())
+}
+
+async fn spawn_latched_rejecting_endpoint(
+    hits: Arc<AtomicUsize>,
+) -> (
+    String,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        if let Ok((stream, _)) = listener.accept().await {
+            hits.fetch_add(1, Ordering::SeqCst);
+            let _ = accepted_tx.send(());
+            let _ = release_rx.await;
+            drop(stream);
+        }
+        while let Ok((stream, _)) = listener.accept().await {
+            hits.fetch_add(1, Ordering::SeqCst);
+            drop(stream);
+        }
+    });
+    (
+        format!("http://127.0.0.1:{}", addr.port()),
+        accepted_rx,
+        release_tx,
+        task,
+    )
+}
+
+async fn spawn_latched_endpoint() -> (
+    String,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        if let Ok((stream, _)) = listener.accept().await {
+            let _ = accepted_tx.send(());
+            let _stream = stream;
+            std::future::pending::<()>().await;
+        }
+    });
+    (
+        format!("http://127.0.0.1:{}", addr.port()),
+        accepted_rx,
+        task,
+    )
 }
 
 fn opted_in(base_url: &str) -> Config {
@@ -171,6 +255,276 @@ async fn bootstrap_with_rejecting_endpoint_is_unreachable_promptly() {
         elapsed < std::time::Duration::from_secs(10),
         "probe must not wait on a spawned runtime (took {elapsed:?})"
     );
+}
+
+#[tokio::test]
+async fn rapid_bootstrap_burst_does_not_queue_unreachable_probes() {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let config = opted_in(&spawn_counting_rejecting_endpoint(Arc::clone(&hits)).await);
+    let service = Arc::new(LocalAiService::new(&config));
+    let mut first_task = None;
+    for _ in 0..8 {
+        if let Some(task) = service.schedule_bootstrap(config.clone()) {
+            assert!(
+                first_task.replace(task).is_none(),
+                "only one probe is scheduled"
+            );
+        }
+    }
+    first_task
+        .expect("first poll schedules a probe")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "a burst of status polls must not queue redundant unreachable probes"
+    );
+
+    service
+        .schedule_bootstrap(config)
+        .expect("a fresh poll can retry after the unreachable probe completes")
+        .await
+        .unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn concurrent_unreachable_bootstraps_share_probe_and_later_retry() {
+    let _guard = crate::service::inference_test_guard();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (base, accepted, release, server) =
+        spawn_latched_rejecting_endpoint(Arc::clone(&hits)).await;
+    let config = opted_in(&base);
+    let service = Arc::new(LocalAiService::new(&config));
+    let callers = 8;
+    let barrier = Arc::new(tokio::sync::Barrier::new(callers + 1));
+    let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut tasks = Vec::new();
+    for _ in 0..callers {
+        let service = Arc::clone(&service);
+        let config = config.clone();
+        let barrier = Arc::clone(&barrier);
+        let started_tx = started_tx.clone();
+        tasks.push(tokio::spawn(async move {
+            barrier.wait().await;
+            started_tx.send(()).unwrap();
+            service.bootstrap(&config).await;
+        }));
+    }
+    barrier.wait().await;
+    drop(started_tx);
+    for _ in 0..callers {
+        started_rx.recv().await.unwrap();
+    }
+    accepted.await.unwrap();
+    for _ in 0..callers {
+        tokio::task::yield_now().await;
+    }
+    release.send(()).unwrap();
+    for task in tasks {
+        task.await.unwrap();
+    }
+    server.abort();
+
+    assert_eq!(service.status().state, "unreachable");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    let retry_hits = Arc::new(AtomicUsize::new(0));
+    let retry_config = opted_in(&spawn_counting_rejecting_endpoint(Arc::clone(&retry_hits)).await);
+    service.bootstrap(&retry_config).await;
+    assert_eq!(retry_hits.load(Ordering::SeqCst), 1);
+}
+
+async fn wait_for_bootstrap_waiters(service: &LocalAiService, expected: usize) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let waiters = service
+                .bootstrap_flight
+                .lock()
+                .as_ref()
+                .map_or(0, tokio::sync::watch::Sender::receiver_count);
+            if waiters == expected {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("all callers should join the current bootstrap generation");
+}
+
+#[tokio::test]
+async fn cancelling_foreground_bootstrap_releases_waiters_to_retry() {
+    let _guard = crate::service::inference_test_guard();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (base, accepted, release, server) =
+        spawn_latched_rejecting_endpoint(Arc::clone(&hits)).await;
+    let config = opted_in(&base);
+    let service = Arc::new(LocalAiService::new(&config));
+
+    let foreground_service = Arc::clone(&service);
+    let foreground_config = config.clone();
+    let foreground = tokio::spawn(async move {
+        foreground_service.ensure_ready(&foreground_config).await;
+    });
+    accepted.await.unwrap();
+
+    let waiter_service = Arc::clone(&service);
+    let waiter_config = config.clone();
+    let waiter = tokio::spawn(async move {
+        waiter_service.ensure_ready(&waiter_config).await;
+    });
+    wait_for_bootstrap_waiters(&service, 1).await;
+    foreground.abort();
+    assert!(foreground.await.unwrap_err().is_cancelled());
+    release.send(()).unwrap();
+    waiter.await.unwrap();
+    server.abort();
+
+    assert_eq!(service.status().state, "unreachable");
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn foreground_ensure_ready_joins_scheduled_background_probe() {
+    let _guard = crate::service::inference_test_guard();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (base, accepted, release, server) =
+        spawn_latched_rejecting_endpoint(Arc::clone(&hits)).await;
+    let config = opted_in(&base);
+    let service = Arc::new(LocalAiService::new(&config));
+    let foreground_service = Arc::clone(&service);
+    let foreground_config = config.clone();
+    let foreground = tokio::spawn(async move {
+        foreground_service.ensure_ready(&foreground_config).await;
+    });
+    accepted.await.unwrap();
+
+    assert!(
+        service.schedule_bootstrap(config).is_none(),
+        "a background poll must join rather than queue behind a foreground probe"
+    );
+    release.send(()).unwrap();
+    foreground.await.unwrap();
+    server.abort();
+    assert_eq!(service.status().state, "unreachable");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn ensure_ready_waits_for_scheduled_background_probe() {
+    let _guard = crate::service::inference_test_guard();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (base, accepted, release, server) =
+        spawn_latched_rejecting_endpoint(Arc::clone(&hits)).await;
+    let config = opted_in(&base);
+    let service = Arc::new(LocalAiService::new(&config));
+    let background = service
+        .schedule_bootstrap(config.clone())
+        .expect("background probe should be scheduled");
+    accepted.await.unwrap();
+    let foreground_service = Arc::clone(&service);
+    let foreground = tokio::spawn(async move {
+        foreground_service.ensure_ready(&config).await;
+    });
+    wait_for_bootstrap_waiters(&service, 1).await;
+
+    release.send(()).unwrap();
+    foreground.await.unwrap();
+    background.await.unwrap();
+    server.abort();
+    assert_eq!(service.status().state, "unreachable");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn opt_out_waiter_applies_its_own_disabled_gate_after_probe() {
+    let _guard = crate::service::inference_test_guard();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let (base, accepted, release, server) =
+        spawn_latched_rejecting_endpoint(Arc::clone(&hits)).await;
+    let enabled_config = opted_in(&base);
+    let service = Arc::new(LocalAiService::new(&enabled_config));
+    let leader_service = Arc::clone(&service);
+    let leader_config = enabled_config.clone();
+    let leader = tokio::spawn(async move {
+        leader_service.ensure_ready(&leader_config).await;
+    });
+    accepted.await.unwrap();
+
+    let mut disabled_config = enabled_config.clone();
+    disabled_config.local_ai.opt_in_confirmed = false;
+    let waiter_service = Arc::clone(&service);
+    let waiter = tokio::spawn(async move {
+        waiter_service.ensure_ready(&disabled_config).await;
+    });
+    wait_for_bootstrap_waiters(&service, 1).await;
+    release.send(()).unwrap();
+    leader.await.unwrap();
+    waiter.await.unwrap();
+    server.abort();
+
+    assert_eq!(service.status().state, "disabled");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn status_with_provider_overlays_one_snapshot_without_mutating_cached_status() {
+    let mut original_config = Config::default();
+    original_config.local_ai.provider = "ollama".to_string();
+    let service = LocalAiService::new(&original_config);
+    let mut current_config = original_config.clone();
+    current_config.local_ai.provider = "lm_studio".to_string();
+
+    let snapshot = service.status_with_provider(&current_config);
+
+    assert_eq!(snapshot.provider, "lm_studio");
+    assert_eq!(service.status().provider, "ollama");
+}
+
+#[tokio::test]
+async fn unpolled_scheduled_bootstrap_cancellation_releases_single_flight_guard() {
+    let config = opted_in(&unbound_base_url());
+    let service = Arc::new(LocalAiService::new(&config));
+    let task = service
+        .schedule_bootstrap(config)
+        .expect("first poll schedules a probe");
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let retry_config = opted_in(&spawn_counting_rejecting_endpoint(Arc::clone(&hits)).await);
+    service
+        .schedule_bootstrap(retry_config)
+        .expect("cancellation before first poll releases the guard")
+        .await
+        .unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cancelled_scheduled_bootstrap_releases_single_flight_guard() {
+    let (blocked_base, accepted, server) = spawn_latched_endpoint().await;
+    let config = opted_in(&blocked_base);
+    let service = Arc::new(LocalAiService::new(&config));
+    let task = service
+        .schedule_bootstrap(config)
+        .expect("first poll schedules a probe");
+    accepted.await.unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    server.abort();
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let retry_config = opted_in(&spawn_counting_rejecting_endpoint(Arc::clone(&hits)).await);
+    service
+        .schedule_bootstrap(retry_config)
+        .expect("cancellation releases the scheduling guard")
+        .await
+        .unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
 }
 
 /// Linux x86_64 process probes use seccomp to observe forbidden starts

@@ -9,6 +9,163 @@ use crate::usage::Usage;
 use serde_json::json;
 
 #[test]
+fn reasoning_effort_parser_accepts_user_aliases_case_insensitively() {
+    assert_eq!(ReasoningEffort::parse(" OFF "), Some(ReasoningEffort::None));
+    assert_eq!(
+        ReasoningEffort::parse("disabled"),
+        Some(ReasoningEffort::None)
+    );
+    assert_eq!(ReasoningEffort::parse("max"), Some(ReasoningEffort::XHigh));
+    assert_eq!(ReasoningEffort::parse("HIGH"), Some(ReasoningEffort::High));
+    assert_eq!(ReasoningEffort::parse("turbo"), None);
+}
+
+#[test]
+fn reasoning_budget_reserves_visible_output_room() {
+    let high = ReasoningConfig::effort(ReasoningEffort::High);
+    assert_eq!(
+        high.clone().with_output_room(Some(10_000)).budget_tokens,
+        Some(5_500)
+    );
+    assert_eq!(
+        high.clone().with_output_room(Some(1_861)).budget_tokens,
+        None
+    );
+    assert_eq!(
+        high.clone().with_output_room(Some(1_862)).budget_tokens,
+        Some(1_024)
+    );
+    assert_eq!(high.with_output_room(None).budget_tokens, None);
+    assert_eq!(
+        ReasoningConfig::effort(ReasoningEffort::None)
+            .with_output_room(Some(10_000))
+            .budget_tokens,
+        None
+    );
+}
+
+#[test]
+fn response_shapes_are_available_from_the_model_module() {
+    use crate::model::{ChatResponse, ProviderDelta};
+
+    let response: ChatResponse = ChatResponse::default();
+    assert!(response.text.is_none());
+    let ProviderDelta::TextDelta { delta } = (ProviderDelta::TextDelta {
+        delta: String::new(),
+    }) else {
+        panic!("text delta variant expected");
+    };
+    assert!(delta.is_empty());
+}
+
+#[test]
+fn response_conversion_keeps_native_calls_and_thinking_content() {
+    use crate::providers::response::ChatResponse;
+    use tinytools_agent::dialect::NativeToolCall;
+
+    let response = ChatResponse {
+        text: Some("visible <tool_call>known_tool[0|7]</tool_call>".into()),
+        tool_calls: vec![NativeToolCall {
+            id: "provider-id".into(),
+            name: "unknown_tool".into(),
+            arguments: "{\"x\":1}".into(),
+            extra_content: None,
+        }],
+        reasoning_content: Some("  private reasoning  ".into()),
+        ..Default::default()
+    };
+    let request = ModelRequest::new(vec![]).with_tools(vec![ToolSchema::new(
+        "known_tool",
+        "known",
+        json!({"type":"object","properties":{"value":{"type":"integer"}}}),
+    )]);
+
+    let converted = response_to_model_response(&response, &request);
+    assert_eq!(
+        converted.text(),
+        "visible <tool_call>known_tool[0|7]</tool_call>"
+    );
+    assert_eq!(converted.message.tool_calls[0].id, "provider-id");
+    assert_eq!(converted.message.tool_calls[0].name, "unknown_tool");
+    assert_eq!(
+        converted.message.content,
+        vec![
+            ContentBlock::Text("visible <tool_call>known_tool[0|7]</tool_call>".into()),
+            ContentBlock::Thinking {
+                text: "  private reasoning  ".into(),
+                signature: None,
+            }
+        ]
+    );
+}
+
+#[test]
+fn response_conversion_preserves_malformed_native_arguments() {
+    use crate::providers::response::ChatResponse;
+    use tinytools_agent::dialect::NativeToolCall;
+
+    let response = ChatResponse {
+        tool_calls: vec![NativeToolCall {
+            id: "provider-id".into(),
+            name: "lookup".into(),
+            arguments: "{broken".into(),
+            extra_content: None,
+        }],
+        ..Default::default()
+    };
+    let converted = response_to_model_response(&response, &ModelRequest::default());
+    let call = &converted.message.tool_calls[0];
+    assert!(call.is_invalid());
+    assert_eq!(call.arguments, serde_json::Value::String("{broken".into()));
+}
+
+#[test]
+fn response_conversion_parses_advertised_pformat_tools_and_strips_markup() {
+    use crate::providers::response::ChatResponse;
+    use crate::usage::BilledUsage;
+    use tinytools_agent::dialect::NativeToolCall;
+
+    let request = ModelRequest::new(vec![]).with_tools(vec![ToolSchema::new(
+        "lookup",
+        "lookup",
+        json!({
+            "type":"object",
+            "properties": {"id":{"type":"integer"},"query":{"type":"string"}},
+        }),
+    )]);
+    let response = ChatResponse::<BilledUsage, NativeToolCall> {
+        text: Some("Before. <tool_call>lookup[0|27|1|bird]</tool_call> After.".into()),
+        ..Default::default()
+    };
+
+    let converted = response_to_model_response(&response, &request);
+    assert_eq!(converted.message.tool_calls.len(), 1);
+    assert_eq!(converted.message.tool_calls[0].id, "call_0");
+    assert_eq!(converted.message.tool_calls[0].name, "lookup");
+    assert_eq!(
+        converted.message.tool_calls[0].arguments,
+        json!({"id":27,"query":"bird"})
+    );
+    assert_eq!(converted.text(), "Before.\nAfter.");
+}
+
+#[test]
+fn response_conversion_does_not_parse_literal_examples_without_advertised_tools() {
+    use crate::providers::response::ChatResponse;
+    use crate::usage::BilledUsage;
+    use tinytools_agent::dialect::NativeToolCall;
+
+    let text = "Example: <tool_call>{\"name\":\"lookup\",\"arguments\":{}}</tool_call>";
+    let response = ChatResponse::<BilledUsage, NativeToolCall> {
+        text: Some(text.into()),
+        ..Default::default()
+    };
+    let converted = response_to_model_response(&response, &ModelRequest::default());
+    assert_eq!(converted.text(), text);
+    assert!(converted.message.tool_calls.is_empty());
+}
+
+#[test]
 fn request_builder_sets_fields() {
     let req = ModelRequest::new(vec![Message::user("hi")])
         .with_model("gpt")

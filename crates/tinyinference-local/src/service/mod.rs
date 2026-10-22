@@ -24,6 +24,7 @@ mod vision_embed;
 use crate::status::LocalAiStatus;
 use parking_lot::Mutex;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 
 #[cfg(test)]
 static INFERENCE_TEST_MUTEX: once_cell::sync::Lazy<std::sync::Mutex<()>> =
@@ -134,8 +135,20 @@ impl crate::models::LocalModelConfig for RuntimeConfig {
 pub struct LocalAiService {
     pub(crate) status: Mutex<LocalAiStatus>,
     pub(crate) bootstrap_lock: tokio::sync::Mutex<()>,
+    pub(crate) bootstrap_flight: Mutex<Option<tokio::sync::watch::Sender<BootstrapFlightState>>>,
+    pub(crate) last_bootstrap_config: Mutex<Option<BootstrapConfigFingerprint>>,
+    pub(crate) bootstrap_scheduled: AtomicBool,
     pub(crate) last_memory_summary_at: Mutex<Option<std::time::Instant>>,
     pub(crate) http: reqwest::Client,
+}
+
+pub(crate) type BootstrapConfigFingerprint = (bool, bool, String, Option<String>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BootstrapFlightState {
+    Running,
+    Completed,
+    Cancelled,
 }
 
 impl std::fmt::Debug for LocalAiService {
@@ -148,6 +161,16 @@ impl std::fmt::Debug for LocalAiService {
 }
 
 impl LocalAiService {
+    /// Returns one status snapshot with the provider from the supplied runtime
+    /// configuration overlaid onto it.
+    pub fn status_with_provider(&self, runtime: &RuntimeConfig) -> LocalAiStatus {
+        let mut status = self.status();
+        status.provider = crate::provider::provider_from_name(&runtime.local_ai.provider)
+            .as_str()
+            .to_string();
+        status
+    }
+
     /// Replaces the observable runtime state and returns its previous value.
     ///
     /// Hosts may use this when an external capability changes readiness.

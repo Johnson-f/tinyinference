@@ -171,8 +171,7 @@ pub fn body_indicates_quota_exhausted(body: &str) -> bool {
         // quota with no "monthly"/"quota" co-marker, so the phrases above miss
         // it. Both are quota-specific enough to match on their own (the loop
         // retries until `resets_at`, flooding from a single capped Plus user).
-        || lower.contains("usage_limit_reached")
-        || lower.contains("usage limit has been reached")
+        || is_plan_usage_cap(&lower)
         // "reached the limit" alone is ambiguous (rate-limit, token-limit), so
         // require a quota/plan/request/monthly co-marker to keep the blast
         // radius on plan-quota exhaustion only.
@@ -181,6 +180,12 @@ pub fn body_indicates_quota_exhausted(body: &str) -> bool {
                 || lower.contains("quota")
                 || lower.contains("monthly")
                 || lower.contains("plan")))
+}
+
+/// Codex/ChatGPT plan-cap markers. Unlike a generic "quota exceeded", these
+/// never describe a per-minute window, so they stay terminal under a 429.
+fn is_plan_usage_cap(lower: &str) -> bool {
+    lower.contains("usage_limit_reached") || lower.contains("usage limit has been reached")
 }
 
 /// Whether a provider error body is a **permanent per-request rate-cap
@@ -410,6 +415,13 @@ pub fn classify_provider_failure_with(
         _ => message.to_ascii_lowercase(),
     };
 
+    // Host session expiry and plan caps are terminal even when wrapped in a
+    // 429, so they are checked before the rate-limit short-circuit. Generic
+    // quota phrases stay below it: a per-minute quota 429 is retryable.
+    if is_session_expired(message) || is_plan_usage_cap(&lower) {
+        return ProviderFailureClass::NonRetryable;
+    }
+
     let rate_limited = status == Some(429)
         || (lower.contains("429")
             && (lower.contains("too many") || lower.contains("rate") || lower.contains("limit")));
@@ -417,10 +429,7 @@ pub fn classify_provider_failure_with(
         return ProviderFailureClass::RateLimited;
     }
 
-    if is_session_expired(message)
-        || is_context_window_exceeded_message(message)
-        || body_indicates_quota_exhausted(message)
-    {
+    if is_context_window_exceeded_message(message) || body_indicates_quota_exhausted(message) {
         return ProviderFailureClass::NonRetryable;
     }
 

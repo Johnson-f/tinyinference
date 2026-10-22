@@ -318,9 +318,8 @@ impl<R: CredentialResolver> ProviderRegistry<R> {
             explicit_cache_control: !local && endpoint_is_openrouter(endpoint),
         };
         if compatible_local {
-            return Ok(super::openai::config::build_openai_model_with(
+            return Ok(super::openai::config::build_local_openai_model_with(
                 config,
-                false,
                 http.clone(),
             ));
         }

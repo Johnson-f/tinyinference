@@ -1795,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "httpdate",
@@ -1806,7 +1806,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-decisions"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1820,7 +1820,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-embeddings"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1840,7 +1840,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-image"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1859,7 +1859,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-llm"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1887,7 +1887,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-local"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-providers"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -1931,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-video"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1946,7 +1946,7 @@ dependencies = [
 
 [[package]]
 name = "tinyinference-voice"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -2013,8 +2013,8 @@ dependencies = [
 
 [[package]]
 name = "tinytools"
-version = "0.5.0"
-source = "git+https://github.com/tinyhumansai/tinytools?rev=bd60b9b52f1998b4483b9cf107a72d3338e672f8#bd60b9b52f1998b4483b9cf107a72d3338e672f8"
+version = "0.6.0"
+source = "git+https://github.com/tinyhumansai/tinytools?rev=3a01641f8ebd8a55656cd212f9a90638d958a447#3a01641f8ebd8a55656cd212f9a90638d958a447"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2024,8 +2024,8 @@ dependencies = [
 
 [[package]]
 name = "tinytools-agent"
-version = "0.5.0"
-source = "git+https://github.com/tinyhumansai/tinytools?rev=bd60b9b52f1998b4483b9cf107a72d3338e672f8#bd60b9b52f1998b4483b9cf107a72d3338e672f8"
+version = "0.6.0"
+source = "git+https://github.com/tinyhumansai/tinytools?rev=3a01641f8ebd8a55656cd212f9a90638d958a447#3a01641f8ebd8a55656cd212f9a90638d958a447"
 dependencies = [
  "regex",
  "serde",

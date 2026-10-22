@@ -1806,6 +1806,24 @@ fn derive_profile_flags_deepseek_ids_as_hoisting_system_messages() {
 }
 
 #[test]
+fn derive_profile_flags_claude_ids_as_hoisting_system_messages() {
+    // A relay serving Claude over Chat Completions folds every system message
+    // into Anthropic's one top-level `system`, so a mid-turn note rewrites the
+    // cached prefix just as DeepSeek's template does.
+    for id in [
+        "anthropic/claude-haiku-4.5",
+        "openrouter/anthropic/claude-haiku-4.5",
+        "claude-sonnet-4-6",
+        "Anthropic/Claude-Opus-4.1",
+    ] {
+        assert!(
+            super::transport::derive_profile("openrouter", id).hoists_system_messages,
+            "{id} should hoist system messages"
+        );
+    }
+}
+
+#[test]
 fn responses_profile_advertises_system_hoisting_after_builder_overrides() {
     let model = OpenAiModel::new("k")
         .with_responses_api_primary()
@@ -1862,6 +1880,66 @@ fn temperature_builders_compose() {
         .with_model("o1-mini")
         .with_temperature_unsupported_models(["o1*", "o3*"])
         .with_temperature_override(Some(0.0));
+}
+
+// ── single_system_message ─────────────────────────────────────────────
+
+#[test]
+fn single_system_joins_leading_and_mid_transcript_system_messages() {
+    let merged = single_system_message(&[
+        Message::system("Stable."),
+        Message::system("Volatile."),
+        Message::user("Hi"),
+        Message::assistant("Hello"),
+        Message::system("Tool patch."),
+        Message::user("Bye"),
+    ]);
+    assert_eq!(merged.len(), 4);
+    assert!(matches!(merged[0], Message::System(_)));
+    assert_eq!(merged[0].text(), "Stable.\n\nVolatile.\n\nTool patch.");
+    assert_eq!(merged[1].text(), "Hi");
+    assert!(matches!(merged[2], Message::Assistant(_)));
+    assert_eq!(merged[3].text(), "Bye");
+    let systems = merged
+        .iter()
+        .filter(|m| matches!(m, Message::System(_)))
+        .count();
+    assert_eq!(systems, 1);
+}
+
+#[test]
+fn single_system_is_noop_for_one_leading_system_message() {
+    let input = vec![Message::system("sys"), Message::user("hi")];
+    assert_eq!(single_system_message(&input), input);
+    let input = vec![Message::user("hi")];
+    assert_eq!(single_system_message(&input), input);
+}
+
+#[test]
+fn single_system_hoists_a_lone_late_system_message_and_drops_empty_ones() {
+    let merged = single_system_message(&[
+        Message::user("hi"),
+        Message::system(""),
+        Message::system("late"),
+    ]);
+    assert_eq!(merged.len(), 2);
+    assert!(matches!(merged[0], Message::System(_)));
+    assert_eq!(merged[0].text(), "late");
+    assert_eq!(merged[1].text(), "hi");
+
+    let merged = single_system_message(&[Message::user("hi"), Message::system("")]);
+    assert_eq!(merged, vec![Message::user("hi")]);
+}
+
+#[test]
+fn single_system_mode_clears_mid_conversation_and_survives_model_change() {
+    let model = OpenAiModel::compatible_provider("lmstudio", "", "http://127.0.0.1:1234/v1", "a")
+        .with_single_system_message()
+        .with_model("b");
+    assert!(!profile_of(&model).mid_conversation_system_messages);
+    assert!(profile_of(&model).hoists_system_messages);
+    let plain = OpenAiModel::compatible_provider("lmstudio", "", "http://127.0.0.1:1234/v1", "a");
+    assert!(profile_of(&plain).mid_conversation_system_messages);
 }
 
 // ── merge_system_into_user ────────────────────────────────────────────
@@ -2850,6 +2928,42 @@ mod explicit_cache_control {
             .unwrap(),
         );
         assert_eq!(both.cache_read_tokens, 960);
+    }
+
+    #[test]
+    fn openrouter_cost_is_preserved_in_micro_dollars() {
+        let usage = convert_usage(
+            serde_json::from_value(json!({
+                "prompt_tokens": 100, "completion_tokens": 20,
+                "cost": 0.0000125
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            usage.charged_amount,
+            Some(crate::usage::ChargedAmount::usd_micros(13))
+        );
+        assert_eq!(usage.charged_amount_nanos, Some(12_500));
+
+        let tiny = convert_usage(serde_json::from_value(json!({"cost": 0.0000004})).unwrap());
+        assert_eq!(tiny.charged_amount_nanos, Some(400));
+
+        let unreported = convert_usage(
+            serde_json::from_value(json!({"prompt_tokens": 1, "completion_tokens": 1})).unwrap(),
+        );
+        assert_eq!(unreported.charged_amount, None);
+
+        let malformed = convert_usage(
+            serde_json::from_value(json!({
+                "prompt_tokens": 9,
+                "completion_tokens": 2,
+                "cost": {"unexpected": "object"}
+            }))
+            .unwrap(),
+        );
+        assert_eq!(malformed.input_tokens, 9);
+        assert_eq!(malformed.output_tokens, 2);
+        assert_eq!(malformed.charged_amount_nanos, None);
     }
 }
 

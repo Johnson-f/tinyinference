@@ -138,6 +138,9 @@ impl AnthropicStreamAcc {
                 reasoning_tokens: existing.reasoning_tokens.max(incoming.reasoning_tokens),
                 total_tokens: 0,
                 charged_amount: incoming.charged_amount.or(existing.charged_amount),
+                charged_amount_nanos: incoming
+                    .charged_amount_nanos
+                    .or(existing.charged_amount_nanos),
                 context_window_tokens: incoming
                     .context_window_tokens
                     .or(existing.context_window_tokens),

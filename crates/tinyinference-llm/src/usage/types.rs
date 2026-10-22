@@ -153,6 +153,10 @@ pub struct Usage {
     /// pricing policy and may leave it absent for local or unmetered providers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub charged_amount: Option<ChargedAmount>,
+    /// Provider-reported USD charge in nanodollars, preserving finer provider
+    /// precision for task accounting than [`Usage::charged_amount`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charged_amount_nanos: Option<i64>,
     /// The model context window used for this call, when the provider reports
     /// it or the host resolved it authoritatively.
     #[serde(default, skip_serializing_if = "Option::is_none")]

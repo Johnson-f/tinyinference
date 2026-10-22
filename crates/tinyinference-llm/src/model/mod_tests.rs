@@ -100,6 +100,26 @@ fn response_conversion_keeps_native_calls_and_thinking_content() {
 }
 
 #[test]
+fn response_conversion_preserves_malformed_native_arguments() {
+    use crate::providers::response::ChatResponse;
+    use tinytools_agent::dialect::NativeToolCall;
+
+    let response = ChatResponse {
+        tool_calls: vec![NativeToolCall {
+            id: "provider-id".into(),
+            name: "lookup".into(),
+            arguments: "{broken".into(),
+            extra_content: None,
+        }],
+        ..Default::default()
+    };
+    let converted = response_to_model_response(&response, &ModelRequest::default());
+    let call = &converted.message.tool_calls[0];
+    assert!(call.is_invalid());
+    assert_eq!(call.arguments, serde_json::Value::String("{broken".into()));
+}
+
+#[test]
 fn response_conversion_parses_advertised_pformat_tools_and_strips_markup() {
     use crate::providers::response::ChatResponse;
     use crate::usage::BilledUsage;

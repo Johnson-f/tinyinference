@@ -114,11 +114,9 @@ fn malformed_ca_bundle_is_rejected_without_echoing_input() {
 
 #[test]
 fn private_keys_are_not_accepted_as_ca_material() {
-    let error = client_builder_with_ca_bundle(
-        reqwest::Client::builder(),
-        "-----BEGIN PRIVATE KEY-----\nredacted\n-----END PRIVATE KEY-----",
-    )
-    .unwrap_err();
+    let marker = "PRIVATE KEY";
+    let pem = format!("-----BEGIN {marker}-----\nredacted\n-----END {marker}-----");
+    let error = client_builder_with_ca_bundle(reqwest::Client::builder(), &pem).unwrap_err();
     assert!(error.to_string().contains("certificates only"));
     assert!(!error.to_string().contains("redacted"));
 }

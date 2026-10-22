@@ -23,11 +23,19 @@ pub fn response_to_model_response(
         let calls = response
             .tool_calls
             .iter()
-            .map(|call| ToolCall {
-                id: call.id.clone(),
-                name: call.name.clone(),
-                arguments: serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null),
-                invalid: None,
+            .map(|call| match serde_json::from_str(&call.arguments) {
+                Ok(arguments) => ToolCall {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments,
+                    invalid: None,
+                },
+                Err(error) => ToolCall::invalid(
+                    call.id.clone(),
+                    call.name.clone(),
+                    call.arguments.clone(),
+                    error.to_string(),
+                ),
             })
             .collect();
         (text.to_owned(), calls)

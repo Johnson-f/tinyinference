@@ -104,6 +104,18 @@ fn structured_provider_error_uses_the_same_classifier() {
 }
 
 #[test]
+fn per_minute_quota_rate_limits_remain_retryable() {
+    assert_eq!(
+        classify_provider_failure(
+            Some(429),
+            None,
+            "per-minute quota exceeded; retry after 30 seconds"
+        ),
+        ProviderFailureClass::RateLimited
+    );
+}
+
+#[test]
 fn normalized_provider_retryability_is_authoritative() {
     let error = ProviderError {
         message: "malformed streaming payload".into(),

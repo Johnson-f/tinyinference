@@ -9,18 +9,32 @@ async fn respond_to_requests(
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut request = Vec::new();
         let mut chunk = [0; 1024];
-        loop {
+        let header_end = loop {
             let read = stream.read(&mut chunk).await.unwrap();
+            assert_ne!(read, 0, "client closed before sending request headers");
             request.extend_from_slice(&chunk[..read]);
-            if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
-                break;
+            if let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                break header_end + 4;
             }
-        }
-        let request = String::from_utf8_lossy(&request);
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]);
         assert!(
-            request.starts_with(expected_request),
-            "unexpected request: {request}"
+            headers.starts_with(expected_request),
+            "unexpected request: {headers}"
         );
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        while request.len() - header_end < content_length {
+            let read = stream.read(&mut chunk).await.unwrap();
+            assert_ne!(read, 0, "client closed before sending the request body");
+            request.extend_from_slice(&chunk[..read]);
+        }
         let reason = if status == 200 { "OK" } else { "Unavailable" };
         let response = format!(
             "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

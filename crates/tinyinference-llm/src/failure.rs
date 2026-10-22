@@ -410,6 +410,13 @@ pub fn classify_provider_failure_with(
         _ => message.to_ascii_lowercase(),
     };
 
+    let rate_limited = status == Some(429)
+        || (lower.contains("429")
+            && (lower.contains("too many") || lower.contains("rate") || lower.contains("limit")));
+    if rate_limited && !contains_business_limit(&lower) {
+        return ProviderFailureClass::RateLimited;
+    }
+
     if is_session_expired(message)
         || is_context_window_exceeded_message(message)
         || body_indicates_quota_exhausted(message)
@@ -417,9 +424,6 @@ pub fn classify_provider_failure_with(
         return ProviderFailureClass::NonRetryable;
     }
 
-    let rate_limited = status == Some(429)
-        || (lower.contains("429")
-            && (lower.contains("too many") || lower.contains("rate") || lower.contains("limit")));
     if rate_limited {
         return if contains_business_limit(&lower) {
             ProviderFailureClass::NonRetryableRateLimit

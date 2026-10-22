@@ -360,3 +360,11 @@ fn bare_values_with_punctuation_are_fully_redacted() {
     .collect();
     assert!(leaked.is_empty(), "leaked: {leaked:?}");
 }
+
+// A labelled secret inside stringified (escaped) JSON.
+#[test]
+fn secret_in_escaped_json_is_redacted() {
+    let input = r#"{"body":"{\"password\":\"hunter2secret\"}"}"#;
+    let out = scrub_credentials(input);
+    assert!(!out.contains("hunter2secret"), "leaked: {out}");
+}

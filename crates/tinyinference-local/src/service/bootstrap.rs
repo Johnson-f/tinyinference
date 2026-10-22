@@ -14,7 +14,7 @@ use crate::status::LocalAiStatus;
 use std::sync::{Arc, atomic::Ordering};
 
 use super::ollama_admin::OllamaHealthStatus;
-use super::{BootstrapFlightState, LocalAiService};
+use super::{BootstrapConfigFingerprint, BootstrapFlightState, LocalAiService};
 
 /// Result of probing the configured endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -355,7 +355,7 @@ impl LocalAiService {
     }
 }
 
-fn bootstrap_config_fingerprint(config: &Config) -> (bool, bool, String, Option<String>) {
+fn bootstrap_config_fingerprint(config: &Config) -> BootstrapConfigFingerprint {
     (
         config.local_ai.runtime_enabled,
         config.local_ai.opt_in_confirmed,

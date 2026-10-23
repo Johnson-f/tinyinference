@@ -2004,6 +2004,31 @@ fn merge_system_preserves_user_image_blocks() {
 }
 
 #[test]
+fn folded_system_messages_keep_their_json_blocks_as_sent_unfolded() {
+    // A system message's JSON block is serialized on the pass-through path;
+    // hoisting or merging it into the user turn must not drop it, and its
+    // blocks join exactly as the pass-through path joins them.
+    use crate::message::SystemMessage;
+    let structured = Message::System(SystemMessage {
+        content: vec![
+            ContentBlock::Text("Context: ".to_string()),
+            ContentBlock::Json(serde_json::json!({"tenant": "acme"})),
+        ],
+        ..Default::default()
+    });
+    let sent_as_is = r#"Context: {"tenant":"acme"}"#;
+
+    let hoisted = single_system_message(&[
+        Message::user("hi"),
+        structured.clone(),
+    ]);
+    assert_eq!(hoisted[0].text(), sent_as_is);
+
+    let merged = merge_system_into_user(&[structured, Message::user("hi")]);
+    assert_eq!(merged[0].text(), format!("{sent_as_is}\n\nhi"));
+}
+
+#[test]
 fn merge_system_is_noop_without_system_messages() {
     let input = vec![Message::user("just user")];
     assert_eq!(merge_system_into_user(&input), input);

@@ -186,17 +186,20 @@ pub(super) fn auth_headers(auth: &AuthStyle, api_key: &str) -> Vec<(String, Stri
     }
 }
 
-/// Concatenates the text of a message's content blocks (non-text blocks — images,
-/// json, thinking — are ignored). Used to gather system-prompt text for merging.
+/// A system message's content as the pass-through path sends it
+/// (`translate_text_content`): text verbatim, JSON serialized, reasoning
+/// dropped, blocks joined with nothing between them. Folding with anything
+/// else would make a hoisted or merged prompt differ from the same prompt sent
+/// as-is, and would silently drop JSON blocks.
 fn content_text(content: &[ContentBlock]) -> String {
     content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text(text) => Some(text.as_str()),
+            ContentBlock::Text(text) => Some(text.clone()),
+            ContentBlock::Json(value) => Some(value.to_string()),
             _ => None,
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect()
 }
 
 /// Folds all `system` messages into the first `user` message and drops the

@@ -2018,10 +2018,7 @@ fn folded_system_messages_keep_their_json_blocks_as_sent_unfolded() {
     });
     let sent_as_is = r#"Context: {"tenant":"acme"}"#;
 
-    let hoisted = single_system_message(&[
-        Message::user("hi"),
-        structured.clone(),
-    ]);
+    let hoisted = single_system_message(&[Message::user("hi"), structured.clone()]);
     assert_eq!(hoisted[0].text(), sent_as_is);
 
     let merged = merge_system_into_user(&[structured, Message::user("hi")]);

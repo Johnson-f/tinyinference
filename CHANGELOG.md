@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- TinyHumans managed model: `TinyHumansModel::new_with_credential` takes a
+  resolver that reports which kind of credential (`Session` or `ApiKey`) each
+  bearer is, and `TinyHumansAuthFailure::credential()` returns the kind the
+  failing request itself was sent with. A host can now tell a rejected API key
+  from an expired session even when the credential changes while requests are
+  in flight; reading host-side "last resolved" state could attribute a late
+  API-key 401 to the session that replaced it. `new` is unchanged and reports
+  `None`.
 - `response_to_model_response` keeps the provider's finish reason (new
   `ChatResponse::finish_reason`, passed through `canonical_finish_reason`), so a
   length cut is no longer reported as `stop`; without one it still infers

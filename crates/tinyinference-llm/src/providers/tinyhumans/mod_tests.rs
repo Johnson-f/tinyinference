@@ -715,3 +715,81 @@ mod cache_identity_tests;
 
 #[path = "observer_tests.rs"]
 mod observer_tests;
+
+/// Each failure carries the credential kind its own request was sent with,
+/// even when the resolver switches kinds between requests.
+#[tokio::test]
+async fn managed_auth_failure_reports_the_credential_its_request_carried() {
+    let fixture = Fixture::default();
+    let base = serve(fixture.clone()).await;
+    *fixture.response.lock().unwrap() = FixtureResponse {
+        status: StatusCode::UNAUTHORIZED,
+        content_type: "application/json",
+        body: json!({ "error": { "message": "Unauthorized" } }).to_string(),
+    };
+    let use_api_key = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let resolver_use_api_key = use_api_key.clone();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_by_handler = seen.clone();
+    let model = TinyHumansModel::new_with_credential(base, "", "default-model", move || {
+        let api_key = resolver_use_api_key.load(Ordering::SeqCst);
+        Ok(TinyHumansCredential {
+            bearer: if api_key { "key".into() } else { "jwt".into() },
+            kind: if api_key {
+                TinyHumansCredentialKind::ApiKey
+            } else {
+                TinyHumansCredentialKind::Session
+            },
+        })
+    })
+    .expect("model construction")
+    .with_managed_auth_failure_handler(move |_, failure| {
+        seen_by_handler
+            .lock()
+            .unwrap()
+            .push((failure.operation(), failure.credential()));
+    });
+
+    let request = || ModelRequest::new(vec![crate::message::Message::user("hi")]);
+    assert!(model.invoke(&(), request()).await.is_err());
+    use_api_key.store(false, Ordering::SeqCst);
+    assert!(model.invoke(&(), request()).await.is_err());
+    assert!(model.stream(&(), request()).await.is_err());
+
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            (
+                TinyHumansOperation::Invoke,
+                Some(TinyHumansCredentialKind::ApiKey)
+            ),
+            (
+                TinyHumansOperation::Invoke,
+                Some(TinyHumansCredentialKind::Session)
+            ),
+            (
+                TinyHumansOperation::Stream,
+                Some(TinyHumansCredentialKind::Session)
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_plain_bearer_resolver_reports_no_credential_kind() {
+    let fixture = Fixture::default();
+    let base = serve(fixture.clone()).await;
+    *fixture.response.lock().unwrap() = FixtureResponse {
+        status: StatusCode::UNAUTHORIZED,
+        content_type: "application/json",
+        body: json!({ "error": { "message": "Unauthorized" } }).to_string(),
+    };
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_by_handler = seen.clone();
+    let model = fixture_model(&base).with_managed_auth_failure_handler(move |_, failure| {
+        seen_by_handler.lock().unwrap().push(failure.credential());
+    });
+    let request = ModelRequest::new(vec![crate::message::Message::user("hi")]);
+    assert!(model.invoke(&(), request).await.is_err());
+    assert_eq!(*seen.lock().unwrap(), vec![None]);
+}

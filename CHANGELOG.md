@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- TinyHumans managed model: `TinyHumansModel::new_with_credential` takes a
+  resolver that reports which kind of credential (`Session` or `ApiKey`) each
+  bearer is, and `TinyHumansAuthFailure::credential()` returns the kind the
+  failing request itself was sent with. A host can now tell a rejected API key
+  from an expired session even when the credential changes while requests are
+  in flight; reading host-side "last resolved" state could attribute a late
+  API-key 401 to the session that replaced it. `new` is unchanged and reports
+  `None`.
 - OpenAI-compatible provider: a Claude model id (`claude-...`, or one with an
   `anthropic` path segment) now reports `hoists_system_messages`, as the native
   Anthropic adapter does. A relay serving Claude over Chat Completions joins

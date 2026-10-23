@@ -30,6 +30,34 @@ pub use usage::project_tinyhumans_envelope;
 /// Resolves the current bearer credential for a managed inference call.
 pub type BearerResolver = Arc<dyn Fn() -> Result<String> + Send + Sync>;
 
+/// Which kind of credential a managed request authenticated with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TinyHumansCredentialKind {
+    /// The host's signed-in app session token.
+    Session,
+    /// A long-lived API key.
+    ApiKey,
+}
+
+/// A resolved bearer together with the kind of credential it is.
+#[derive(Clone, Debug)]
+pub struct TinyHumansCredential {
+    /// The bearer sent with the request.
+    pub bearer: String,
+    /// What the bearer is, reported back on an authentication failure.
+    pub kind: TinyHumansCredentialKind,
+}
+
+type KindedResolver =
+    Arc<dyn Fn() -> Result<(String, Option<TinyHumansCredentialKind>)> + Send + Sync>;
+
+tokio::task_local! {
+    /// The credential kind the bearer source handed to the request being
+    /// dispatched in this task, so a failure is attributed to the credential
+    /// that request carried rather than to whatever was resolved last.
+    static SENT_CREDENTIAL: std::cell::Cell<Option<TinyHumansCredentialKind>>;
+}
+
 /// Operation that received a provider authentication failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TinyHumansOperation {
@@ -73,6 +101,7 @@ pub enum TinyHumansAuthFailureKind {
 pub struct TinyHumansAuthFailure {
     operation: TinyHumansOperation,
     kind: TinyHumansAuthFailureKind,
+    credential: Option<TinyHumansCredentialKind>,
 }
 
 impl TinyHumansAuthFailure {
@@ -86,6 +115,14 @@ impl TinyHumansAuthFailure {
     #[must_use]
     pub fn kind(self) -> TinyHumansAuthFailureKind {
         self.kind
+    }
+
+    /// The credential kind the failing request was sent with, when the model
+    /// was built with [`TinyHumansModel::new_with_credential`]; `None` for a
+    /// plain bearer resolver.
+    #[must_use]
+    pub fn credential(self) -> Option<TinyHumansCredentialKind> {
+        self.credential
     }
 }
 
@@ -152,6 +189,42 @@ impl TinyHumansModel {
         default_model: impl AsRef<str>,
         resolver: impl Fn() -> Result<String> + Send + Sync + 'static,
     ) -> Result<Self> {
+        Self::build(
+            base_url,
+            model,
+            default_model,
+            Arc::new(move || resolver().map(|bearer| (bearer, None))),
+        )
+    }
+
+    /// Like [`Self::new`], but the resolver also reports which kind of
+    /// credential each bearer is, and every [`TinyHumansAuthFailure`] carries
+    /// the kind its own request was sent with.
+    ///
+    /// # Errors
+    /// Returns [`Error::Validation`] when the endpoint or default model is empty.
+    pub fn new_with_credential(
+        base_url: impl AsRef<str>,
+        model: impl AsRef<str>,
+        default_model: impl AsRef<str>,
+        resolver: impl Fn() -> Result<TinyHumansCredential> + Send + Sync + 'static,
+    ) -> Result<Self> {
+        Self::build(
+            base_url,
+            model,
+            default_model,
+            Arc::new(move || {
+                resolver().map(|credential| (credential.bearer, Some(credential.kind)))
+            }),
+        )
+    }
+
+    fn build(
+        base_url: impl AsRef<str>,
+        model: impl AsRef<str>,
+        default_model: impl AsRef<str>,
+        resolver: KindedResolver,
+    ) -> Result<Self> {
         let base = base_url.as_ref().trim().trim_end_matches('/');
         if base.is_empty() {
             return Err(Error::Validation(
@@ -166,7 +239,7 @@ impl TinyHumansModel {
         }
         let endpoint = catalog::endpoint(base);
         let default_model = resolve_model(model.as_ref(), fallback_model);
-        let source = Arc::new(ResolvedBearer(Arc::new(resolver)));
+        let source = Arc::new(ResolvedBearer(resolver));
         let wire = OpenAiModel::compatible_provider("tinyhumans", "", &endpoint, &default_model)
             .with_auth_style(AuthStyle::Bearer)
             .with_bearer_source(source)
@@ -311,7 +384,13 @@ impl TinyHumansModel {
         request: ModelRequest,
         operation: TinyHumansOperation,
     ) -> Result<ModelResponse> {
-        match self.model.invoke(&(), self.prepare_request(request)).await {
+        let (result, credential) = SENT_CREDENTIAL
+            .scope(std::cell::Cell::new(None), async {
+                let result = self.model.invoke(&(), self.prepare_request(request)).await;
+                (result, SENT_CREDENTIAL.with(std::cell::Cell::get))
+            })
+            .await;
+        match result {
             Ok(response) => Ok(project_tinyhumans_envelope(response)),
             Err(error) => {
                 let point = match operation {
@@ -320,17 +399,22 @@ impl TinyHumansModel {
                     TinyHumansOperation::Stream => unreachable!("invoke operation is not stream"),
                 };
                 self.observe_error(&error, point);
-                self.observe_auth_error(&error, operation);
+                self.observe_auth_error(&error, operation, credential);
                 Err(error)
             }
         }
     }
 
-    fn observe_auth_error(&self, error: &Error, operation: TinyHumansOperation) {
+    fn observe_auth_error(
+        &self,
+        error: &Error,
+        operation: TinyHumansOperation,
+        credential: Option<TinyHumansCredentialKind>,
+    ) {
         if let Error::Provider(provider_error) = error
             && is_auth_failure(provider_error)
         {
-            self.notify_auth_failure(provider_error, operation);
+            self.notify_auth_failure(provider_error, operation, credential);
         }
     }
 
@@ -340,7 +424,12 @@ impl TinyHumansModel {
         }
     }
 
-    fn notify_auth_failure(&self, error: &ProviderError, operation: TinyHumansOperation) {
+    fn notify_auth_failure(
+        &self,
+        error: &ProviderError,
+        operation: TinyHumansOperation,
+        credential: Option<TinyHumansCredentialKind>,
+    ) {
         if let Some(handler) = &self.auth_failure_handler {
             handler(error, operation);
         }
@@ -350,6 +439,7 @@ impl TinyHumansModel {
                 TinyHumansAuthFailure {
                     operation,
                     kind: auth_failure_kind(error),
+                    credential,
                 },
             );
         }
@@ -387,11 +477,17 @@ impl ChatModel<()> for TinyHumansModel {
     }
 
     async fn stream(&self, _state: &(), request: ModelRequest) -> Result<ModelStream> {
-        let stream = match self.model.stream(&(), self.prepare_request(request)).await {
+        let (opened, credential) = SENT_CREDENTIAL
+            .scope(std::cell::Cell::new(None), async {
+                let opened = self.model.stream(&(), self.prepare_request(request)).await;
+                (opened, SENT_CREDENTIAL.with(std::cell::Cell::get))
+            })
+            .await;
+        let stream = match opened {
             Ok(stream) => stream,
             Err(error) => {
                 self.observe_error(&error, TinyHumansFailurePoint::StreamOpen);
-                self.observe_auth_error(&error, TinyHumansOperation::Stream);
+                self.observe_auth_error(&error, TinyHumansOperation::Stream, credential);
                 return Err(error);
             }
         };
@@ -419,6 +515,7 @@ impl ChatModel<()> for TinyHumansModel {
                             TinyHumansAuthFailure {
                                 operation: TinyHumansOperation::Stream,
                                 kind: auth_failure_kind(&error),
+                                credential,
                             },
                         );
                     }
@@ -477,12 +574,16 @@ fn resolve_model(model: &str, default_model: &str) -> String {
     }
 }
 
-struct ResolvedBearer(BearerResolver);
+struct ResolvedBearer(KindedResolver);
 
 #[async_trait]
 impl BearerSource for ResolvedBearer {
     async fn current(&self) -> Result<Option<String>> {
-        (self.0)().map(Some)
+        let (bearer, kind) = (self.0)()?;
+        // Outside a dispatch scope (e.g. the readiness probe) there is nothing
+        // to attribute, so a missing task-local is fine.
+        let _ = SENT_CREDENTIAL.try_with(|sent| sent.set(kind));
+        Ok(Some(bearer))
     }
 }
 

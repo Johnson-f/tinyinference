@@ -105,12 +105,14 @@ pub fn scrub_secret_patterns(input: &str) -> String {
 /// [`scrub_credentials`] drops `==` comparisons and asks [`looks_like_secret`]
 /// whether the value is a credential or ordinary code.
 ///
-/// Groups: `key` = sensitive key, 2 = operator, 3 = double-quoted value,
-/// 4 = single-quoted value, 5 = bare value. A bare value may start with `$`
-/// and continue through `@ $ % # ~ ^`; `!`, `?`, `:`, `&` and `*` still end it
-/// (GraphQL `String!`, `Token::Bearer`, query strings, the redaction marker).
+/// Groups: `key` = sensitive key, `op` = operator, `dq`/`sq` = double/single-
+/// quoted value, `edq` = value quoted with `\"` inside stringified JSON
+/// (a value holding an escaped quote is only redacted up to it), `bare` =
+/// bare value. A bare value may start with `$` and continue through
+/// `@ $ % # ~ ^`; `!`, `?`, `:`, `&` and `*` still end it (GraphQL `String!`,
+/// `Token::Bearer`, query strings, the redaction marker).
 static SENSITIVE_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b(?P<key>[a-z0-9_\-]*(?:token|api[_-]?key|password|secret|user[_-]?key|bearer|credential))["']?[ \t]*(:=|==|[:=])[ \t]*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([a-zA-Z0-9_+./=\-$][a-zA-Z0-9_+./=\-@$%#~^]*))"#).unwrap()
+    Regex::new(r#"(?i)\b(?P<key>[a-z0-9_\-]*(?:token|api[_-]?key|password|secret|user[_-]?key|bearer|credential))(?:\\?["'])?[ \t]*(?P<op>:=|==|[:=])[ \t]*(?:"(?P<dq>(?:\\.|[^"\\])*)"|'(?P<sq>(?:\\.|[^'\\])*)'|\\"(?P<edq>(?:\\\\|[^"\\])*)\\"|(?P<bare>[a-zA-Z0-9_+./=\-$][a-zA-Z0-9_+./=\-@$%#~^]*))"#).unwrap()
 });
 
 /// Value prefixes issued by credential providers. A labelled value starting
@@ -298,14 +300,15 @@ pub fn scrub_credentials(input: &str) -> String {
     let stage_kv = SENSITIVE_KV_REGEX.replace_all(input, |caps: &regex::Captures<'_>| {
         let full_match = &caps[0];
         // `token == other` compares; it does not assign.
-        if &caps[2] == "==" {
+        if &caps["op"] == "==" {
             return full_match.to_string();
         }
-        let quoted = caps.get(5).is_none();
+        let quoted = caps.name("bare").is_none();
         let value = caps
-            .get(3)
-            .or(caps.get(4))
-            .or(caps.get(5))
+            .name("dq")
+            .or(caps.name("sq"))
+            .or(caps.name("edq"))
+            .or(caps.name("bare"))
             .expect("sensitive key-value match has a value");
         let rest = &input[caps.get(0).expect("full match").end()..];
         let key = caps.name("key").expect("sensitive key capture");
@@ -319,7 +322,7 @@ pub fn scrub_credentials(input: &str) -> String {
         let annotation_follows = rest
             .trim_start_matches([' ', '\t'])
             .starts_with([',', ';', ')', '<', '>', '|', '=', '[', '{', '?']);
-        if &caps[2] == ":"
+        if &caps["op"] == ":"
             && !quoted
             && ((value
                 .as_str()
@@ -336,8 +339,9 @@ pub fn scrub_credentials(input: &str) -> String {
             return full_match.to_string();
         }
         // Already redacted: an unquoted value stops at `*`, so a second pass
-        // would match the kept prefix and stack another marker. Leave it.
-        if rest.starts_with("*[REDACTED]") {
+        // would match the kept prefix and stack another marker. A short
+        // quoted value was replaced whole, so its value is the marker.
+        if rest.starts_with("*[REDACTED]") || value.as_str().starts_with("*[REDACTED]") {
             return full_match.to_string();
         }
         // Replace only the value span. Rebuilding the key from captures used

@@ -24,6 +24,9 @@ pub struct ChatResponse<U = crate::usage::Usage, T = crate::tool::ToolCall> {
     /// Raw reasoning content, separate from visible text and retained verbatim
     /// for providers that require it on the next assistant turn.
     pub reasoning_content: Option<String>,
+    /// The provider's finish reason, when reported. When absent, conversion
+    /// infers `stop` or `tool_calls` from the response.
+    pub finish_reason: Option<String>,
 }
 
 impl<U, T> Default for ChatResponse<U, T> {
@@ -33,6 +36,7 @@ impl<U, T> Default for ChatResponse<U, T> {
             tool_calls: Vec::new(),
             usage: None,
             reasoning_content: None,
+            finish_reason: None,
         }
     }
 }

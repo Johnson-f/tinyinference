@@ -408,6 +408,21 @@ fn extract_provider_error_detail_pulls_openai_message() {
 }
 
 #[test]
+fn extract_provider_error_detail_scrubs_a_key_the_provider_echoes() {
+    // The detail is quoted to the user, and providers echo a rejected key in
+    // it. Synthetic keys, built at runtime so no key-shaped literal is committed.
+    let body = "AbCdEf0123456789".repeat(2);
+    for key in [format!("sk-proj-{body}"), format!("sk-ant-api03-{body}")] {
+        let raw = format!(
+            r#"someprovider API error (422 Unprocessable Entity): {{"error":{{"message":"bad parameter for key {key}"}}}}"#
+        );
+        let detail = extract_provider_error_detail(&raw).expect("expected JSON message");
+        assert!(detail.contains("bad parameter"), "got: {detail}");
+        assert!(!detail.contains(&body), "key leaked: {detail}");
+    }
+}
+
+#[test]
 fn extract_provider_error_detail_returns_none_for_transport_errors() {
     // Plain transport failure — no provider JSON body to quote. Surfacing
     // raw transport text would leak internal infra URLs.

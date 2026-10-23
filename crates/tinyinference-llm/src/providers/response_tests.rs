@@ -41,6 +41,7 @@ fn raw_call_identity_arguments_signature_and_exact_billing_survive_a_clone() {
             reported: true,
         }),
         reasoning_content: Some(" reason\nverbatim ".into()),
+        finish_reason: None,
     }
     .clone();
     assert_eq!(response.tool_calls[0].id, "provider-call-α");

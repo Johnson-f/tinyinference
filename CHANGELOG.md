@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.5.0
 
 - TinyHumans managed model: `TinyHumansModel::new_with_credential` takes a

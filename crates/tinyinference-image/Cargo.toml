@@ -21,15 +21,15 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tinyinference-core = { version = "0.5.0", path = "../tinyinference-core" }
 # Storage ports only: generated media is written through a `BlobStore`.
-tinystoragedrivers-api = { version = "2.1.0", git = "https://github.com/tinyhumansai/tinystoragedrivers", rev = "05eaada962decbab33bafa4763d2bd1a67f6b456" }
-tinystoragedrivers-types = { version = "2.1.0", git = "https://github.com/tinyhumansai/tinystoragedrivers", rev = "05eaada962decbab33bafa4763d2bd1a67f6b456" }
+tinystoragedrivers-api = { version = "2.1.0", git = "https://github.com/tinyhumansai/tinystoragedrivers", rev = "29471a164619bcec03e5858a7d7ee0c65f52bf22" }
+tinystoragedrivers-types = { version = "2.1.0", git = "https://github.com/tinyhumansai/tinystoragedrivers", rev = "29471a164619bcec03e5858a7d7ee0c65f52bf22" }
 tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
 tempfile = { workspace = true }
-tinystoragedrivers-testkit = { version = "2.1.0", git = "https://github.com/tinyhumansai/tinystoragedrivers", rev = "05eaada962decbab33bafa4763d2bd1a67f6b456" }
+tinystoragedrivers-testkit = { version = "2.1.0", git = "https://github.com/tinyhumansai/tinystoragedrivers", rev = "29471a164619bcec03e5858a7d7ee0c65f52bf22" }
 tokio = { workspace = true, features = ["fs", "net"] }
 
 [lints]

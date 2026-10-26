@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0
+
 - TinyHumans managed model: `TinyHumansModel::new_with_credential` takes a
   resolver that reports which kind of credential (`Session` or `ApiKey`) each
   bearer is, and `TinyHumansAuthFailure::credential()` returns the kind the

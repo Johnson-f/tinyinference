@@ -53,7 +53,7 @@ fn invalid_hosted_options_are_rejected_without_mutating_the_request() {
 }
 
 #[test]
-fn forced_hosted_tools_require_a_declaration_unless_a_preset_can_supply_it() {
+fn forced_hosted_tools_require_a_declaration_for_every_selection() {
     let tool = PerplexityTool::web_search(PerplexityWebSearch::default());
     for selection in [
         PerplexitySelection::Model("openai/test".into()),
@@ -70,13 +70,43 @@ fn forced_hosted_tools_require_a_declaration_unless_a_preset_can_supply_it() {
             }
             let request = ModelRequest::new(vec![Message::user("question")]);
             let result = build(&config, &request, false, false);
-            if declared || matches!(selection, PerplexitySelection::Preset { .. }) {
+            if declared {
                 assert_eq!(result.unwrap()["tool_choice"], json!({"type":"web_search"}));
             } else {
                 assert!(matches!(result, Err(Error::Validation(_))));
             }
         }
     }
+}
+
+#[test]
+fn explicit_functions_cannot_redefine_system_declared_tools() {
+    let config = PerplexityConfig::new(PerplexitySelection::Model("openai/test".into()));
+    let system_tool = ToolSchema::new("lookup", "system", json!({"type":"object"}));
+    let system = Message::System(crate::message::SystemMessage {
+        tools_added: vec![system_tool.clone()],
+        ..crate::message::SystemMessage::text("be helpful")
+    });
+    let request = |tool: ToolSchema| {
+        let mut request = ModelRequest::new(vec![system.clone(), Message::user("question")]);
+        request.tools = vec![tool];
+        request
+    };
+
+    let shadowed = ToolSchema::new(
+        "lookup",
+        "explicit",
+        json!({"type":"object","properties":{"q":{"type":"string"}}}),
+    );
+    assert!(matches!(
+        build(&config, &request(shadowed), false, false),
+        Err(Error::Validation(_))
+    ));
+
+    let body = build(&config, &request(system_tool), false, false).unwrap();
+    let tools = body["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["description"], "system");
 }
 
 #[test]

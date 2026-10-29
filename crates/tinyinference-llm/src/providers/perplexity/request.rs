@@ -233,6 +233,14 @@ pub(super) fn build(
         if tool.name.trim().is_empty() || !explicit_names.insert(&tool.name) {
             return Err(invalid("duplicate or blank function name"));
         }
+        if functions
+            .get(&tool.name)
+            .is_some_and(|declared| declared != tool)
+        {
+            return Err(invalid(
+                "function conflicts with a system-declared tool of the same name",
+            ));
+        }
         functions.insert(tool.name.clone(), tool.clone());
     }
     for tool in functions.values() {
@@ -280,15 +288,16 @@ pub(super) fn build(
             {
                 return Err(invalid("unsupported forced hosted tool"));
             }
-            if !matches!(selection, PerplexitySelection::Preset { .. })
-                && !body
-                    .get("tools")
-                    .and_then(Value::as_array)
-                    .is_some_and(|tools| {
-                        tools
-                            .iter()
-                            .any(|tool| tool.get("type").and_then(Value::as_str) == Some(kind))
-                    })
+            // Presets are not exempt: their server-side loadout is unknown here, and
+            // declaring a hosted tool with unset fields keeps the preset's settings.
+            if !body
+                .get("tools")
+                .and_then(Value::as_array)
+                .is_some_and(|tools| {
+                    tools
+                        .iter()
+                        .any(|tool| tool.get("type").and_then(Value::as_str) == Some(kind))
+                })
             {
                 return Err(invalid("selected hosted tool is not declared"));
             }

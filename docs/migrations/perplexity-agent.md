@@ -24,6 +24,9 @@ a preset. A model override alongside a fallback list is rejected as ambiguous.
 Unset instructions/tools/steps remain absent so server defaults survive.
 System messages replace preset instructions; hosted-tool overrides merge per tool.
 Use an explicit tool-choice override when replacing a preset's auto/required policy.
+A forced hosted tool choice must name a tool declared in `PerplexityOptions.tools`,
+even with a preset; declaring it with unset fields keeps the preset's settings.
+Explicit functions may repeat, but not redefine, a system-declared tool.
 
 Hosted configuration includes web/image/finance/people search, URL fetching,
 sandbox, remote MCP and existing connectors. MCP credentials are configured

@@ -229,7 +229,8 @@ pub enum PerplexityToolChoice {
     Required,
     /// Require a named client-executed function.
     Function(String),
-    /// Require a hosted tool type, such as image_search.
+    /// Require a hosted tool type, such as image_search. The tool must also be
+    /// declared in [`PerplexityOptions::tools`], even when using a preset.
     Hosted(String),
 }
 
@@ -313,6 +314,7 @@ pub struct PerplexityConfig {
     /// API base URL, without the create route.
     pub base_url: String,
     /// Use `/responses` for creation instead of the canonical `/agent` route.
+    /// Retrieval, reconnect, cancellation and file routes always use `/agent`.
     pub responses_alias: bool,
     /// Default options; typed per-call values override them.
     pub options: PerplexityOptions,

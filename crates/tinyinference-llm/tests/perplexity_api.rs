@@ -2,8 +2,30 @@
 
 use tinyinference_llm::{
     ChatModel, ExecutionStatus, Message, ModelExecution, ModelRequest, ModelResponse,
-    PerplexityModel, PerplexitySelection, deny_network_models,
+    PerplexityModel, PerplexitySelection, allow_network_models, deny_network_models,
+    network_models_denied,
 };
+
+/// Restores the process-wide network policy even if an assertion panics.
+struct NetworkDenied {
+    previously_denied: bool,
+}
+
+impl NetworkDenied {
+    fn install() -> Self {
+        let previously_denied = network_models_denied();
+        deny_network_models();
+        Self { previously_denied }
+    }
+}
+
+impl Drop for NetworkDenied {
+    fn drop(&mut self) {
+        if !self.previously_denied {
+            allow_network_models();
+        }
+    }
+}
 
 #[tokio::test]
 async fn every_public_network_operation_obeys_the_host_network_guard() {
@@ -27,7 +49,7 @@ async fn every_public_network_operation_obeys_the_host_network_guard() {
     });
     let mut handle = model.response_handle(&snapshot).unwrap();
     handle.kind = Some("background".into());
-    deny_network_models();
+    let _denied = NetworkDenied::install();
     let request = || ModelRequest::new(vec![Message::user("question")]);
     let errors = [
         model.invoke(&(), request()).await.unwrap_err(),

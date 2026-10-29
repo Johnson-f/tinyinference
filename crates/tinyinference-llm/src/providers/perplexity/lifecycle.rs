@@ -98,9 +98,11 @@ impl PerplexityModel {
         deadline: Instant,
     ) -> Result<ModelResponse> {
         self.validate_handle(handle)?;
-        let outgoing =
-            self.inner
-                .request(reqwest::Method::GET, &path(&["agent", &handle.id])?, None)?;
+        let outgoing = self.inner.request(
+            reqwest::Method::GET,
+            &path(&[RESOURCE_COLLECTION, &handle.id])?,
+            None,
+        )?;
         let incoming = self.inner.send(outgoing, Operation::Read, deadline).await?;
         let mut snapshot = response::parse(self.inner.json(incoming, deadline).await?)?;
         if snapshot
@@ -163,9 +165,11 @@ impl PerplexityModel {
                 snapshot,
             ));
         }
-        let mut outgoing =
-            self.inner
-                .request(reqwest::Method::GET, &path(&["agent", &handle.id])?, None)?;
+        let mut outgoing = self.inner.request(
+            reqwest::Method::GET,
+            &path(&[RESOURCE_COLLECTION, &handle.id])?,
+            None,
+        )?;
         outgoing
             .url_mut()
             .query_pairs_mut()
@@ -213,7 +217,7 @@ impl PerplexityModel {
         let deadline = self.inner.deadline(None)?;
         let outgoing = self.inner.request(
             reqwest::Method::POST,
-            &path(&["agent", &handle.id, "cancel"])?,
+            &path(&[RESOURCE_COLLECTION, &handle.id, "cancel"])?,
             None,
         )?;
         let incoming = self
@@ -238,7 +242,7 @@ impl PerplexityModel {
         let deadline = self.inner.deadline(None)?;
         let outgoing = self.inner.request(
             reqwest::Method::GET,
-            &path(&["agent", &handle.id, "files"])?,
+            &path(&[RESOURCE_COLLECTION, &handle.id, "files"])?,
             None,
         )?;
         let incoming = self.inner.send(outgoing, Operation::Read, deadline).await?;
@@ -279,7 +283,7 @@ impl PerplexityModel {
         let deadline = self.inner.deadline(None)?;
         let outgoing = self.inner.request(
             reqwest::Method::GET,
-            &path(&["agent", &handle.id, "files", file_id, "content"])?,
+            &path(&[RESOURCE_COLLECTION, &handle.id, "files", file_id, "content"])?,
             None,
         )?;
         let incoming = self.inner.send(outgoing, Operation::Read, deadline).await?;
@@ -328,6 +332,11 @@ impl PerplexityModel {
         Ok(())
     }
 }
+
+/// Canonical lifecycle routes. Perplexity documents `/responses` as a creation
+/// and retrieval alias of `/agent`, and a run is the same resource under either,
+/// so retrieval, reconnect, cancellation and files never depend on the alias.
+const RESOURCE_COLLECTION: &str = "agent";
 
 fn validate_id(id: &str) -> Result<()> {
     if id.trim().is_empty() || id.len() > 512 || matches!(id, "." | "..") {

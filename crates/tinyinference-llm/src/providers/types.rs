@@ -237,7 +237,9 @@ pub struct ProviderSpec {
     /// Provider id written to profiles and normalized errors.
     pub provider: String,
     /// Default provider model id. Empty for Perplexity, whose native adapter
-    /// requires an explicit model, fallback chain, or preset selection.
+    /// requires an explicit model, fallback chain, or preset selection: build
+    /// it with `PerplexityModel` and a `PerplexitySelection`, since the generic
+    /// `OpenAiModel::from_spec` path rejects Perplexity specs.
     pub model: String,
     /// API base URL without a trailing slash.
     pub base_url: String,

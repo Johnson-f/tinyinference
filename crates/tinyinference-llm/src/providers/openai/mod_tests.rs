@@ -699,6 +699,18 @@ fn compatible_presets_set_base_url_and_default_model() {
 }
 
 #[test]
+fn perplexity_provider_spec_never_builds_a_model_without_an_explicit_selection() {
+    let spec = ProviderSpec::for_kind(ProviderKind::Perplexity);
+    assert!(spec.model.is_empty());
+    for spec in [spec.clone(), spec.with_model("openai/gpt-5")] {
+        assert!(matches!(
+            OpenAiModel::from_spec(spec, "key"),
+            Err(Error::Unsupported(_))
+        ));
+    }
+}
+
+#[test]
 fn provider_spec_builds_compatible_model() {
     let spec = ProviderSpec::for_kind(ProviderKind::Ollama).with_model("qwen2.5");
     let model = OpenAiModel::from_spec(spec, "ignored").unwrap();

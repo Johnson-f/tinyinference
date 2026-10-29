@@ -25,6 +25,123 @@ fn request(model: &str, temperature: f64) -> ModelRequest {
         .with_temperature(temperature)
 }
 
+#[tokio::test]
+async fn configured_http_client_is_used_by_built_model() {
+    for responses_api_primary in [false, true] {
+        let response = if responses_api_primary {
+            r#"{"output":[]}"#.to_string()
+        } else {
+            completion_body()
+        };
+        let (base, server) = serve_sequence(vec![(200, response)]);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-host-client", "configured".parse().unwrap());
+        let http = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .unwrap();
+        let model = super::build_openai_model_with_http(
+            super::OpenAiConfig {
+                provider_name: "custom",
+                endpoint: &base,
+                api_key: "key",
+                auth_style: super::AuthStyle::Bearer,
+                model: "fixture",
+                temperature_unsupported_models: &[],
+                temperature_override: None,
+                merge_system_into_user: false,
+                extra_headers: &[],
+                native_tool_calling: None,
+                vision: None,
+                default_provider_options: None,
+                responses_api_primary,
+                responses_omit_max_output_tokens: false,
+                extra_query_params: &[],
+                user_agent: None,
+                explicit_cache_control: false,
+            },
+            http,
+        );
+        model.invoke(&(), request("fixture", 0.7)).await.unwrap();
+        let requests = server.join().unwrap();
+        assert!(
+            requests[0]
+                .to_ascii_lowercase()
+                .contains("x-host-client: configured"),
+            "responses_api_primary={responses_api_primary}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn configured_http_client_is_used_for_model_listing() {
+    let (base, server) = serve_sequence(vec![(200, r#"{"data":[]}"#.into())]);
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("x-host-client", "configured".parse().unwrap());
+    let http = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap();
+    let model = OpenAiModel::new("key")
+        .with_base_url(&base)
+        .with_request_options(crate::providers::ProviderRequestOptions {
+            http: Some(http),
+            ..Default::default()
+        });
+    model.list_models().await.unwrap();
+    let requests = server.join().unwrap();
+    assert!(
+        requests[0]
+            .to_ascii_lowercase()
+            .contains("x-host-client: configured")
+    );
+}
+
+fn split_system_request() -> ModelRequest {
+    ModelRequest::new(vec![
+        Message::system("Stable."),
+        Message::system("Volatile."),
+        Message::user("hi"),
+        Message::assistant("hello"),
+        Message::system("Patch."),
+        Message::user("again"),
+    ])
+}
+
+#[test]
+fn local_runtimes_send_exactly_one_leading_system_message() {
+    // tinyhumansai/openhuman#7440: Qwen-family templates on LM Studio /
+    // llama.cpp reject any `system` turn after the first.
+    let lm_studio =
+        OpenAiModel::compatible_provider("lmstudio", "", "http://127.0.0.1:1234/v1", "qwen3")
+            .with_single_system_message();
+    let llama_cpp = OpenAiModel::llama_cpp("http://127.0.0.1:8080", "qwen3").unwrap();
+    for model in [lm_studio, llama_cpp] {
+        let body = body_for(&model, &split_system_request());
+        assert_eq!(
+            wire_roles(&body),
+            ["system", "user", "assistant", "user"],
+            "body={body}"
+        );
+        assert_eq!(
+            body["messages"][0]["content"].as_str(),
+            Some("Stable.\n\nVolatile.\n\nPatch."),
+            "body={body}"
+        );
+    }
+}
+
+#[test]
+fn hosted_openai_compatible_keeps_system_messages_in_place() {
+    let model = OpenAiModel::new("k");
+    let body = body_for(&model, &split_system_request());
+    assert_eq!(
+        wire_roles(&body),
+        ["system", "system", "user", "assistant", "system", "user"],
+        "body={body}"
+    );
+}
+
 fn unsupported_patterns() -> Vec<String> {
     ["o1*", "o3*", "o4*", "gpt-5*"]
         .into_iter()
@@ -284,7 +401,7 @@ fn wire_roles(body: &Value) -> Vec<String> {
 }
 
 #[test]
-fn hoisting_model_drops_system_messages_that_render_no_text() {
+fn deepseek_still_drops_record_only_system_messages() {
     // A record-only patch (sections / tool deltas, no content) renders as an
     // empty `role: system` message. A route that hoists system content to the
     // front of the prompt would still rewrite its cached prefix for it (#6962).
@@ -302,13 +419,57 @@ fn hoisting_model_drops_system_messages_that_render_no_text() {
 }
 
 #[test]
-fn non_hoisting_model_keeps_every_system_message_in_place() {
-    let model = OpenAiModel::new("k").with_model("gpt-4.1-mini");
+fn claude_on_a_relay_drops_system_messages_that_render_no_text() {
+    // The relay joins every system message into Anthropic's one `system`, so
+    // even an empty one would rewrite the cached prefix.
+    let model = OpenAiModel::new("k").with_model("anthropic/claude-haiku-4.5");
     let body = body_for(&model, &transcript_with_record_only_patch());
     assert_eq!(
         wire_roles(&body),
-        ["system", "user", "system", "system"],
+        ["system", "user", "system"],
         "body={body}"
+    );
+}
+
+#[test]
+fn record_only_system_messages_never_reach_the_wire() {
+    let model = OpenAiModel::new("k").with_model("gpt-4.1-mini");
+    let request = transcript_with_record_only_patch();
+    let body = body_for(&model, &request);
+    assert_eq!(
+        wire_roles(&body),
+        ["system", "user", "system"],
+        "body={body}"
+    );
+    let system_contents = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .map(|message| message["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        system_contents,
+        ["You are helpful.", "a real mid-turn instruction"]
+    );
+    assert!(
+        matches!(request.messages.get(2), Some(Message::System(system)) if system.content.is_empty())
+    );
+}
+
+#[test]
+fn system_messages_with_text_are_kept_in_order() {
+    let model = OpenAiModel::new("k").with_model("gpt-4.1-mini");
+    let body = body_for(&model, &transcript_with_record_only_patch());
+    let contents = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contents,
+        ["You are helpful.", "hi", "a real mid-turn instruction"]
     );
 }
 
@@ -325,7 +486,7 @@ fn request_model_override_controls_record_only_system_filtering() {
     let request = transcript_with_record_only_patch().with_model("gpt-4.1-mini");
     assert_eq!(
         wire_roles(&body_for(&model, &request)),
-        ["system", "user", "system", "system"]
+        ["system", "user", "system"]
     );
 }
 

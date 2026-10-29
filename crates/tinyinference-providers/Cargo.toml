@@ -12,15 +12,22 @@ keywords = ["llm", "inference", "oauth", "providers"]
 categories = ["api-bindings", "authentication"]
 
 [dependencies]
+async-trait = { workspace = true }
 base64 = "0.23"
 rand = "0.10"
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+# The host decides which driver backs this storage port.
+tinystoragedrivers-api = { version = "2.1.2", git = "https://github.com/tinyhumansai/tinystoragedrivers", rev = "6226b9484c8bd01c58741718cd89ba90a13a36bb" }
+tracing = { workspace = true }
 url = { workspace = true }
+zeroize = "1"
 
 [dev-dependencies]
+axum = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "net"] }
 
 [lints]
 workspace = true

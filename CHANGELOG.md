@@ -2,8 +2,97 @@
 
 ## Unreleased
 
+## 0.5.0
+
+- TinyHumans managed model: `TinyHumansModel::new_with_credential` takes a
+  resolver that reports which kind of credential (`Session` or `ApiKey`) each
+  bearer is, and `TinyHumansAuthFailure::credential()` returns the kind the
+  failing request itself was sent with. A host can now tell a rejected API key
+  from an expired session even when the credential changes while requests are
+  in flight; reading host-side "last resolved" state could attribute a late
+  API-key 401 to the session that replaced it. `new` is unchanged and reports
+  `None`.
+- `response_to_model_response` keeps the provider's finish reason (new
+  `ChatResponse::finish_reason`, passed through `canonical_finish_reason`), so a
+  length cut is no longer reported as `stop`; without one it still infers
+  `stop`/`tool_calls`. Native tool calls with empty or blank `arguments` parse
+  as `{}` instead of an invalid call. Code using an exhaustive `ChatResponse`
+  struct literal must initialise `finish_reason` or use `..Default::default()`.
+- OpenAI-compatible provider: a Claude model id (`claude-...`, or one with an
+  `anthropic` path segment) now reports `hoists_system_messages`, as the native
+  Anthropic adapter does. A relay serving Claude over Chat Completions joins
+  every `role: "system"` message into Anthropic's one top-level `system`, so a
+  note a harness added mid-turn as a system message rewrote the cached prefix
+  twice: when it appeared and when it went. Callers that read the flag now put
+  such notes in the conversation tail, and the request builder drops system
+  messages that render no text. Seen on `anthropic/claude-haiku-4.5` through
+  OpenRouter: two budget notices in an 80-call turn wrote about 276k prompt
+  tokens to the cache again.
+### Breaking changes
+
+- Bump to `0.5.0`: `tinyinference_llm::Usage` adds
+  `charged_amount_nanos`, and `tinyinference_decisions::Usage` adds
+  `cached_input_tokens` and `cost_usd_nanos`. Downstream Rust code that uses
+  exhaustive struct literals must initialize the new fields or use
+  `..Default::default()`.
+
+- Local OpenAI-compatible runtimes (`build_local_runtime_chat_model`, and
+  `OpenAiModel::ollama_at` / `llama_cpp` / `vllm` / local `ProviderSpec`s) send
+  every system message as one leading `system` message. Strict chat templates
+  (Qwen-family on LM Studio / llama.cpp) reject a second or mid-transcript
+  `system` turn with "System message must be at the beginning."
+  (tinyhumansai/openhuman#7440). New `OpenAiModel::with_single_system_message`;
+  its profile reports `hoists_system_messages` and no
+  `mid_conversation_system_messages`. Hosted routes are unchanged.
+- OpenAI-compatible provider: a streamed response now keeps the vendor fields
+  of `usage` (OpenRouter's `cost`, `cost_details`, `is_byok`) on `raw`, under
+  `usage`, where the non-streaming response already has them in its wire
+  body. A caller that reads a reported charge from `/usage/cost` saw it only
+  when it did not stream. The token counts the normalized usage reads stay off
+  `raw`, so a plain OpenAI stream still has `raw: None`.
+- Depend on `tinystoragedrivers-core` / `-secrets` v0.7.0 (was v0.5.0), so a host that vendors the v0.7.0 storage crates holds one `SecretStore` and one `BlobStore` trait instead of two (tinyhumansai/openhuman#7641).
+
+## 0.4.1
+
+### Breaking changes
+
+- Storage goes through tinystoragedrivers ports: `OAuthFlow::new` takes an
+  `Arc<dyn SecretStore>`, `start`/`clear_pending` are async, `pending_filename`
+  is now `pending_secret`; `GeneratedMedia::persist` writes to a `BlobStore`
+  and returns `BlobMeta` (new `Error::Storage`).
+
+### Fixed
+
+- OpenAI-compatible provider: an Anthropic-family request that asks for
+  prompt-cache breakpoints now also marks its newest text-bearing message. In a
+  tool loop the last user message stops moving, so the assistant tool calls and
+  tool results behind it were re-sent uncached on every call. Measured on
+  `anthropic/claude-haiku-5.5` through OpenRouter over an 8-round tool loop:
+  31% of prompt tokens read from cache before, 82% after. Other models keep the
+  system and last-user breakpoints (Gemini honours only the last breakpoint).
+
+## 0.3.1
+
+### Breaking changes
+
+- Removed the stale copy of the harness response cache from
+  `tinyinference_llm::cache`: `cache_key`, the `ResponseCache` trait,
+  `InMemoryResponseCache`, `PromptCacheLayout` and `CacheLayoutEvent`. Nothing
+  used them; the maintained versions (scoped keys, SQLite store, singleflight,
+  prompt-layout guard) live in `tinyagents-harness`'s `cache` module.
+  `CachePolicy` stays at `tinyinference_llm::cache::CachePolicy`, unchanged.
+  `canonical_value` is now public there. The crate no longer depends on `sha2`.
+
 ### Added
 
+- OpenAI-compatible provider: `OpenAiConfig` accepts a host-configured
+  `reqwest::Client`, used for every transport path, so a custom provider can
+  trust private CA certificates (openhuman#6905).
+- Model discovery reads an Ollama server's context window from the native
+  `POST /api/show` when its `/v1/models` listing carries none
+  (`LimitSource::NativeApi`, `DiscoveryRequest::with_ollama_native`,
+  `ModelListingFetcher::post_json`). The smaller of `num_ctx` and the
+  architecture `context_length` is used (openhuman#7099).
 - `tinyinference-image`: the `ImageGenerator` trait, `OpenRouterImageGenerator`
   (`POST /images`), `MockImageGenerator`, media-reference standards
   (URL, `data:` URL, bytes, local path → OpenRouter content parts), aspect-ratio,

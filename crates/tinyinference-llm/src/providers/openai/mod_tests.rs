@@ -491,6 +491,26 @@ fn parses_text_only_response_without_usage_details() {
 }
 
 #[test]
+fn an_output_limit_stop_is_reported_as_length_whatever_the_gateway_calls_it() {
+    // Gemini behind an OpenAI-compatible gateway spells the output cap
+    // `MAX_TOKENS`; the response carries the canonical `length` and keeps the
+    // wire value on `raw`.
+    let body = json!({
+        "id": "chatcmpl-cut",
+        "choices": [
+            { "message": { "role": "assistant", "content": "cut" }, "finish_reason": "MAX_TOKENS" }
+        ],
+        "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+    });
+    let response = parse_response(body).unwrap();
+    assert_eq!(response.finish_reason.as_deref(), Some("length"));
+    assert_eq!(
+        response.raw.as_ref().unwrap()["choices"][0]["finish_reason"],
+        json!("MAX_TOKENS")
+    );
+}
+
+#[test]
 fn total_tokens_falls_back_to_prompt_plus_completion_when_omitted() {
     // Some OpenAI-compatible backends omit `total_tokens` entirely; it must
     // not silently deserialize to a misleading `0` when prompt/completion
@@ -814,6 +834,15 @@ async fn sse_stream_parses_text_tool_calls_and_usage() {
         .filter(|item| matches!(item, ModelStreamItem::ToolCallDelta(_)))
         .count();
     assert_eq!(tool_deltas, 2);
+    assert!(
+        items
+            .iter()
+            .filter_map(|item| match item {
+                ModelStreamItem::ToolCallDelta(delta) => Some(delta.call_id.as_str()),
+                _ => None,
+            })
+            .all(|call_id| call_id == "call-1")
+    );
 
     // A usage delta was emitted.
     assert!(
@@ -1792,6 +1821,24 @@ fn derive_profile_flags_deepseek_ids_as_hoisting_system_messages() {
 }
 
 #[test]
+fn derive_profile_flags_claude_ids_as_hoisting_system_messages() {
+    // A relay serving Claude over Chat Completions folds every system message
+    // into Anthropic's one top-level `system`, so a mid-turn note rewrites the
+    // cached prefix just as DeepSeek's template does.
+    for id in [
+        "anthropic/claude-haiku-4.5",
+        "openrouter/anthropic/claude-haiku-4.5",
+        "claude-sonnet-4-6",
+        "Anthropic/Claude-Opus-4.1",
+    ] {
+        assert!(
+            super::transport::derive_profile("openrouter", id).hoists_system_messages,
+            "{id} should hoist system messages"
+        );
+    }
+}
+
+#[test]
 fn responses_profile_advertises_system_hoisting_after_builder_overrides() {
     let model = OpenAiModel::new("k")
         .with_responses_api_primary()
@@ -1848,6 +1895,66 @@ fn temperature_builders_compose() {
         .with_model("o1-mini")
         .with_temperature_unsupported_models(["o1*", "o3*"])
         .with_temperature_override(Some(0.0));
+}
+
+// ── single_system_message ─────────────────────────────────────────────
+
+#[test]
+fn single_system_joins_leading_and_mid_transcript_system_messages() {
+    let merged = single_system_message(&[
+        Message::system("Stable."),
+        Message::system("Volatile."),
+        Message::user("Hi"),
+        Message::assistant("Hello"),
+        Message::system("Tool patch."),
+        Message::user("Bye"),
+    ]);
+    assert_eq!(merged.len(), 4);
+    assert!(matches!(merged[0], Message::System(_)));
+    assert_eq!(merged[0].text(), "Stable.\n\nVolatile.\n\nTool patch.");
+    assert_eq!(merged[1].text(), "Hi");
+    assert!(matches!(merged[2], Message::Assistant(_)));
+    assert_eq!(merged[3].text(), "Bye");
+    let systems = merged
+        .iter()
+        .filter(|m| matches!(m, Message::System(_)))
+        .count();
+    assert_eq!(systems, 1);
+}
+
+#[test]
+fn single_system_is_noop_for_one_leading_system_message() {
+    let input = vec![Message::system("sys"), Message::user("hi")];
+    assert_eq!(single_system_message(&input), input);
+    let input = vec![Message::user("hi")];
+    assert_eq!(single_system_message(&input), input);
+}
+
+#[test]
+fn single_system_hoists_a_lone_late_system_message_and_drops_empty_ones() {
+    let merged = single_system_message(&[
+        Message::user("hi"),
+        Message::system(""),
+        Message::system("late"),
+    ]);
+    assert_eq!(merged.len(), 2);
+    assert!(matches!(merged[0], Message::System(_)));
+    assert_eq!(merged[0].text(), "late");
+    assert_eq!(merged[1].text(), "hi");
+
+    let merged = single_system_message(&[Message::user("hi"), Message::system("")]);
+    assert_eq!(merged, vec![Message::user("hi")]);
+}
+
+#[test]
+fn single_system_mode_clears_mid_conversation_and_survives_model_change() {
+    let model = OpenAiModel::compatible_provider("lmstudio", "", "http://127.0.0.1:1234/v1", "a")
+        .with_single_system_message()
+        .with_model("b");
+    assert!(!profile_of(&model).mid_conversation_system_messages);
+    assert!(profile_of(&model).hoists_system_messages);
+    let plain = OpenAiModel::compatible_provider("lmstudio", "", "http://127.0.0.1:1234/v1", "a");
+    assert!(profile_of(&plain).mid_conversation_system_messages);
 }
 
 // ── merge_system_into_user ────────────────────────────────────────────
@@ -1909,6 +2016,28 @@ fn merge_system_preserves_user_image_blocks() {
     } else {
         panic!("expected a user message");
     }
+}
+
+#[test]
+fn folded_system_messages_keep_their_json_blocks_as_sent_unfolded() {
+    // A system message's JSON block is serialized on the pass-through path;
+    // hoisting or merging it into the user turn must not drop it, and its
+    // blocks join exactly as the pass-through path joins them.
+    use crate::message::SystemMessage;
+    let structured = Message::System(SystemMessage {
+        content: vec![
+            ContentBlock::Text("Context: ".to_string()),
+            ContentBlock::Json(serde_json::json!({"tenant": "acme"})),
+        ],
+        ..Default::default()
+    });
+    let sent_as_is = r#"Context: {"tenant":"acme"}"#;
+
+    let hoisted = single_system_message(&[Message::user("hi"), structured.clone()]);
+    assert_eq!(hoisted[0].text(), sent_as_is);
+
+    let merged = merge_system_into_user(&[structured, Message::user("hi")]);
+    assert_eq!(merged[0].text(), format!("{sent_as_is}\n\nhi"));
 }
 
 #[test]
@@ -2637,6 +2766,81 @@ mod explicit_cache_control {
         assert_eq!(marker_count(&model, &request), 2);
     }
 
+    /// A tool loop: the last user turn is followed by assistant tool calls and
+    /// tool results, so the newest content is never a user message.
+    fn tool_loop_request() -> ModelRequest {
+        let call = |id: &str| crate::tool::ToolCall::new(id, "lookup", json!({ "n": 1 }));
+        let assistant = |id: &str| {
+            Message::Assistant(crate::message::AssistantMessage {
+                id: None,
+                content: Vec::new(),
+                tool_calls: vec![call(id)],
+                usage: None,
+                origin: None,
+            })
+        };
+        ModelRequest::new(vec![
+            Message::system("stable rules"),
+            Message::user("check the ledger"),
+            assistant("c1"),
+            Message::tool("c1", "row 1 ok"),
+            assistant("c2"),
+            Message::tool("c2", "row 2 ok"),
+        ])
+        .with_cache_segments(vec![PromptSegment {
+            id: "system".into(),
+            role: SegmentRole::System,
+            cacheable: true,
+        }])
+    }
+
+    #[test]
+    fn anthropic_tool_loops_carry_a_breakpoint_on_the_newest_message() {
+        let model = OpenAiModel::openrouter("key").with_model("anthropic/claude-haiku-5.5");
+        let body = model
+            .translate_request_with(&tool_loop_request(), Degrade::default())
+            .unwrap();
+        let json = serde_json::to_value(&body).unwrap();
+        let messages = json["messages"].as_array().unwrap();
+        let marker = json!({ "type": "ephemeral" });
+        // System, the last user turn, and the newest tool result: each call
+        // then reads the previous call's whole prefix instead of rewriting it.
+        assert_eq!(messages[0]["content"][0]["cache_control"], marker);
+        assert_eq!(messages[1]["content"][0]["cache_control"], marker);
+        assert_eq!(messages[5]["content"][0]["cache_control"], marker);
+        assert_eq!(messages[3]["content"], "row 1 ok");
+        assert_eq!(json.to_string().matches("cache_control").count(), 3);
+    }
+
+    #[test]
+    fn non_anthropic_models_on_openrouter_keep_the_system_and_user_breakpoints() {
+        // Gemini behind OpenRouter honours only the last breakpoint and ignores
+        // one on a tool result, which would discard the system one as well.
+        let model = OpenAiModel::openrouter("key").with_model("google/gemini-3.8-flash");
+        let body = model
+            .translate_request_with(&tool_loop_request(), Degrade::default())
+            .unwrap();
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json.to_string().matches("cache_control").count(), 2);
+        assert_eq!(json["messages"][5]["content"], "row 2 ok");
+    }
+
+    #[test]
+    fn the_tail_breakpoint_skips_a_trailing_message_without_text() {
+        let model = OpenAiModel::openrouter("key").with_model("anthropic/claude-haiku-5.5");
+        let mut request = tool_loop_request();
+        request.messages.push(Message::assistant(""));
+        let body = model
+            .translate_request_with(&request, Degrade::default())
+            .unwrap();
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json.to_string().matches("cache_control").count(), 3);
+        assert_eq!(
+            json["messages"][5]["content"][0]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+    }
+
     #[test]
     fn tinyhumans_anthropic_without_a_declared_prefix_is_unmarked() {
         let model = OpenAiModel::tinyhumans("k", "anthropic/claude-sonnet-4-6");
@@ -2761,6 +2965,42 @@ mod explicit_cache_control {
             .unwrap(),
         );
         assert_eq!(both.cache_read_tokens, 960);
+    }
+
+    #[test]
+    fn openrouter_cost_is_preserved_in_micro_dollars() {
+        let usage = convert_usage(
+            serde_json::from_value(json!({
+                "prompt_tokens": 100, "completion_tokens": 20,
+                "cost": 0.0000125
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            usage.charged_amount,
+            Some(crate::usage::ChargedAmount::usd_micros(13))
+        );
+        assert_eq!(usage.charged_amount_nanos, Some(12_500));
+
+        let tiny = convert_usage(serde_json::from_value(json!({"cost": 0.0000004})).unwrap());
+        assert_eq!(tiny.charged_amount_nanos, Some(400));
+
+        let unreported = convert_usage(
+            serde_json::from_value(json!({"prompt_tokens": 1, "completion_tokens": 1})).unwrap(),
+        );
+        assert_eq!(unreported.charged_amount, None);
+
+        let malformed = convert_usage(
+            serde_json::from_value(json!({
+                "prompt_tokens": 9,
+                "completion_tokens": 2,
+                "cost": {"unexpected": "object"}
+            }))
+            .unwrap(),
+        );
+        assert_eq!(malformed.input_tokens, 9);
+        assert_eq!(malformed.output_tokens, 2);
+        assert_eq!(malformed.charged_amount_nanos, None);
     }
 }
 
@@ -3350,4 +3590,69 @@ fn native_transport_support_tracks_selected_wire_and_reference_source() {
         "application/pdf",
         S::Path
     ));
+}
+
+fn deepseek_tool_history(thinking: bool) -> Vec<Message> {
+    vec![
+        Message::user("Call ping, then answer."),
+        Message::Assistant(AssistantMessage {
+            id: None,
+            content: if thinking {
+                vec![
+                    ContentBlock::thinking("first "),
+                    ContentBlock::thinking("second"),
+                ]
+            } else {
+                Vec::new()
+            },
+            tool_calls: vec![ToolCall::new("call-1", "ping", json!({}))],
+            usage: None,
+            origin: None,
+        }),
+        Message::tool("call-1", "pong"),
+    ]
+}
+
+#[test]
+fn deepseek_preserves_requested_thinking_for_unreasoned_tool_continuations() {
+    let model = model();
+    let request = ModelRequest::new(deepseek_tool_history(false))
+        .with_model("deepseek/deepseek-v4.1-flash")
+        .with_reasoning_effort(ReasoningEffort::High);
+    let value = serde_json::to_value(model.translate_request(&request).unwrap()).unwrap();
+    assert_eq!(value["reasoning_effort"], "high");
+    assert_eq!(value["messages"][1]["tool_calls"][0]["id"], "call-1");
+}
+
+#[test]
+fn deepseek_restores_requested_thinking_for_a_new_user_turn() {
+    let mut messages = deepseek_tool_history(false);
+    messages.push(Message::assistant("DONE"));
+    messages.push(Message::user("Now think about the next task."));
+    let request = ModelRequest::new(messages)
+        .with_model("deepseek/deepseek-v4.1-flash")
+        .with_reasoning_effort(ReasoningEffort::High);
+    let value = serde_json::to_value(model().translate_request(&request).unwrap()).unwrap();
+    assert_eq!(value["reasoning_effort"], "high");
+}
+
+#[test]
+fn deepseek_replays_thinking_without_exposing_it_as_visible_content() {
+    let request = ModelRequest::new(deepseek_tool_history(true))
+        .with_model("deepseek/deepseek-v4.1-flash")
+        .with_reasoning_effort(ReasoningEffort::High);
+    let value = serde_json::to_value(model().translate_request(&request).unwrap()).unwrap();
+    assert_eq!(value["reasoning_effort"], "high");
+    assert_eq!(value["messages"][1]["reasoning_content"], "first second");
+    assert!(value["messages"][1].get("content").is_none());
+}
+
+#[test]
+fn other_models_keep_their_requested_thinking_mode_and_wire_shape() {
+    let request = ModelRequest::new(deepseek_tool_history(false))
+        .with_model("gpt-4.1-mini")
+        .with_reasoning_effort(ReasoningEffort::High);
+    let value = serde_json::to_value(model().translate_request(&request).unwrap()).unwrap();
+    assert_eq!(value["reasoning_effort"], "high");
+    assert!(value["messages"][1].get("reasoning_content").is_none());
 }

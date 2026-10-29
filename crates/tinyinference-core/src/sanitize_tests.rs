@@ -137,6 +137,15 @@ fn scrub_credentials_is_idempotent() {
     assert_eq!(scrub_credentials(&once), once);
 }
 
+// A second pass must not stack a marker on a short value that the first
+// pass replaced whole (`"ab"` -> `"*[REDACTED]"`).
+#[test]
+fn short_quoted_value_scrubs_idempotently() {
+    let once = scrub_credentials(r#"{"token":"ab"}"#);
+    assert_eq!(once, r#"{"token":"*[REDACTED]"}"#);
+    assert_eq!(scrub_credentials(&once), once);
+}
+
 #[test]
 fn scrub_credentials_empty_input() {
     assert_eq!(scrub_credentials(""), "");
@@ -278,6 +287,13 @@ fn plain_password_assignment_is_redacted() {
 }
 
 #[test]
+fn alphabetic_password_assignment_is_redacted() {
+    let out = scrub_credentials("password=correcthorse");
+    assert_eq!(out, "password=corr*[REDACTED]");
+    assert!(!out.contains("correcthorse"));
+}
+
+#[test]
 fn member_access_on_a_literal_is_code_but_a_full_stop_is_not() {
     assert_unchanged(r#"token = "<pad>".strip()"#);
     assert_unchanged(r#"secret = "abc123def".encode("utf-8")"#);
@@ -291,4 +307,73 @@ fn references_and_type_annotations_are_not_secrets() {
     assert_unchanged("client = Client(api_key=api_key)");
     assert_unchanged("    api_key: String,");
     assert_unchanged(r#"token = os.environ["GITHUB_TOKEN"]"#);
+}
+
+// openhuman#7713: TypeScript auth code came back redacted after the
+// alphabetic-password fix, so the agent could not read its own source.
+
+#[test]
+fn member_paths_and_lowercase_type_annotations_are_not_secrets() {
+    for source in [
+        "  accessToken: string | null;",
+        "def login(password: str, api_key: str) -> bool:",
+        "      state.accessToken = action.payload;",
+        "const apiKey = config.apiKey;",
+        "request.credential = session.credential",
+    ] {
+        assert_unchanged(source);
+    }
+}
+
+#[test]
+fn values_that_only_resemble_code_references_stay_redacted() {
+    for (input, value) in [
+        // A quoted type name is a string literal, so it is data.
+        (r#"password: "string""#, "string"),
+        // A plain word after `:` is not a type name.
+        ("password: correcthorse", "correcthorse"),
+        // Under a password or secret key a dotted word may be the value.
+        ("password=correct.horse", "correct.horse"),
+        ("secret: a.b", "a.b"),
+        // A dotted value with digits is not a member path.
+        ("token=abc123.def456", "abc123.def456"),
+    ] {
+        let out = scrub_credentials(input);
+        assert!(!out.contains(value), "{input} -> {out}");
+    }
+}
+
+// A quoted (or YAML) capitalised word under `:` is data, not a type annotation.
+#[test]
+fn quoted_capitalised_secret_is_redacted() {
+    let leaked: Vec<String> = [r#"{"password": "Correcthorse"}"#, "secret: MyPassphrase"]
+        .into_iter()
+        .map(|input| (input, scrub_credentials(input)))
+        .filter(|(_, out)| out.contains("Correcthorse") || out.contains("MyPassphrase"))
+        .map(|(input, out)| format!("{input} -> {out}"))
+        .collect();
+    assert!(leaked.is_empty(), "leaked: {leaked:?}");
+}
+
+// Bare values with punctuation must be redacted whole.
+#[test]
+fn bare_values_with_punctuation_are_fully_redacted() {
+    let leaked: Vec<String> = [
+        ("DB_PASSWORD=p@ssw0rd!", "ssw0rd"),
+        ("password=$ecret123", "ecret123"),
+    ]
+    .into_iter()
+    .map(|(input, secret)| (input, secret, scrub_credentials(input)))
+    .filter(|(_, secret, out)| out.contains(secret))
+    .map(|(input, _, out)| format!("{input} -> {out}"))
+    .collect();
+    assert!(leaked.is_empty(), "leaked: {leaked:?}");
+}
+
+// A labelled secret inside stringified (escaped) JSON.
+#[test]
+fn secret_in_escaped_json_is_redacted() {
+    let input = r#"{"body":"{\"password\":\"hunter2secret\"}"}"#;
+    let out = scrub_credentials(input);
+    assert!(!out.contains("hunter2secret"), "leaked: {out}");
 }

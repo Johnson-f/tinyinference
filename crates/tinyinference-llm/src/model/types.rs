@@ -92,6 +92,19 @@ pub enum ReasoningEffort {
 }
 
 impl ReasoningEffort {
+    /// Parses a user-facing effort name, including common on/off aliases.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "none" | "off" | "disabled" => Some(Self::None),
+            "minimal" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" | "med" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" | "max" | "maximum" => Some(Self::XHigh),
+            _ => None,
+        }
+    }
+
     /// Returns the common provider wire token.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -122,6 +135,25 @@ pub struct ReasoningConfig {
 }
 
 impl ReasoningConfig {
+    /// Adds a reasoning budget of 55% of the output cap, with a 1024-token
+    /// minimum. Existing budgets, uncapped requests and disabled reasoning are
+    /// left unchanged.
+    pub fn with_output_room(mut self, max_output_tokens: Option<u32>) -> Self {
+        if !matches!(self.effort, Some(effort) if effort != ReasoningEffort::None)
+            || self.budget_tokens.is_some()
+        {
+            return self;
+        }
+        let Some(cap) = max_output_tokens else {
+            return self;
+        };
+        let budget = (u64::from(cap) * 55 / 100) as u32;
+        if budget >= 1024 {
+            self.budget_tokens = Some(budget);
+        }
+        self
+    }
+
     /// Creates a config containing only `effort`.
     pub fn effort(effort: ReasoningEffort) -> Self {
         Self {
@@ -827,6 +859,12 @@ pub struct ModelResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
     /// Provider finish reason (for example `stop`, `tool_calls`, `length`).
+    ///
+    /// A reply the output limit cut off is always `length`, whatever the
+    /// provider called it (see [`canonical_finish_reason`]); the provider's
+    /// own value is in [`raw`](Self::raw).
+    ///
+    /// [`canonical_finish_reason`]: crate::model::canonical_finish_reason
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
     /// Raw provider metadata preserved for callers who need it.
@@ -922,7 +960,9 @@ pub struct ProviderError {
     pub partial_message: Option<AssistantMessage>,
     /// The stop/finish reason reported before the failure, when the provider
     /// sent one (for example Anthropic's `message_delta.stop_reason`) prior
-    /// to the error that ended the stream.
+    /// to the error that ended the stream. Spelled the way
+    /// [`ModelResponse::finish_reason`] would spell it: an output-limit stop
+    /// is `length`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
 }
@@ -1334,6 +1374,27 @@ pub trait ChatModel<State: Send + Sync>: Send + Sync {
     /// credentials in the returned value.
     fn cache_identity(&self) -> Option<String> {
         None
+    }
+
+    /// Whether every physical provider send made by this model checks the
+    /// scoped admission hook through [`crate::model::budget::before_physical_attempt`].
+    ///
+    /// The default is conservative: unknown implementations may send without
+    /// observing that hook, so a caller cannot safely infer that a refusal
+    /// after invocation began happened before any provider request.
+    fn tracks_physical_attempts(&self) -> bool {
+        false
+    }
+
+    /// Whether this model can distinguish a refusal before any opaque child
+    /// invocation from a refusal after an opaque model may have sent a request.
+    /// A wrapper may enforce one gate before its inner model, or track opaque
+    /// children individually. Budget wrappers use this to decide whether they
+    /// need to conservatively mark the entire invocation as opaque. Transparent
+    /// wrappers must delegate this value.
+    #[doc(hidden)]
+    fn has_pre_invocation_admission_gate(&self) -> bool {
+        false
     }
 
     /// Invokes the model and returns a complete response.

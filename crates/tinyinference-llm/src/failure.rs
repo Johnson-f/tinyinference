@@ -1,5 +1,8 @@
 //! Provider-neutral failure classification shared by transport adapters.
 
+pub mod copy;
+pub mod demotion;
+
 /// Provider failure class used for retry and telemetry decisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderFailureClass {
@@ -168,8 +171,7 @@ pub fn body_indicates_quota_exhausted(body: &str) -> bool {
         // quota with no "monthly"/"quota" co-marker, so the phrases above miss
         // it. Both are quota-specific enough to match on their own (the loop
         // retries until `resets_at`, flooding from a single capped Plus user).
-        || lower.contains("usage_limit_reached")
-        || lower.contains("usage limit has been reached")
+        || is_plan_usage_cap(&lower)
         // "reached the limit" alone is ambiguous (rate-limit, token-limit), so
         // require a quota/plan/request/monthly co-marker to keep the blast
         // radius on plan-quota exhaustion only.
@@ -178,6 +180,12 @@ pub fn body_indicates_quota_exhausted(body: &str) -> bool {
                 || lower.contains("quota")
                 || lower.contains("monthly")
                 || lower.contains("plan")))
+}
+
+/// Codex/ChatGPT plan-cap markers. Unlike a generic "quota exceeded", these
+/// never describe a per-minute window, so they stay terminal under a 429.
+fn is_plan_usage_cap(lower: &str) -> bool {
+    lower.contains("usage_limit_reached") || lower.contains("usage limit has been reached")
 }
 
 /// Whether a provider error body is a **permanent per-request rate-cap
@@ -377,6 +385,23 @@ pub fn classify_provider_failure(
     code: Option<&str>,
     message: &str,
 ) -> ProviderFailureClass {
+    classify_provider_failure_with(status, code, message, |_| false)
+}
+
+/// Classifies a provider failure while allowing the host to identify a
+/// host-specific session-expiry message.
+///
+/// The predicate is consulted before generic status and code classification,
+/// allowing host-owned account state to remain terminal even when a proxy
+/// wraps it in a retryable status. Generic users should use
+/// [`classify_provider_failure`], which does not assign special meaning to
+/// any host's session errors.
+pub fn classify_provider_failure_with(
+    status: Option<u16>,
+    code: Option<&str>,
+    message: &str,
+    is_session_expired: impl Fn(&str) -> bool,
+) -> ProviderFailureClass {
     let has_structured_status = status.is_some();
     let has_structured_code = code.is_some_and(|value| !value.trim().is_empty());
     let structured_code = code.unwrap_or_default().to_ascii_lowercase();
@@ -390,9 +415,24 @@ pub fn classify_provider_failure(
         _ => message.to_ascii_lowercase(),
     };
 
+    // Host session expiry and plan caps are terminal even when wrapped in a
+    // 429, so they are checked before the rate-limit short-circuit. Generic
+    // quota phrases stay below it: a per-minute quota 429 is retryable.
+    if is_session_expired(message) || is_plan_usage_cap(&lower) {
+        return ProviderFailureClass::NonRetryable;
+    }
+
     let rate_limited = status == Some(429)
         || (lower.contains("429")
             && (lower.contains("too many") || lower.contains("rate") || lower.contains("limit")));
+    if rate_limited && !contains_business_limit(&lower) {
+        return ProviderFailureClass::RateLimited;
+    }
+
+    if is_context_window_exceeded_message(message) || body_indicates_quota_exhausted(message) {
+        return ProviderFailureClass::NonRetryable;
+    }
+
     if rate_limited {
         return if contains_business_limit(&lower) {
             ProviderFailureClass::NonRetryableRateLimit
@@ -465,9 +505,16 @@ pub fn parse_retry_after_ms(message: &str) -> Option<u64> {
 }
 
 mod context_limit;
+pub mod http;
+mod messages;
 mod text;
 
 pub use context_limit::parse_context_limit_from_error;
+pub use messages::{
+    TRANSIENT_PROVIDER_HTTP_STATUSES, is_ollama_cloud_internal_500_message,
+    local_provider_no_model_loaded_user_message, ollama_cloud_internal_500_user_message,
+    should_report_provider_http_status,
+};
 pub use text::{
     extract_provider_error_detail, extract_provider_name, is_auth_error_text,
     is_codex_token_expired_text, is_connection_dropped_text, is_context_length_text,

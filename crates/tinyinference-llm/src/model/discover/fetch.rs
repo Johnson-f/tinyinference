@@ -5,9 +5,10 @@ use serde_json::Value;
 
 use super::cache::{ModelLimitsCache, model_limits_cache};
 use super::parse::{
-    model_ids_match, parse_listing_limits, parse_model_limits, parse_openrouter_endpoint_limits,
+    model_ids_match, parse_listing_limits, parse_model_limits, parse_ollama_show,
+    parse_openrouter_endpoint_limits,
 };
-use super::types::{DiscoveryRequest, ModelLimits};
+use super::types::{DiscoveryRequest, LimitSource, ModelLimits};
 
 /// Fetches a JSON document for discovery. Injectable so hosts can reuse their
 /// own HTTP client (proxies, TLS policy) and tests never touch the network.
@@ -21,6 +22,27 @@ pub trait ModelListingFetcher: Send + Sync {
     /// status, or a body that is not JSON. Discovery treats any error as
     /// "nothing found here" and moves on.
     async fn get_json(&self, url: &str, headers: &[(String, String)]) -> crate::Result<Value>;
+
+    /// `POST url` with a JSON `body` and `headers`, decoded as JSON. Used for
+    /// native APIs that have no GET form (Ollama's `/api/show`).
+    ///
+    /// The default reports "unsupported", which discovery treats like any
+    /// other failed lookup.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Self::get_json`].
+    async fn post_json(
+        &self,
+        url: &str,
+        _headers: &[(String, String)],
+        _body: &Value,
+    ) -> crate::Result<Value> {
+        Err(crate::Error::Catalog(format!(
+            "POST {} unsupported by this fetcher",
+            redact_url(url)
+        )))
+    }
 }
 
 /// `url` without userinfo, query and fragment, safe for errors and logs (a
@@ -66,6 +88,23 @@ impl ReqwestListingFetcher {
     pub fn new(client: reqwest::Client) -> Self {
         Self { client }
     }
+
+    async fn send(&self, builder: reqwest::RequestBuilder, shown: &str) -> crate::Result<Value> {
+        let response = builder.send().await.map_err(|error| {
+            // reqwest errors embed the full URL; strip it, we add a redacted one.
+            crate::Error::Catalog(format!("{shown} failed: {}", error.without_url()))
+        })?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(crate::Error::Catalog(format!(
+                "{shown} returned {}",
+                status.as_u16()
+            )));
+        }
+        response.json::<Value>().await.map_err(|error| {
+            crate::Error::Catalog(format!("{shown} body: {}", error.without_url()))
+        })
+    }
 }
 
 #[async_trait]
@@ -76,25 +115,31 @@ impl ModelListingFetcher for ReqwestListingFetcher {
                 "network-backed model calls are denied for this process".to_string(),
             ));
         }
-        let shown = redact_url(url);
+        let shown = format!("GET {}", redact_url(url));
         let mut builder = self.client.get(url);
         for (name, value) in headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        let response = builder.send().await.map_err(|error| {
-            // reqwest errors embed the full URL; strip it, we add a redacted one.
-            crate::Error::Catalog(format!("GET {shown} failed: {}", error.without_url()))
-        })?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(crate::Error::Catalog(format!(
-                "GET {shown} returned {}",
-                status.as_u16()
-            )));
+        self.send(builder, &shown).await
+    }
+
+    async fn post_json(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &Value,
+    ) -> crate::Result<Value> {
+        if crate::network_models_denied() {
+            return Err(crate::Error::Catalog(
+                "network-backed model calls are denied for this process".to_string(),
+            ));
         }
-        response.json::<Value>().await.map_err(|error| {
-            crate::Error::Catalog(format!("GET {shown} body: {}", error.without_url()))
-        })
+        let shown = format!("POST {}", redact_url(url));
+        let mut builder = self.client.post(url).json(body);
+        for (name, value) in headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        self.send(builder, &shown).await
     }
 }
 
@@ -121,11 +166,29 @@ pub async fn discover_model_limits_with(
     cache: &ModelLimitsCache,
     request: &DiscoveryRequest,
 ) -> Option<ModelLimits> {
+    discover_model_limits_with_guard(fetcher, cache, request, &|operation| {
+        operation();
+        true
+    })
+    .await
+}
+
+// Synchronous access keeps a host identity guard held across each cache
+// operation, including the listing's sibling-model writes.
+type CacheAccess<'a> = dyn Fn(&mut dyn FnMut()) -> bool + Sync + 'a;
+
+pub(crate) async fn discover_model_limits_with_guard(
+    fetcher: &dyn ModelListingFetcher,
+    cache: &ModelLimitsCache,
+    request: &DiscoveryRequest,
+    access: &CacheAccess<'_>,
+) -> Option<ModelLimits> {
     let variant = request.cache_variant();
-    let cached = cache.get_variant(&request.endpoint, &request.model, &variant);
+    let mut cached = super::cache::CachedLimits::default();
+    access(&mut || cached = cache.get_variant(&request.endpoint, &request.model, &variant));
     if cached.discovered.is_some() {
         tracing::debug!(
-            endpoint = %request.endpoint,
+            endpoint = %redact_url(&request.endpoint),
             model = %request.model,
             found = cached.discovered.as_ref().is_some_and(Option::is_some),
             "[model_limits] discovery cache hit"
@@ -133,21 +196,26 @@ pub async fn discover_model_limits_with(
         return cached.effective();
     }
     let started = std::time::Instant::now();
-    let limits =
-        match tokio::time::timeout(request.timeout, fetch_limits(fetcher, cache, request)).await {
-            Ok(limits) => limits,
-            Err(_) => {
-                tracing::warn!(
-                    endpoint = %request.endpoint,
-                    model = %request.model,
-                    timeout_ms = request.timeout.as_millis() as u64,
-                    "[model_limits] discovery timed out"
-                );
-                None
-            }
-        };
+    let mut siblings = Vec::new();
+    let limits = match tokio::time::timeout(
+        request.timeout,
+        fetch_limits(fetcher, request, &mut siblings),
+    )
+    .await
+    {
+        Ok(limits) => limits,
+        Err(_) => {
+            tracing::warn!(
+                endpoint = %redact_url(&request.endpoint),
+                model = %request.model,
+                timeout_ms = request.timeout.as_millis() as u64,
+                "[model_limits] discovery timed out"
+            );
+            None
+        }
+    };
     tracing::info!(
-        endpoint = %request.endpoint,
+        endpoint = %redact_url(&request.endpoint),
         model = %request.model,
         context_window = ?limits.as_ref().and_then(|limits| limits.context_window),
         max_output_tokens = ?limits.as_ref().and_then(|limits| limits.max_output_tokens),
@@ -155,10 +223,30 @@ pub async fn discover_model_limits_with(
         elapsed_ms = started.elapsed().as_millis() as u64,
         "[model_limits] discovery finished"
     );
-    cache.insert_discovered_variant(&request.endpoint, &request.model, &variant, limits);
-    cache
-        .get_variant(&request.endpoint, &request.model, &variant)
-        .effective()
+    // Even if a newer generation rejects publication, the pending caller
+    // must respect the overflow window observed when its discovery began.
+    let mut resolved = super::cache::CachedLimits {
+        discovered: Some(limits.clone()),
+        learned_context_window: cached.learned_context_window,
+    }
+    .effective();
+    access(&mut || {
+        // Publish completed listing facts after probes finish or time out and the
+        // caller's generation is still current. No stale sibling survives clear.
+        for (id, limits) in &siblings {
+            cache.insert_discovered_variant(&request.endpoint, id, &variant, Some(limits.clone()));
+        }
+        cache.insert_discovered_variant(
+            &request.endpoint,
+            &request.model,
+            &variant,
+            limits.clone(),
+        );
+        resolved = cache
+            .get_variant(&request.endpoint, &request.model, &variant)
+            .effective();
+    });
+    resolved
 }
 
 /// [`discover_model_limits_with`] through the process-wide cache.
@@ -171,30 +259,30 @@ pub async fn discover_model_limits(
 
 async fn fetch_limits(
     fetcher: &dyn ModelListingFetcher,
-    cache: &ModelLimitsCache,
     request: &DiscoveryRequest,
+    siblings: &mut Vec<(String, ModelLimits)>,
 ) -> Option<ModelLimits> {
     let listing_url = request.effective_listing_url();
     let mut found = match fetcher.get_json(&listing_url, &request.headers).await {
         Ok(body) => {
             let listed = parse_listing_limits(&body);
             tracing::debug!(
-                endpoint = %request.endpoint,
+                endpoint = %redact_url(&request.endpoint),
                 listed = listed.len(),
                 "[model_limits] read model listing"
             );
             // Listing-level limits are the broad (unpinned) answer; never
             // prime them for a pinned request, which needs endpoint limits.
             if request.pinned_providers.is_empty() {
-                let variant = request.cache_variant();
                 for (id, limits) in listed {
+                    // A partial entry (no window) must not become a finished
+                    // discovery for its model when the native probe could still
+                    // supply the window on that model's own request.
+                    if request.ollama_native_enabled() && limits.context_window.is_none() {
+                        continue;
+                    }
                     if !model_ids_match(&id, &request.model) {
-                        cache.insert_discovered_variant(
-                            &request.endpoint,
-                            &id,
-                            &variant,
-                            Some(limits),
-                        );
+                        siblings.push((id, limits));
                     }
                 }
             }
@@ -202,7 +290,7 @@ async fn fetch_limits(
         }
         Err(error) => {
             tracing::debug!(
-                endpoint = %request.endpoint,
+                endpoint = %redact_url(&request.endpoint),
                 error = %error,
                 "[model_limits] model listing unavailable"
             );
@@ -232,10 +320,47 @@ async fn fetch_limits(
                 }
             }
             Err(error) => tracing::debug!(
-                endpoint = %request.endpoint,
+                endpoint = %redact_url(&request.endpoint),
                 model = %request.model,
                 error = %error,
                 "[model_limits] single-model record unavailable"
+            ),
+        }
+    }
+
+    if found
+        .as_ref()
+        .is_none_or(|limits| limits.context_window.is_none())
+        && request.ollama_native_enabled()
+    {
+        let url = request.ollama_show_url();
+        let body = serde_json::json!({ "model": request.model });
+        match fetcher.post_json(&url, &request.headers, &body).await {
+            Ok(reply) => {
+                if let Some(native) = parse_ollama_show(&reply) {
+                    tracing::debug!(
+                        endpoint = %redact_url(&request.endpoint),
+                        model = %request.model,
+                        context_window = ?native.context_window,
+                        "[model_limits] context window from Ollama /api/show"
+                    );
+                    found = Some(match found {
+                        Some(mut listed) => {
+                            // The window now comes from the native API; label it
+                            // so, keeping the listing's other fields.
+                            listed.context_window = native.context_window;
+                            listed.source = LimitSource::NativeApi;
+                            listed
+                        }
+                        None => native,
+                    });
+                }
+            }
+            Err(error) => tracing::debug!(
+                endpoint = %redact_url(&request.endpoint),
+                model = %request.model,
+                error = %error,
+                "[model_limits] Ollama /api/show unavailable"
             ),
         }
     }
@@ -256,7 +381,7 @@ async fn fetch_limits(
                     // The model-level value may be the maximum across
                     // providers; it does not describe the pinned route.
                     tracing::debug!(
-                        endpoint = %request.endpoint,
+                        endpoint = %redact_url(&request.endpoint),
                         model = %request.model,
                         "[model_limits] no pinned provider endpoint matched; dropping model-level limit"
                     );
@@ -265,7 +390,7 @@ async fn fetch_limits(
             }
             Err(error) => {
                 tracing::debug!(
-                    endpoint = %request.endpoint,
+                    endpoint = %redact_url(&request.endpoint),
                     model = %request.model,
                     error = %error,
                     "[model_limits] pinned-provider endpoints unavailable; dropping model-level limit"

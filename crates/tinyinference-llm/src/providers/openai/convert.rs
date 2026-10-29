@@ -22,12 +22,14 @@ pub(super) fn translate_message(message: &Message) -> Result<ChatMessageWire> {
             )?)),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            reasoning_content: None,
         },
         Message::User(user) => ChatMessageWire {
             role: "user".to_string(),
             content: Some(translate_user_content(&user.content)?),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            reasoning_content: None,
         },
         Message::Assistant(assistant) => {
             if assistant.content.iter().any(|block| {
@@ -71,6 +73,7 @@ pub(super) fn translate_message(message: &Message) -> Result<ChatMessageWire> {
                 content,
                 tool_calls,
                 tool_call_id: None,
+                reasoning_content: None,
             }
         }
         Message::Tool(tool) => ChatMessageWire {
@@ -80,6 +83,7 @@ pub(super) fn translate_message(message: &Message) -> Result<ChatMessageWire> {
             )?)),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool.tool_call_id.clone()),
+            reasoning_content: None,
         },
         // Callers filter `Message::Custom` out of the messages slice before
         // calling this function; it is a host-side out-of-band record that is
@@ -190,14 +194,39 @@ pub(super) fn translate_user_content(blocks: &[ContentBlock]) -> Result<MessageC
 /// Attaches explicit prompt-cache breakpoints to the last system message and
 /// the last user message, the two placements OpenRouter forwards to Anthropic.
 ///
+/// With `tail` set, the newest message that carries text also gets one. In a
+/// tool loop the last user message stops moving while assistant tool calls and
+/// tool results pile up behind it, so without a tail marker each call re-sends
+/// that growth uncached and writes nothing for the next call to read. Anthropic
+/// reads the longest marked prefix it holds, so the tail marker makes every
+/// call read the previous one's whole prefix and write only the delta. It is
+/// opt-in per model because Gemini behind OpenRouter honours only the last
+/// breakpoint and ignores one on a tool result, which would also discard the
+/// system marker. Three markers stay within Anthropic's limit of four.
+///
 /// Plain-string content is promoted to a single text part so the marker has a
 /// block to sit on; multi-part content gets the marker on its final text part.
 /// Messages without a text part (image-only) are left untouched.
-pub(super) fn apply_cache_breakpoints(messages: &mut [ChatMessageWire]) {
+pub(super) fn apply_cache_breakpoints(messages: &mut [ChatMessageWire], tail: bool) {
     for role in ["system", "user"] {
         if let Some(message) = messages.iter_mut().rev().find(|m| m.role == role) {
             mark_last_text_part(message);
         }
+    }
+    if tail && let Some(message) = messages.iter_mut().rev().find(|m| has_text(m)) {
+        mark_last_text_part(message);
+    }
+}
+
+/// Whether `message` has a non-empty text part a breakpoint can sit on.
+/// Anthropic rejects `cache_control` on an empty text block.
+fn has_text(message: &ChatMessageWire) -> bool {
+    match &message.content {
+        Some(MessageContentWire::Text(text)) => !text.is_empty(),
+        Some(MessageContentWire::Parts(parts)) => parts
+            .iter()
+            .any(|part| matches!(part, ContentPartWire::Text { text, .. } if !text.is_empty())),
+        None => false,
     }
 }
 
@@ -445,7 +474,9 @@ pub(super) fn parse_chat_response(
         execution: None,
         message,
         usage,
-        finish_reason: choice.finish_reason,
+        finish_reason: choice
+            .finish_reason
+            .map(crate::model::canonical_finish_reason),
         raw: Some(value),
         resolved_model: None,
         continue_turn: None,
@@ -572,9 +603,23 @@ pub(super) fn convert_usage(wire: UsageWire) -> Usage {
             .completion_tokens_details
             .map(|d| d.reasoning_tokens)
             .unwrap_or(0),
-        charged_amount: None,
+        charged_amount: wire.cost.as_ref().and_then(usd_cost_nanos).map(|nanos| {
+            crate::usage::ChargedAmount::usd_micros(nanos.saturating_add(500) / 1_000)
+        }),
+        charged_amount_nanos: wire.cost.as_ref().and_then(usd_cost_nanos),
         context_window_tokens: None,
     }
+}
+
+/// Converts a decimal USD amount to the crate's integer micro-dollar unit.
+/// Invalid, negative, non-finite, or out-of-range provider values stay
+/// unknown instead of being turned into a fabricated zero.
+fn usd_cost_nanos(cost: &serde_json::Value) -> Option<i64> {
+    let value = cost.as_number()?.as_f64()?;
+    if !value.is_finite() || value < 0.0 || value > (i64::MAX as f64 / 1_000_000_000.0) {
+        return None;
+    }
+    Some((value * 1_000_000_000.0).round() as i64)
 }
 
 /// Normalizes provider-specific reasoning/thinking payloads into text.
@@ -645,4 +690,20 @@ pub(super) fn validate_image_ref(image: &crate::message::ImageRef) -> Result<()>
         return Err(Error::Validation("Image input requires PNG/JPEG/WebP/GIF inline base64 or a remote HTTP(S) URL; resolve local paths in the host".into()));
     }
     Ok(())
+}
+
+/// Replays DeepSeek's thinking channel without putting it in visible content.
+pub(super) fn translate_deepseek_message(message: &Message) -> Result<ChatMessageWire> {
+    let mut wire = translate_message(message)?;
+    if let Message::Assistant(assistant) = message {
+        let reasoning: String = assistant
+            .content
+            .iter()
+            .filter_map(|block| block.as_thinking().map(|(text, _)| text))
+            .collect();
+        if !reasoning.is_empty() {
+            wire.reasoning_content = Some(reasoning);
+        }
+    }
+    Ok(wire)
 }

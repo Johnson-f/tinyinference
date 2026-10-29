@@ -20,9 +20,14 @@ pub mod tool;
 pub mod usage;
 
 pub use error::{Error, Result};
+pub use failure::copy::{
+    FailureCopy, FailureCopyClass, FailureCopyProvider, default_failure_copy, failure_copy_with,
+};
+pub use failure::demotion::{DemotionKind, demote_decision};
 pub use failure::{
-    ProviderFailureClass, classify_provider_error, classify_provider_failure, parse_retry_after_ms,
-    provider_error_is_retryable, structured_http_status,
+    ProviderFailureClass, classify_provider_error, classify_provider_failure,
+    classify_provider_failure_with, parse_retry_after_ms, provider_error_is_retryable,
+    structured_http_status,
 };
 pub use message::{AssistantMessage, ContentBlock, Message, MessageDelta};
 pub use model::{
@@ -32,8 +37,9 @@ pub use model::{
     RemoteToolNamespace, ReportedCost, SearchSource,
 };
 pub use model::{
-    ChatModel, InputModality, InputSource, ModelRequest, ModelResponse, ModelStream,
-    ModelStreamItem, context_window_for_model_id, model_id_supports_vision,
+    BeforeDispatch, ChatModel, DispatchCheckedModel, FINISH_REASON_LENGTH, InputModality,
+    InputSource, ModelRequest, ModelResponse, ModelStream, ModelStreamItem,
+    canonical_finish_reason, context_window_for_model_id, model_id_supports_vision,
 };
 pub use network_guard::{allow_network_models, deny_network_models, network_models_denied};
 pub use providers::perplexity::{

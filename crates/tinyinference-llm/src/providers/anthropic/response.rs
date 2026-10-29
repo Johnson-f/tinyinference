@@ -86,7 +86,7 @@ pub(crate) fn parse_response(body: Value) -> Result<ModelResponse> {
             origin: None,
         },
         usage: Some(usage),
-        finish_reason: Some(stop_reason),
+        finish_reason: Some(crate::model::canonical_finish_reason(stop_reason)),
         raw: Some(body),
         resolved_model: None,
         continue_turn: None,

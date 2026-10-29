@@ -83,17 +83,20 @@ const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
 
 pub mod codex;
-mod config;
+pub(crate) mod config;
 mod convert;
 mod local;
 mod reasoning_tags;
 mod responses;
+pub mod server;
+#[cfg(feature = "server-http")]
+pub mod server_http;
 mod sse;
 mod transport;
 
 pub use config::{
     OpenAiConfig, build_local_runtime_chat_model, build_openai_chat_model, build_openai_model,
-    endpoint_is_openrouter,
+    build_openai_model_with_http, endpoint_is_openrouter,
 };
 pub use local::{
     CONTEXT_OVERFLOW_CODE, LocalProbe, LocalRuntimeKind, is_chat_template_rejection_message,
@@ -110,7 +113,7 @@ use sse::*;
 #[cfg(test)]
 use transport::{
     Degrade, auth_headers, degrade_for_400, merge_provider_options, merge_system_into_user,
-    request_timeout,
+    request_timeout, single_system_message,
 };
 
 #[cfg(test)]

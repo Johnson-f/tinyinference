@@ -38,12 +38,15 @@
 //! opt out via `protect_prompt_prefix = false`. A request without a policy
 //! follows its segments: declaring a cacheable prefix *is* the opt-in.
 
-mod config;
+pub(crate) mod config;
 mod request;
 mod response;
 mod stream;
 
-pub use config::{AnthropicConfig, build_anthropic_model, endpoint_is_anthropic_messages};
+pub use config::{
+    AnthropicConfig, build_anthropic_model, build_anthropic_model_with_http,
+    endpoint_is_anthropic_messages,
+};
 
 #[cfg(test)]
 #[path = "config_tests.rs"]
@@ -184,6 +187,22 @@ impl AnthropicModel {
         self
     }
 
+    /// Sets the provider identity advertised in profiles, responses and errors.
+    pub fn with_provider_name(mut self, provider: impl Into<String>) -> Self {
+        self.profile.provider = Some(provider.into());
+        self
+    }
+
+    /// Overrides the advertised image-input capability.
+    pub fn with_vision(mut self, enabled: bool) -> Self {
+        self.profile.modalities.image_in = enabled;
+        self
+    }
+
+    fn provider_name(&self) -> &str {
+        self.profile.provider.as_deref().unwrap_or(PROVIDER)
+    }
+
     /// Overrides the default model id used when a request does not specify one.
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
@@ -268,7 +287,7 @@ impl AnthropicModel {
     /// the instance default).
     pub(super) fn origin_for(&self, request: &ModelRequest) -> crate::message::MessageOrigin {
         crate::message::MessageOrigin {
-            provider: PROVIDER.to_string(),
+            provider: self.provider_name().to_string(),
             api: MESSAGES_API.to_string(),
             model: self.request_model(request).to_string(),
         }
@@ -342,6 +361,7 @@ impl AnthropicModel {
             (false, Some(timeout_ms)) => request_builder.timeout(Duration::from_millis(timeout_ms)),
             _ => request_builder,
         };
+        crate::model::budget::before_physical_attempt()?;
         let response = request_builder.send().await.map_err(|error| {
             Error::Provider(Box::new(self.provider_error(
                 request,
@@ -384,7 +404,7 @@ impl AnthropicModel {
                 .is_retryable();
         ProviderError {
             partial_response: None,
-            provider: PROVIDER.to_string(),
+            provider: self.provider_name().to_string(),
             model: Some(self.request_model(request).to_string()),
             status,
             code,
@@ -461,7 +481,16 @@ impl<State: Send + Sync> ChatModel<State> for AnthropicModel {
     }
 
     fn cache_identity(&self) -> Option<String> {
-        Some(format!("anthropic:{}:{}", self.base_url, self.model))
+        Some(format!(
+            "{}:{}:{}",
+            self.provider_name(),
+            self.base_url,
+            self.model
+        ))
+    }
+
+    fn tracks_physical_attempts(&self) -> bool {
+        true
     }
 
     async fn invoke(&self, _state: &State, request: ModelRequest) -> Result<ModelResponse> {
@@ -481,10 +510,14 @@ impl<State: Send + Sync> ChatModel<State> for AnthropicModel {
     async fn stream(&self, _state: &State, request: ModelRequest) -> Result<ModelStream> {
         let response = self.post(&request, true).await?;
         let model = self.request_model(&request).to_string();
-        let stream = stream::into_model_stream(response, model);
+        let stream = stream::into_model_stream(response, model, self.provider_name().to_string());
         Ok(match request.correlation {
             Some(correlation) => stream.with_correlation(correlation),
             None => stream,
         })
     }
 }
+
+#[cfg(test)]
+#[path = "mod_identity_tests.rs"]
+mod identity_tests;

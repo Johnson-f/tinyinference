@@ -11,28 +11,45 @@ readme = "../../README.md"
 keywords = ["llm", "inference", "streaming", "openai", "anthropic"]
 categories = ["api-bindings", "asynchronous"]
 
+[features]
+default = []
+# Generic OpenAI-compatible `/chat/completions` + `/models` axum handlers over a
+# host `ChatBackend` (lives here, not in tinyinference-providers: this crate
+# already depends on providers, so the reverse edge would be a cycle).
+server-http = ["dep:axum", "dep:uuid"]
+
 [dependencies]
-base64 = "0.22"
+axum = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+base64 = "0.23"
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
-sha2 = { workspace = true }
 thiserror = { workspace = true }
-tinyinference-core = { version = "0.3.0", path = "../tinyinference-core" }
+tinyinference-providers = { version = "0.5.0", path = "../tinyinference-providers" }
+tinyinference-core = { version = "0.5.0", path = "../tinyinference-core" }
+tinyinference-embeddings = { version = "0.5.0", path = "../tinyinference-embeddings" }
 # The model-facing tool protocol: prompt-guided rendering, text-mode parsing,
 # argument repair, and streaming scrub. Owned once, in TinyTools, so this
 # adapter and every host share one grammar table.
-tinytools-agent = { version = "0.5.0", git = "https://github.com/tinyhumansai/tinytools", rev = "8feb5571e52baa145b5c7c473b16cd59de2b103a" }
+tinytools-agent = { version = "0.6.0", git = "https://github.com/tinyhumansai/tinytools", rev = "3a01641f8ebd8a55656cd212f9a90638d958a447" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+axum = { workspace = true }
+uuid = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
 http = "1"
-tokio = { workspace = true, features = ["test-util"] }
+http-body-util = "0.1"
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber = "0.3"
+rcgen = { version = "0.14.10", default-features = false, features = ["pem", "ring"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 [lints]
 workspace = true

@@ -35,11 +35,7 @@ use crate::{Error, Result};
 
 use super::PROVIDER;
 use super::response::parse_usage;
-
-/// Anthropic emits content blocks densely from zero. This generous bound keeps
-/// a malicious or corrupt event from turning one wire index into an unbounded
-/// allocation while remaining far above practical response sizes.
-const MAX_CONTENT_BLOCK_INDEX: usize = 1023;
+use crate::providers::MAX_STREAM_INDEX;
 
 /// One open content block, keyed by its wire `index`.
 #[derive(Clone, Debug)]
@@ -138,6 +134,9 @@ impl AnthropicStreamAcc {
                 reasoning_tokens: existing.reasoning_tokens.max(incoming.reasoning_tokens),
                 total_tokens: 0,
                 charged_amount: incoming.charged_amount.or(existing.charged_amount),
+                charged_amount_nanos: incoming
+                    .charged_amount_nanos
+                    .or(existing.charged_amount_nanos),
                 context_window_tokens: incoming
                     .context_window_tokens
                     .or(existing.context_window_tokens),
@@ -438,7 +437,7 @@ impl AnthropicStreamAcc {
                 origin: None,
             },
             usage,
-            finish_reason: self.stop_reason,
+            finish_reason: self.stop_reason.map(crate::model::canonical_finish_reason),
             raw: Some(raw),
             resolved_model: None,
             continue_turn: None,
@@ -454,9 +453,9 @@ fn event_index(event: &Value) -> Result<usize> {
         .as_u64()
         .and_then(|index| usize::try_from(index).ok())
         .ok_or_else(|| Error::Model("invalid Anthropic SSE content-block index".to_string()))?;
-    if index > MAX_CONTENT_BLOCK_INDEX {
+    if index > MAX_STREAM_INDEX {
         return Err(Error::Model(format!(
-            "Anthropic SSE content-block index {index} exceeds limit {MAX_CONTENT_BLOCK_INDEX}"
+            "Anthropic SSE content-block index {index} exceeds limit {MAX_STREAM_INDEX}"
         )));
     }
     Ok(index)
@@ -468,6 +467,7 @@ struct SseState {
     pending: VecDeque<ModelStreamItem>,
     acc: AnthropicStreamAcc,
     model: String,
+    provider: String,
     started: bool,
     finished: bool,
     completion_seen: bool,
@@ -497,9 +497,13 @@ impl SseState {
                 }
             }
         };
-        provider_error.provider = PROVIDER.to_string();
+        provider_error.provider = self.provider.clone();
         provider_error.model = Some(self.model.clone());
-        provider_error.stop_reason = self.acc.stop_reason.clone();
+        provider_error.stop_reason = self
+            .acc
+            .stop_reason
+            .clone()
+            .map(crate::model::canonical_finish_reason);
         let partial = std::mem::take(&mut self.acc).into_response();
         if !partial.message.content.is_empty() || !partial.message.tool_calls.is_empty() {
             provider_error.partial_message = Some(partial.message.clone());
@@ -573,7 +577,7 @@ async fn sse_next(mut state: SseState) -> Option<(ModelStreamItem, SseState)> {
             state.terminal_emitted = true;
             let mut response = std::mem::take(&mut state.acc).into_response();
             response.message.origin = Some(crate::message::MessageOrigin {
-                provider: PROVIDER.to_string(),
+                provider: state.provider.clone(),
                 api: super::MESSAGES_API.to_string(),
                 model: state.model.clone(),
             });
@@ -609,7 +613,11 @@ async fn sse_next(mut state: SseState) -> Option<(ModelStreamItem, SseState)> {
 }
 
 /// Wraps a successful streaming HTTP response as a [`ModelStream`].
-pub(super) fn into_model_stream(response: reqwest::Response, model: String) -> ModelStream {
+pub(super) fn into_model_stream(
+    response: reqwest::Response,
+    model: String,
+    provider: String,
+) -> ModelStream {
     let bytes = response
         .bytes_stream()
         .map(|chunk| chunk.map_err(|error| Error::Model(format!("stream chunk failed: {error}"))));
@@ -619,6 +627,7 @@ pub(super) fn into_model_stream(response: reqwest::Response, model: String) -> M
         pending: VecDeque::new(),
         acc: AnthropicStreamAcc::default(),
         model,
+        provider,
         started: false,
         finished: false,
         completion_seen: false,
@@ -631,6 +640,15 @@ pub(super) fn into_model_stream(response: reqwest::Response, model: String) -> M
 /// path uses.
 #[cfg(test)]
 pub(super) fn stream_from_bytes(chunks: Vec<Vec<u8>>, model: &str) -> ModelStream {
+    stream_from_bytes_with_provider(chunks, model, PROVIDER)
+}
+
+#[cfg(test)]
+pub(super) fn stream_from_bytes_with_provider(
+    chunks: Vec<Vec<u8>>,
+    model: &str,
+    provider: &str,
+) -> ModelStream {
     let bytes = futures::stream::iter(
         chunks
             .into_iter()
@@ -642,6 +660,7 @@ pub(super) fn stream_from_bytes(chunks: Vec<Vec<u8>>, model: &str) -> ModelStrea
         pending: VecDeque::new(),
         acc: AnthropicStreamAcc::default(),
         model: model.to_string(),
+        provider: provider.to_string(),
         started: false,
         finished: false,
         completion_seen: false,

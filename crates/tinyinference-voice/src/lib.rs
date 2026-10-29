@@ -13,6 +13,7 @@ pub mod piper;
 pub mod postprocess;
 pub mod reply;
 pub mod streaming;
+pub mod transcription;
 
 mod types;
 

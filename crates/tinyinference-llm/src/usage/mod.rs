@@ -9,10 +9,12 @@
 //! [`Usage`] records per-call token counts and supports `+`/`+=` accumulation.
 //! [`UsageTotals`] aggregates many calls, also tracking the call count.
 
+mod meta;
 mod types;
 
 use std::ops::{Add, AddAssign};
 
+pub use meta::*;
 pub use types::*;
 
 impl Usage {
@@ -62,11 +64,23 @@ impl AddAssign for Usage {
         self.cache_creation_tokens += rhs.cache_creation_tokens;
         self.reasoning_tokens += rhs.reasoning_tokens;
         self.context_window_tokens = rhs.context_window_tokens.or(self.context_window_tokens);
+        let left_charge_nanos = self.charged_amount_nanos.or_else(|| {
+            self.charged_amount
+                .map(|charge| charge.micros.saturating_mul(1_000))
+        });
+        let right_charge_nanos = rhs.charged_amount_nanos.or_else(|| {
+            rhs.charged_amount
+                .map(|charge| charge.micros.saturating_mul(1_000))
+        });
         self.charged_amount = match (self.charged_amount.take(), rhs.charged_amount) {
             (None, amount) | (amount, None) => amount,
             (Some(left), Some(right)) => {
                 Some(ChargedAmount::new(left.micros.saturating_add(right.micros)))
             }
+        };
+        self.charged_amount_nanos = match (left_charge_nanos, right_charge_nanos) {
+            (None, amount) | (amount, None) => amount,
+            (Some(left), Some(right)) => Some(left.saturating_add(right)),
         };
     }
 }

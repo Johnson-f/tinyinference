@@ -39,6 +39,44 @@ fn provider_failure_taxonomy_is_complete() {
 }
 
 #[test]
+fn host_session_expiry_predicate_can_override_retryable_status() {
+    let message = "host session token expired";
+    assert_eq!(
+        classify_provider_failure_with(Some(503), None, message, |value| {
+            value.contains("session token expired")
+        }),
+        ProviderFailureClass::NonRetryable
+    );
+}
+
+#[test]
+fn default_classifier_does_not_assign_host_session_expiry_meaning() {
+    let message = "host session token expired";
+    assert_eq!(
+        classify_provider_failure(Some(503), None, message),
+        ProviderFailureClass::UpstreamUnhealthy
+    );
+    assert_eq!(
+        classify_provider_failure_with(Some(503), None, message, |_| false),
+        ProviderFailureClass::UpstreamUnhealthy
+    );
+}
+
+#[test]
+fn context_and_quota_failures_remain_terminal_under_retryable_statuses() {
+    for message in [
+        "maximum context length is 8192 tokens",
+        "MONTHLY_REQUEST_COUNT quota exhausted",
+    ] {
+        assert_eq!(
+            classify_provider_failure(Some(503), None, message),
+            ProviderFailureClass::NonRetryable,
+            "{message}"
+        );
+    }
+}
+
+#[test]
 fn structured_status_takes_precedence_over_message_heuristics() {
     assert_eq!(
         classify_provider_failure(Some(400), None, "proxy said bad gateway"),
@@ -64,6 +102,18 @@ fn structured_provider_error_uses_the_same_classifier() {
         ProviderFailureClass::NonRetryableRateLimit
     );
     assert!(!provider_error_is_retryable(&error));
+}
+
+#[test]
+fn per_minute_quota_rate_limits_remain_retryable() {
+    assert_eq!(
+        classify_provider_failure(
+            Some(429),
+            None,
+            "per-minute quota exceeded; retry after 30 seconds"
+        ),
+        ProviderFailureClass::RateLimited
+    );
 }
 
 #[test]
@@ -360,6 +410,21 @@ fn extract_provider_error_detail_pulls_openai_message() {
 }
 
 #[test]
+fn extract_provider_error_detail_scrubs_a_key_the_provider_echoes() {
+    // The detail is quoted to the user, and providers echo a rejected key in
+    // it. Synthetic keys, built at runtime so no key-shaped literal is committed.
+    let body = "AbCdEf0123456789".repeat(2);
+    for key in [format!("sk-proj-{body}"), format!("sk-ant-api03-{body}")] {
+        let raw = format!(
+            r#"someprovider API error (422 Unprocessable Entity): {{"error":{{"message":"bad parameter for key {key}"}}}}"#
+        );
+        let detail = extract_provider_error_detail(&raw).expect("expected JSON message");
+        assert!(detail.contains("bad parameter"), "got: {detail}");
+        assert!(!detail.contains(&body), "key leaked: {detail}");
+    }
+}
+
+#[test]
 fn extract_provider_error_detail_returns_none_for_transport_errors() {
     // Plain transport failure — no provider JSON body to quote. Surfacing
     // raw transport text would leak internal infra URLs.
@@ -533,4 +598,32 @@ fn context_window_matches_dashscope_input_length_range() {
     let body = "Provider returned error: {\"error\":{\"code\":\"invalid_parameter_error\",\
                 \"message\":\"Range of input length should be [1, 98304]\"}}";
     assert!(is_context_window_exceeded_message(body));
+}
+
+// A 429 must not short-circuit plan-cap / host session-expired classification.
+#[test]
+fn codex_plan_cap_429_is_not_retryable() {
+    let wrapped = format!("openai Responses API error (429): {AFE_BODY}");
+    let cases = [
+        (
+            "status 429 + AFE body",
+            classify_provider_failure(Some(429), None, AFE_BODY),
+        ),
+        (
+            "wrapped (429) AFE message",
+            classify_provider_failure(None, None, &wrapped),
+        ),
+        (
+            "host session-expired inside 429",
+            classify_provider_failure_with(Some(429), None, "session expired", |m| {
+                m.contains("session expired")
+            }),
+        ),
+    ];
+    let retryable: Vec<String> = cases
+        .iter()
+        .filter(|(_, c)| c.is_retryable())
+        .map(|(n, c)| format!("{n} -> {c:?}"))
+        .collect();
+    assert!(retryable.is_empty(), "classified retryable: {retryable:?}");
 }

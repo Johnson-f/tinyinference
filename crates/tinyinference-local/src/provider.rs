@@ -39,6 +39,20 @@ pub fn normalize_provider(value: &str) -> String {
     }
 }
 
+/// Returns the model-listing endpoint for Ollama or LM Studio.
+///
+/// The base is the configured runtime root for Ollama and its OpenAI `/v1`
+/// base for LM Studio.
+#[must_use]
+pub fn local_runtime_models_endpoint(slug: &str, base_url: &str) -> Option<String> {
+    let base = base_url.trim().trim_end_matches('/');
+    match slug.trim().to_ascii_lowercase().as_str() {
+        "ollama" => Some(format!("{base}/v1/models")),
+        "lmstudio" | "lm-studio" | "lm_studio" => Some(format!("{base}/models")),
+        _ => None,
+    }
+}
+
 /// Resolves the lifecycle-managed provider from a configured slug.
 pub fn provider_from_name(provider: &str) -> LocalAiProvider {
     match normalize_provider(provider).as_str() {

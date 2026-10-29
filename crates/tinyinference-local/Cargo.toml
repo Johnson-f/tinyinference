@@ -21,9 +21,10 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tinyinference-core = { version = "0.3.0", path = "../tinyinference-core" }
-tinyinference-llm = { version = "0.3.0", path = "../tinyinference-llm" }
-tinyinference-embeddings = { version = "0.3.0", path = "../tinyinference-embeddings" }
+tinyinference-core = { version = "0.5.0", path = "../tinyinference-core" }
+tinyinference-llm = { version = "0.5.0", path = "../tinyinference-llm" }
+tinyinference-providers = { version = "0.5.0", path = "../tinyinference-providers" }
+tinyinference-embeddings = { version = "0.5.0", path = "../tinyinference-embeddings" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
@@ -31,6 +32,10 @@ url = { workspace = true }
 [dev-dependencies]
 axum = { workspace = true }
 tempfile = { workspace = true }
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
+libc = "0.2"
+seccompiler = "0.5"
 
 [lints.rust]
 missing_docs = "warn"

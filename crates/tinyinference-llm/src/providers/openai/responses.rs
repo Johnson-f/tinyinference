@@ -540,6 +540,7 @@ pub(super) fn convert_responses_usage(wire: &ResponsesUsage) -> Usage {
             .and_then(|d| d.reasoning_tokens)
             .unwrap_or(0),
         charged_amount: None,
+        charged_amount_nanos: None,
         context_window_tokens: None,
     }
 }
@@ -635,11 +636,13 @@ pub(super) fn parse_responses_response(value: Value) -> ModelResponse {
     content.push(ContentBlock::Text(text));
 
     let finish_reason = match parsed.status.as_deref() {
-        Some("incomplete") => parsed
-            .incomplete_details
-            .as_ref()
-            .and_then(|details| details.reason.clone())
-            .or_else(|| Some("incomplete".to_string())),
+        Some("incomplete") => Some(crate::model::canonical_finish_reason(
+            parsed
+                .incomplete_details
+                .as_ref()
+                .and_then(|details| details.reason.clone())
+                .unwrap_or_else(|| "incomplete".to_string()),
+        )),
         _ => Some("stop".to_string()),
     };
     ModelResponse {

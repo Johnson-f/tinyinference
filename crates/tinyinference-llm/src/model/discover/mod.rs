@@ -28,14 +28,16 @@ pub use cache::{
     CachedLimits, DEFAULT_DISCOVERED_TTL, DEFAULT_LEARNED_TTL, DEFAULT_NEGATIVE_TTL,
     ModelLimitsCache, model_limits_cache,
 };
+pub(crate) use fetch::discover_model_limits_with_guard;
 pub use fetch::{
     ModelListingFetcher, ReqwestListingFetcher, discover_model_limits, discover_model_limits_with,
 };
 pub use parse::{
     input_modalities_from_entry, limits_from_entry, model_ids_match, parse_listing_limits,
-    parse_model_limits, parse_openrouter_endpoint_limits, pinned_openrouter_providers,
+    parse_model_limits, parse_ollama_show, parse_openrouter_endpoint_limits,
+    pinned_openrouter_providers,
 };
-pub use types::{DiscoveryRequest, LimitSource, ModelLimits};
+pub use types::{DiscoveryRequest, LimitSource, ModelLimits, looks_like_ollama};
 
 /// The provider-sourced limits already cached for `(endpoint, model)`, without
 /// any request: a fresh default-variant discovery, lowered by a learned overflow

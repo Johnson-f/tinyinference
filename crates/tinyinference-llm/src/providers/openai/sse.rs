@@ -146,9 +146,67 @@ pub(super) struct OpenAiStreamAcc {
     /// conceptual channel opens a fresh block instead, matching how densely
     /// each block gets its own [`ModelStreamItem::BlockStart`]).
     current_block: Option<(usize, OpenKind)>,
+    /// Top-level fields of streamed payloads outside the OpenAI chunk schema
+    /// (a gateway's billing envelope, say), and fields of `usage` outside the
+    /// ones the normalized usage reads (OpenRouter's `cost`, say), under
+    /// `usage`; last value per key. They become the terminal response's
+    /// `raw`, the same place the non-streaming path keeps the full wire body,
+    /// so a caller reads them identically, at the same paths, on both.
+    extensions: serde_json::Map<String, Value>,
 }
 
+/// Top-level keys of the OpenAI chat-completion chunk schema. Anything else on
+/// a streamed payload is a vendor extension and is kept for `raw`.
+const CHUNK_KEYS: &[&str] = &[
+    "id",
+    "object",
+    "created",
+    "model",
+    "choices",
+    "usage",
+    "system_fingerprint",
+    "service_tier",
+];
+
+/// Keys of a `usage` object that `UsageWire` reads into the normalized
+/// usage. Any other key of a streamed `usage` object is a vendor extension
+/// (OpenRouter's `cost`, `cost_details`, `is_byok`) and is kept for `raw`,
+/// under `usage`.
+const USAGE_KEYS: &[&str] = &[
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "prompt_tokens_details",
+    "completion_tokens_details",
+    "prompt_cache_hit_tokens",
+];
+
 impl OpenAiStreamAcc {
+    /// Keeps the fields of a streamed `usage` object outside [`USAGE_KEYS`] on
+    /// `raw`'s `usage`, last value per key. A `usage` object with none leaves
+    /// `raw` untouched.
+    fn keep_usage_extensions(&mut self, usage: &serde_json::Map<String, Value>) {
+        let mut kept = usage
+            .iter()
+            .filter(|(key, _)| !USAGE_KEYS.contains(&key.as_str()))
+            .peekable();
+        if kept.peek().is_none() {
+            return;
+        }
+        let entry = self
+            .extensions
+            .entry("usage")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if !entry.is_object() {
+            *entry = Value::Object(serde_json::Map::new());
+        }
+        if let Value::Object(target) = entry {
+            for (key, field) in kept {
+                target.insert(key.clone(), field.clone());
+            }
+        }
+    }
+
     /// Builds an accumulator with the given inline reasoning-tag extraction
     /// config (`None` disables inline extraction).
     pub(super) fn new(reasoning_tags: Option<ReasoningTagExtraction>) -> Self {
@@ -506,8 +564,10 @@ impl OpenAiStreamAcc {
             execution: None,
             message,
             usage: self.usage,
-            finish_reason: self.finish_reason,
-            raw: None,
+            finish_reason: self
+                .finish_reason
+                .map(crate::model::canonical_finish_reason),
+            raw: (!self.extensions.is_empty()).then_some(Value::Object(self.extensions)),
             resolved_model: None,
             continue_turn: None,
             served_from_cache: false,
@@ -639,7 +699,41 @@ impl SseState {
             self.pending.push_back(item);
             return;
         }
+        // A gateway may send its own frame (`event: openhuman-metadata` with
+        // `data: {"openhuman": {...}}`) or extra fields on a chunk. The `event:`
+        // name is not needed: the extension keys are kept whichever frame
+        // carried them, and the chunk fields are ingested as usual.
+        if let Value::Object(fields) = &value {
+            for (key, field) in fields {
+                if !CHUNK_KEYS.contains(&key.as_str()) {
+                    self.acc.extensions.insert(key.clone(), field.clone());
+                }
+            }
+            if let Some(Value::Object(usage)) = fields.get("usage") {
+                self.acc.keep_usage_extensions(usage);
+            }
+        }
         if let Ok(chunk) = serde_json::from_value::<ChatCompletionChunk>(value) {
+            // `resolve_slot` grows the slot vector up to the wire index, so an
+            // out-of-range index is rejected before it can size an allocation.
+            if let Some(index) = chunk
+                .choices
+                .iter()
+                .flat_map(|choice| &choice.delta.tool_calls)
+                .filter_map(|fragment| fragment.index)
+                .find(|&index| index as usize > crate::providers::MAX_STREAM_INDEX)
+            {
+                let item = self.provider_failure(ProviderError {
+                    message: format!(
+                        "tool-call index {index} exceeds limit {}",
+                        crate::providers::MAX_STREAM_INDEX
+                    ),
+                    retryable: false,
+                    ..ProviderError::default()
+                });
+                self.pending.push_back(item);
+                return;
+            }
             let mut pending = std::mem::take(&mut self.pending);
             self.acc.ingest(chunk, &mut pending);
             self.pending = pending;
@@ -702,7 +796,11 @@ impl SseState {
         self.terminal_emitted = true;
         error.provider = self.provider.clone();
         error.model = Some(self.model.clone());
-        error.stop_reason = self.acc.finish_reason.clone();
+        error.stop_reason = self
+            .acc
+            .finish_reason
+            .clone()
+            .map(crate::model::canonical_finish_reason);
         let partial = std::mem::take(&mut self.acc).into_response();
         if !partial.message.content.is_empty() || !partial.message.tool_calls.is_empty() {
             error.partial_message = Some(partial.message.clone());
@@ -771,3 +869,7 @@ pub(super) async fn sse_next(mut state: SseState) -> Option<(ModelStreamItem, Ss
         }
     }
 }
+
+#[cfg(test)]
+#[path = "sse_tests.rs"]
+mod tests;

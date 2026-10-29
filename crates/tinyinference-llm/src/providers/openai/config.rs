@@ -7,6 +7,7 @@ use serde_json::json;
 use crate::model::ChatModel;
 
 use super::{AuthStyle, OpenAiModel};
+use crate::providers::ProviderRequestOptions;
 
 /// Resolved configuration for an OpenAI-compatible provider.
 #[derive(Clone)]
@@ -101,23 +102,72 @@ pub fn endpoint_is_openrouter(endpoint: &str) -> bool {
 
 /// Builds an OpenAI-compatible chat model from fully resolved configuration.
 pub fn build_openai_model(config: OpenAiConfig<'_>) -> Arc<dyn ChatModel<()>> {
-    build_openai_model_with(config, true)
+    build_openai_model_with(config, true, None)
+}
+
+/// Build an OpenAI-compatible model with a host-configured HTTP client.
+///
+/// Hosts use this for endpoint-specific TLS roots and proxy policy while
+/// retaining the same model settings as [`build_openai_model`].
+pub fn build_openai_model_with_http(
+    config: OpenAiConfig<'_>,
+    http: reqwest::Client,
+) -> Arc<dyn ChatModel<()>> {
+    build_openai_model_with(config, true, Some(http))
 }
 
 /// [`build_openai_model`] with the Anthropic-model `cache_control` default made
-/// explicit; a local runtime passes `false` so it never receives the markers.
-fn build_openai_model_with(
+/// explicit. Local runtimes use [`build_local_openai_model_with`] instead.
+pub(crate) fn build_openai_model_with(
     config: OpenAiConfig<'_>,
     anthropic_cache_control: bool,
+    http: Option<reqwest::Client>,
 ) -> Arc<dyn ChatModel<()>> {
-    let mut model = OpenAiModel::compatible_provider(
+    let model = OpenAiModel::compatible_provider(
         config.provider_name,
         config.api_key,
         config.endpoint,
         config.model,
     )
-    .with_auth_style(config.auth_style)
+    .with_auth_style(config.auth_style.clone())
     .with_anthropic_cache_control(anthropic_cache_control);
+
+    Arc::new(configure_openai_model(model, config, http))
+}
+
+/// Builds a local OpenAI-compatible model from a completed config: no
+/// Anthropic cache markers, and every system message sent as one leading
+/// `system` message, because local chat templates commonly reject a `system`
+/// turn anywhere but first (tinyhumansai/openhuman#7440).
+pub(crate) fn build_local_openai_model_with(
+    config: OpenAiConfig<'_>,
+    http: Option<reqwest::Client>,
+) -> Arc<dyn ChatModel<()>> {
+    let model = OpenAiModel::compatible_provider(
+        config.provider_name,
+        config.api_key,
+        config.endpoint,
+        config.model,
+    )
+    .with_auth_style(config.auth_style.clone())
+    .with_anthropic_cache_control(false)
+    .with_single_system_message();
+
+    Arc::new(configure_openai_model(model, config, http))
+}
+
+/// Applies transport and capability overrides to an already selected adapter.
+pub(crate) fn configure_openai_model(
+    mut model: OpenAiModel,
+    config: OpenAiConfig<'_>,
+    http: Option<reqwest::Client>,
+) -> OpenAiModel {
+    if let Some(http) = http {
+        model = model.with_request_options(ProviderRequestOptions {
+            http: Some(http),
+            ..ProviderRequestOptions::default()
+        });
+    }
 
     if !config.temperature_unsupported_models.is_empty() {
         model = model
@@ -157,7 +207,7 @@ fn build_openai_model_with(
         model = model.with_responses_omit_max_output_tokens();
     }
 
-    Arc::new(model)
+    model
 }
 
 /// Builds a conventional hosted OpenAI-compatible model.
@@ -210,7 +260,7 @@ pub fn build_local_runtime_chat_model(
             "options": { "num_ctx": value }
         })
     });
-    build_openai_model_with(
+    build_local_openai_model_with(
         OpenAiConfig {
             provider_name,
             endpoint,
@@ -230,6 +280,6 @@ pub fn build_local_runtime_chat_model(
             user_agent: None,
             explicit_cache_control: false,
         },
-        false,
+        None,
     )
 }

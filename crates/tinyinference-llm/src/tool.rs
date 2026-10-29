@@ -76,7 +76,7 @@ impl ToolSchema {
                 call.name, self.name
             )));
         }
-        validate_schema_value(
+        validate_json_value(
             &self.parameters,
             &call.arguments,
             &format!("tool `{}` arguments", self.name),
@@ -175,7 +175,19 @@ pub struct ToolDelta {
     pub content_index: Option<usize>,
 }
 
-fn validate_schema_value(schema: &Value, value: &Value, path: &str) -> crate::Result<()> {
+/// Validates `value` against the structural subset of JSON Schema that tool
+/// arguments are held to: `type` (including unions), object `properties`,
+/// `required`, `additionalProperties: false`, array `items`, and `enum`.
+/// Unknown keywords are ignored and an empty or null schema imposes nothing.
+///
+/// `path` names the value in error messages — `tool \`lookup\` arguments`
+/// produces `tool \`lookup\` arguments.limit must be integer, got string`.
+///
+/// # Errors
+///
+/// Returns [`crate::Error::Validation`] naming the first failing instance
+/// path.
+pub fn validate_json_value(schema: &Value, value: &Value, path: &str) -> crate::Result<()> {
     if schema.is_null() || schema.as_object().is_some_and(serde_json::Map::is_empty) {
         return Ok(());
     }
@@ -200,7 +212,8 @@ fn validate_schema_value(schema: &Value, value: &Value, path: &str) -> crate::Re
             }
         } else if schema.get("type").is_none() {
             return Err(crate::Error::Validation(format!(
-                "{path} must be an object with declared fields"
+                "{path} must be an object with the declared fields, got {}",
+                json_value_kind(value)
             )));
         }
     }
@@ -217,12 +230,13 @@ fn validate_schema_value(schema: &Value, value: &Value, path: &str) -> crate::Re
             }
             for (field, field_schema) in properties {
                 if let Some(field_value) = object.get(field) {
-                    validate_schema_value(field_schema, field_value, &format!("{path}.{field}"))?;
+                    validate_json_value(field_schema, field_value, &format!("{path}.{field}"))?;
                 }
             }
         } else if schema.get("type").is_none() {
             return Err(crate::Error::Validation(format!(
-                "{path} must be an object with declared fields"
+                "{path} must be an object with the declared fields, got {}",
+                json_value_kind(value)
             )));
         }
     }
@@ -230,7 +244,7 @@ fn validate_schema_value(schema: &Value, value: &Value, path: &str) -> crate::Re
         && let Some(items) = value.as_array()
     {
         for (index, item) in items.iter().enumerate() {
-            validate_schema_value(items_schema, item, &format!("{path}[{index}]"))?;
+            validate_json_value(items_schema, item, &format!("{path}[{index}]"))?;
         }
     }
     Ok(())

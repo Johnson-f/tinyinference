@@ -288,6 +288,10 @@ pub struct ChatMessageWire {
     /// For `tool` messages, the id of the call this message answers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// DeepSeek's assistant reasoning, replayed separately from visible content.
+    /// Omitted for providers that do not accept this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 /// A function-tool declaration in the request `tools` array.
@@ -411,6 +415,10 @@ pub struct UsageWire {
     /// Total tokens reported by the provider.
     #[serde(default)]
     pub total_tokens: u64,
+    /// Provider-reported charge in USD, as OpenRouter includes it in its
+    /// usage extension. Other OpenAI-compatible providers omit this field.
+    #[serde(default)]
+    pub cost: Option<serde_json::Value>,
     /// Optional input-token breakdown (carries cached tokens).
     #[serde(default)]
     pub prompt_tokens_details: Option<PromptTokensDetailsWire>,

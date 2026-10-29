@@ -2,6 +2,32 @@ use super::*;
 use tempfile::tempdir;
 
 #[test]
+fn oauth_routing_selects_subscription_endpoint_without_an_account_header() {
+    for account in [None, Some(""), Some(" \t\n ")] {
+        let routing = OpenAiCodexRouting::oauth(account);
+        assert_eq!(routing.endpoint, "https://chatgpt.com/backend-api/codex");
+        assert!(routing.using_oauth);
+        assert_eq!(routing.account_id, None);
+    }
+}
+
+#[test]
+fn oauth_routing_preserves_the_trimmed_account_header() {
+    let routing = OpenAiCodexRouting::oauth(Some("  account-example \n"));
+    assert_eq!(routing.endpoint, "https://chatgpt.com/backend-api/codex");
+    assert!(routing.using_oauth);
+    assert_eq!(routing.account_id.as_deref(), Some("account-example"));
+}
+
+#[test]
+fn standard_routing_preserves_host_endpoint_and_omits_oauth_headers() {
+    let routing = OpenAiCodexRouting::standard("https://example.invalid/v1///");
+    assert_eq!(routing.endpoint, "https://example.invalid/v1");
+    assert!(!routing.using_oauth);
+    assert_eq!(routing.account_id, None);
+}
+
+#[test]
 fn client_version_prefers_explicit_override() {
     let (version, source) =
         resolve_openai_codex_client_version_from(Some("  0.200.0  ".into()), None);
@@ -70,5 +96,57 @@ fn user_agent_names_embedding_host() {
     assert_eq!(
         openai_codex_user_agent("OpenHuman", "1.2.3"),
         "codex_cli_rs/0.0.0 (OpenHuman 1.2.3)"
+    );
+}
+
+#[test]
+fn resolver_only_selects_oauth_for_openai_with_an_oauth_bearer() {
+    for (slug, bearer_is_oauth, expected_oauth) in [
+        ("openai", true, true),
+        ("openai", false, false),
+        ("OpenAI", true, false),
+        ("anthropic", true, false),
+    ] {
+        let route = resolve_codex_routing(
+            slug,
+            "https://example.invalid/v1/",
+            bearer_is_oauth,
+            Some(" account-1 "),
+        );
+        assert_eq!(route.using_oauth, expected_oauth);
+        assert_eq!(
+            route.account_id.as_deref(),
+            expected_oauth.then_some("account-1")
+        );
+        if !expected_oauth {
+            assert_eq!(route.endpoint, "https://example.invalid/v1");
+        }
+    }
+}
+
+#[test]
+fn oauth_headers_and_client_version_query_are_reusable() {
+    let route = resolve_codex_routing("openai", "ignored", true, None);
+    assert_eq!(
+        route.headers(),
+        vec![
+            (
+                OPENAI_CODEX_ORIGINATOR_HEADER.into(),
+                OPENAI_CODEX_ORIGINATOR.into()
+            ),
+            (
+                OPENAI_CODEX_BETA_HEADER.into(),
+                OPENAI_CODEX_BETA_VALUE.into()
+            ),
+        ]
+    );
+    assert_eq!(
+        route.client_version_query("0.137.0"),
+        vec![("client_version".into(), "0.137.0".into())]
+    );
+    assert!(
+        OpenAiCodexRouting::standard("https://example.invalid")
+            .headers()
+            .is_empty()
     );
 }

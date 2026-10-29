@@ -61,6 +61,10 @@ pub struct OpenAiModel {
     /// the `system` role is dropped — for OpenAI-compatible endpoints that reject
     /// a `system` role. `false` by default (system messages pass through).
     merge_system_into_user: bool,
+    /// When `true`, every `system` message is joined into one leading `system`
+    /// message — for local chat templates (Qwen-style) that reject a `system`
+    /// turn anywhere but first. See [`Self::with_single_system_message`].
+    single_system_message: bool,
     /// Whether the endpoint accepts a **named** `tool_choice`
     /// (`{"type":"function","function":{"name":…}}`). `true` by default. When
     /// `false`, a [`ToolChoice::Tool`] request is degraded to
@@ -182,17 +186,20 @@ pub(super) fn auth_headers(auth: &AuthStyle, api_key: &str) -> Vec<(String, Stri
     }
 }
 
-/// Concatenates the text of a message's content blocks (non-text blocks — images,
-/// json, thinking — are ignored). Used to gather system-prompt text for merging.
+/// A system message's content as the pass-through path sends it
+/// (`translate_text_content`): text verbatim, JSON serialized, reasoning
+/// dropped, blocks joined with nothing between them. Folding with anything
+/// else would make a hoisted or merged prompt differ from the same prompt sent
+/// as-is, and would silently drop JSON blocks.
 fn content_text(content: &[ContentBlock]) -> String {
     content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text(text) => Some(text.as_str()),
+            ContentBlock::Text(text) => Some(text.clone()),
+            ContentBlock::Json(value) => Some(value.to_string()),
             _ => None,
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect()
 }
 
 /// Folds all `system` messages into the first `user` message and drops the
@@ -261,6 +268,44 @@ pub(super) fn merge_system_into_user(messages: &[Message]) -> Vec<Message> {
     merged
 }
 
+/// Joins every non-empty `system` message into one `system` message at the
+/// front, keeping all other messages in order. Strict local chat templates
+/// (Qwen-family `raise_exception('System message must be at the
+/// beginning.')`) reject a second or mid-transcript `system` turn; the role is
+/// kept, unlike [`merge_system_into_user`]. Record-only (empty) system
+/// messages are dropped. A no-op when there is at most one system message and
+/// it is already first. Pure, so the transform is unit-testable.
+pub(super) fn single_system_message(messages: &[Message]) -> Vec<Message> {
+    let systems = messages
+        .iter()
+        .filter(|m| matches!(m, Message::System(_)))
+        .count();
+    if systems == 0 || (systems == 1 && matches!(messages.first(), Some(Message::System(_)))) {
+        return messages.to_vec();
+    }
+    let system_text = messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::System(s) => {
+                let t = content_text(&s.content);
+                (!t.is_empty()).then_some(t)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let rest = messages
+        .iter()
+        .filter(|m| !matches!(m, Message::System(_)))
+        .cloned();
+    if system_text.is_empty() {
+        return rest.collect();
+    }
+    std::iter::once(Message::system(system_text))
+        .chain(rest)
+        .collect()
+}
+
 /// Returns `true` for a relay-style Anthropic model id (`anthropic/claude-...`,
 /// or a bare `claude-...`), whose prompt cache is opt-in: without explicit
 /// `cache_control` breakpoints it caches nothing, however stable the prefix.
@@ -287,9 +332,8 @@ pub(super) fn is_reasoning_model(model: &str) -> bool {
 /// Completions wire — a transcript record such as a tool-change patch, whose
 /// sections and tool deltas `convert::translate_message` does not send.
 ///
-/// A route that hoists system content to the prompt head would still rewrite
-/// its cached prefix for the empty `role: "system"` turn (#6962), so the
-/// request builder drops these for such a route. The transcript keeps them.
+/// These records are kept in the transcript but have no content to send to any
+/// Chat Completions route. The request builder drops them from the wire.
 fn is_record_only_system(message: &Message) -> bool {
     let Message::System(system) = message else {
         return false;
@@ -301,7 +345,7 @@ fn is_record_only_system(message: &Message) -> bool {
     });
     if empty {
         tracing::trace!(
-            "[providers][openai] dropping a record-only system message for a route that hoists system content"
+            "[providers][openai] dropping a record-only system message from the Chat Completions request"
         );
     }
     empty
@@ -354,7 +398,16 @@ pub(super) fn derive_profile(provider: &str, model: &str) -> ModelProfile {
         // DeepSeek's chat template hoists every system turn into the prompt
         // head, so new mid-turn system text rewrites the cached prefix
         // (#6962). Matches bare ids and routed ones (`deepseek/...`).
-        hoists_system_messages: lower.contains("deepseek"),
+        //
+        // A Claude model behind an OpenAI-compatible relay (OpenRouter,
+        // TinyHumans) does the same: the relay translates Chat Completions
+        // into Anthropic's Messages API, which has one top-level `system`, so
+        // every `role: "system"` message joins it. A mid-turn note (a budget
+        // notice, a contents list) then changes the prefix all the cached
+        // tools, system and history hang off, and the whole conversation is
+        // written to the cache again, once when the note appears and once
+        // when it goes. The native Anthropic adapter already says so.
+        hoists_system_messages: lower.contains("deepseek") || is_anthropic_model(model),
         ..ModelProfile::default()
     }
 }
@@ -375,6 +428,7 @@ impl OpenAiModel {
             temperature_unsupported: Vec::new(),
             temperature_override: None,
             merge_system_into_user: false,
+            single_system_message: false,
             named_tool_choice_supported: true,
             json_object_format_supported: true,
             model: DEFAULT_MODEL.to_string(),
@@ -518,6 +572,21 @@ impl OpenAiModel {
         self
     }
 
+    /// Sends every system message as one leading `system` message, for local
+    /// chat templates that reject a `system` turn anywhere but first (LM
+    /// Studio / llama.cpp serving Qwen-family models: "System message must be
+    /// at the beginning."). The profile then reports
+    /// [`ModelProfile::hoists_system_messages`] and no
+    /// [`ModelProfile::mid_conversation_system_messages`], so the harness puts
+    /// per-call guidance in the tail turn instead of a new system message,
+    /// which keeps the runtime's cached prompt prefix stable.
+    pub fn with_single_system_message(mut self) -> Self {
+        self.single_system_message = true;
+        self.profile.mid_conversation_system_messages = false;
+        self.profile.hoists_system_messages = true;
+        self
+    }
+
     /// Declares whether the endpoint accepts a **named** `tool_choice`
     /// (`{"type":"function","function":{"name":…}}`). `true` by default.
     ///
@@ -621,7 +690,8 @@ impl OpenAiModel {
     /// a Claude model reached through Chat Completions caches nothing at all.
     /// When enabled and the request
     /// [declares a cacheable prefix][ModelRequest::wants_prompt_cache_breakpoints],
-    /// the last system message and the last user message are rendered as
+    /// the last system message and the last user message (plus the newest
+    /// message of an Anthropic-family request, see `apply_cache_breakpoints`) are rendered as
     /// content parts with a breakpoint on their final text part — the two
     /// placements OpenRouter documents. Hosted OpenAI rejects unknown part
     /// fields, so this stays off unless a preset or the caller turns it on.
@@ -677,7 +747,10 @@ impl OpenAiModel {
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self.profile = derive_profile(&self.provider, &self.model);
-        self.profile.hoists_system_messages |= self.responses_api_primary;
+        self.profile.hoists_system_messages |=
+            self.responses_api_primary || self.single_system_message;
+        self.profile.mid_conversation_system_messages &=
+            !(self.merge_system_into_user || self.single_system_message);
         self
     }
 
@@ -685,7 +758,10 @@ impl OpenAiModel {
     pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
         self.provider = provider.into();
         self.profile = derive_profile(&self.provider, &self.model);
-        self.profile.hoists_system_messages |= self.responses_api_primary;
+        self.profile.hoists_system_messages |=
+            self.responses_api_primary || self.single_system_message;
+        self.profile.mid_conversation_system_messages &=
+            !(self.merge_system_into_user || self.single_system_message);
         self
     }
 
@@ -814,7 +890,7 @@ impl OpenAiModel {
 
         let response = self
             .send_checked(
-                self.authorized(self.client.get(&url)).await?,
+                self.authorized(self.http_client().get(&url)).await?,
                 "request",
                 &url,
             )
@@ -1018,7 +1094,8 @@ impl OpenAiModel {
             .with_vision(false)
             .with_named_tool_choice(false)
             .with_json_object_format(false)
-            .with_anthropic_cache_control(false);
+            .with_anthropic_cache_control(false)
+            .with_single_system_message();
         output.local_runtime = Some(kind);
         output.json_schema_strict.store(false, Ordering::Relaxed);
         output.profile.max_input_tokens = None;
@@ -1059,14 +1136,14 @@ impl OpenAiModel {
             LocalRuntimeKind::Ollama => {
                 let endpoint = format!("{root}/api/show");
                 let builder = self
-                    .authorized(self.client.post(&endpoint))
+                    .authorized(self.http_client().post(&endpoint))
                     .await?
                     .json(&ollama_show_body(&self.model));
                 (endpoint, builder)
             }
             LocalRuntimeKind::LmStudio => {
                 let endpoint = format!("{root}/api/v0/models");
-                let builder = self.authorized(self.client.get(&endpoint)).await?;
+                let builder = self.authorized(self.http_client().get(&endpoint)).await?;
                 (endpoint, builder)
             }
             LocalRuntimeKind::LlamaCpp | LocalRuntimeKind::Vllm => return Ok(LocalProbe::default()),
@@ -1149,12 +1226,22 @@ impl OpenAiModel {
             local_options_object(&self.default_provider_options),
             self.keep_alive.as_deref(),
         );
-        self.authorized(self.client.post(&url))
+        let request = self
+            .authorized(self.http_client().post(&url))
             .await?
-            .json(&body)
+            .json(&body);
+        crate::model::budget::before_physical_attempt()?;
+        let response = request
             .send()
             .await
             .map_err(|error| Error::Model(format!("openai warm-up of {url} failed: {error}")))?;
+        if !response.status().is_success() {
+            return Err(Error::Model(format!(
+                "{} native context setup returned HTTP {}",
+                self.provider,
+                response.status().as_u16()
+            )));
+        }
         Ok(())
     }
 
@@ -1282,21 +1369,33 @@ impl OpenAiModel {
         let source_messages: &[Message] = if self.merge_system_into_user {
             merged_messages = merge_system_into_user(base_messages);
             &merged_messages
+        } else if self.single_system_message {
+            merged_messages = single_system_message(base_messages);
+            &merged_messages
         } else {
             base_messages
         };
         let effective_model = request.model.as_deref().unwrap_or(&self.model);
-        let hoists_system = derive_profile(&self.provider, effective_model).hoists_system_messages;
+        let deepseek = effective_model
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.to_ascii_lowercase().starts_with("deepseek-"));
         let mut messages = source_messages
             .iter()
             // `Message::Custom` is a host-side out-of-band record; never sent
             // to the provider.
             .filter(|message| !matches!(message, Message::Custom(_)))
-            .filter(|message| !(hoists_system && is_record_only_system(message)))
-            .map(translate_message)
+            .filter(|message| !is_record_only_system(message))
+            .map(|message| {
+                if deepseek {
+                    translate_deepseek_message(message)
+                } else {
+                    translate_message(message)
+                }
+            })
             .collect::<Result<Vec<_>>>()?;
         if self.wants_cache_breakpoints_for(request) {
-            apply_cache_breakpoints(&mut messages);
+            apply_cache_breakpoints(&mut messages, is_anthropic_model(effective_model));
         }
 
         let mut tools: Vec<ToolWire> = if prompt_guided_tools {
@@ -1634,7 +1733,10 @@ impl OpenAiModel {
         timeout_ms: Option<u64>,
         url: &str,
     ) -> Result<reqwest::Response> {
-        let mut builder = self.authorized(self.client.post(url)).await?.json(body);
+        let mut builder = self
+            .authorized(self.http_client().post(url))
+            .await?
+            .json(body);
         if let Some(timeout) = request_timeout(timeout_ms, body.stream == Some(true)) {
             builder = builder.timeout(timeout);
         }
@@ -1659,6 +1761,7 @@ impl OpenAiModel {
         what: &str,
         url: &str,
     ) -> Result<reqwest::Response> {
+        crate::model::budget::before_physical_attempt()?;
         let response = builder.send().await.map_err(|e| {
             let error = self.provider_error(
                 format!("{what} to {url} failed: {e}"),
@@ -1707,12 +1810,16 @@ impl OpenAiModel {
     ) -> Result<reqwest::Response> {
         crate::network_guard::ensure_network_models_allowed()?;
         let url = format!("{}/chat/completions", self.base_url);
-        let client = self.request_options.http.as_ref().unwrap_or(&self.client);
+        let client = self.http_client();
         let mut builder = self.authorized(client.post(&url)).await?.json(payload);
         if let Some(timeout) = request_timeout(timeout_ms, streaming) {
             builder = builder.timeout(timeout);
         }
         self.send_checked(builder, what, &url).await
+    }
+
+    fn http_client(&self) -> &reqwest::Client {
+        self.request_options.http.as_ref().unwrap_or(&self.client)
     }
 
     /// Serializes `body` into the JSON actually sent: parameters this endpoint
@@ -2134,6 +2241,10 @@ impl<State: Send + Sync> ChatModel<State> for OpenAiModel {
     /// Returns the capability profile derived from the configured model id.
     fn profile(&self) -> Option<&ModelProfile> {
         Some(&self.profile)
+    }
+
+    fn tracks_physical_attempts(&self) -> bool {
+        true
     }
 
     fn supports_input(

@@ -703,9 +703,10 @@ impl SseState {
         error.provider = self.provider.clone();
         error.model = Some(self.model.clone());
         error.stop_reason = self.acc.finish_reason.clone();
-        let partial = std::mem::take(&mut self.acc).into_response().message;
-        if !partial.content.is_empty() || !partial.tool_calls.is_empty() {
-            error.partial_message = Some(partial);
+        let partial = std::mem::take(&mut self.acc).into_response();
+        if !partial.message.content.is_empty() || !partial.message.tool_calls.is_empty() {
+            error.partial_message = Some(partial.message.clone());
+            error.partial_response = Some(Box::new(partial));
         }
         ModelStreamItem::ProviderFailed(error)
     }

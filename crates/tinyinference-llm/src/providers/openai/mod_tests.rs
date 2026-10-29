@@ -3082,6 +3082,11 @@ async fn sse_stream_mid_stream_error_preserves_partial_message() {
     assert_eq!(partial.tool_calls[0].id, "call-1");
     assert_eq!(partial.tool_calls[0].name, "lookup");
     assert_eq!(partial.tool_calls[0].arguments, json!({ "q": 1 }));
+    let response = failed
+        .partial_response
+        .as_ref()
+        .expect("the full partial response must accompany the partial message");
+    assert_eq!(&response.message, partial);
 
     // No terminal Completed follows the failure.
     assert!(matches!(

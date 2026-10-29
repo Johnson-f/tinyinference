@@ -1091,6 +1091,12 @@ async fn provider_failed_terminal_carries_partial_message_and_stop_reason() {
         partial.content,
         vec![ContentBlock::Text("partial answer".to_string())]
     );
+    let response = error
+        .partial_response
+        .as_ref()
+        .expect("partial response must be present");
+    assert_eq!(&response.message, partial);
+    assert_eq!(response.usage.map(|usage| usage.output_tokens), Some(2));
 }
 
 #[test]
